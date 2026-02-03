@@ -3,16 +3,18 @@
 //! This module provides QUIC-based peer-to-peer connection management:
 //! - [`PeerConnection`]: Represents a connection to a single peer
 //! - [`ConnectionPool`]: Manages multiple peer connections
+//! - [`MessageChannel`]: Bidirectional message channel for peer communication
 //! - Connection lifecycle (connect, disconnect, health monitoring)
 
 use crate::error::P2pError;
+use crate::message::P2pMessage;
 use crate::protocol::PeerId;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 
 /// Connection state for a peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +46,7 @@ impl ConnectionState {
 }
 
 /// Health status of a connection.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionHealth {
     /// Last successful ping round-trip time.
     pub last_rtt: Option<Duration>,
@@ -82,7 +84,7 @@ impl ConnectionHealth {
     }
 
     /// Records a failed ping.
-    pub fn record_ping_failure(&mut self) {
+    pub const fn record_ping_failure(&mut self) {
         self.failed_pings += 1;
     }
 
@@ -100,6 +102,7 @@ impl ConnectionHealth {
 
     /// Returns the ping success rate (0.0 to 1.0).
     #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for rate calculation
     pub fn ping_success_rate(&self) -> f64 {
         let total = self.successful_pings + self.failed_pings;
         if total == 0 {
@@ -203,7 +206,7 @@ impl PeerConnection {
     }
 
     /// Marks the connection as disconnected.
-    pub fn mark_disconnected(&mut self) {
+    pub const fn mark_disconnected(&mut self) {
         self.state = ConnectionState::Disconnected;
     }
 
@@ -225,7 +228,7 @@ impl PeerConnection {
     }
 
     /// Records a failed ping.
-    pub fn record_ping_failure(&mut self) {
+    pub const fn record_ping_failure(&mut self) {
         self.health.record_ping_failure();
     }
 
@@ -248,6 +251,268 @@ impl PeerConnection {
                 .to_std()
                 .unwrap_or(Duration::ZERO)
         })
+    }
+}
+
+/// Default channel buffer size for message passing.
+const DEFAULT_CHANNEL_BUFFER: usize = 256;
+
+/// A bidirectional message channel for peer communication.
+///
+/// This provides the I/O layer for sending and receiving P2P messages.
+/// The channel uses bounded async queues for backpressure handling.
+#[derive(Debug)]
+pub struct MessageChannel {
+    sender: mpsc::Sender<P2pMessage>,
+    receiver: mpsc::Receiver<P2pMessage>,
+}
+
+impl MessageChannel {
+    /// Creates a new message channel with the given sender and receiver.
+    #[must_use]
+    pub const fn new(
+        sender: mpsc::Sender<P2pMessage>,
+        receiver: mpsc::Receiver<P2pMessage>,
+    ) -> Self {
+        Self { sender, receiver }
+    }
+
+    /// Creates a connected pair of message channels for testing.
+    ///
+    /// Returns `(channel_a, channel_b)` where messages sent on `channel_a`
+    /// are received on `channel_b` and vice versa.
+    #[must_use]
+    pub fn connected_pair() -> (Self, Self) {
+        Self::connected_pair_with_buffer(DEFAULT_CHANNEL_BUFFER)
+    }
+
+    /// Creates a connected pair with a custom buffer size.
+    #[must_use]
+    pub fn connected_pair_with_buffer(buffer_size: usize) -> (Self, Self) {
+        let (tx_a, rx_a) = mpsc::channel(buffer_size);
+        let (tx_b, rx_b) = mpsc::channel(buffer_size);
+
+        let channel_a = Self::new(tx_a, rx_b);
+        let channel_b = Self::new(tx_b, rx_a);
+
+        (channel_a, channel_b)
+    }
+
+    /// Sends a message through the channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the channel is closed or full.
+    pub async fn send(&self, msg: P2pMessage) -> Result<(), P2pError> {
+        self.sender
+            .send(msg)
+            .await
+            .map_err(|e| P2pError::Connection(format!("Channel send failed: {e}")))
+    }
+
+    /// Receives a message from the channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the channel is closed.
+    pub async fn recv(&mut self) -> Result<P2pMessage, P2pError> {
+        self.receiver
+            .recv()
+            .await
+            .ok_or_else(|| P2pError::Connection("Channel closed".to_string()))
+    }
+
+    /// Tries to receive a message without blocking.
+    ///
+    /// Returns `None` if no message is immediately available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the channel is closed.
+    pub fn try_recv(&mut self) -> Result<Option<P2pMessage>, P2pError> {
+        match self.receiver.try_recv() {
+            Ok(msg) => Ok(Some(msg)),
+            Err(mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                Err(P2pError::Connection("Channel closed".to_string()))
+            }
+        }
+    }
+
+    /// Returns true if the sender half is closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.sender.is_closed()
+    }
+}
+
+/// An active connection combining state tracking with message I/O.
+///
+/// This struct owns both the connection state and the message channel,
+/// providing a unified interface for peer communication.
+#[derive(Debug)]
+pub struct ActiveConnection {
+    connection: PeerConnection,
+    channel: MessageChannel,
+}
+
+impl ActiveConnection {
+    /// Creates a new active connection.
+    #[must_use]
+    pub const fn new(connection: PeerConnection, channel: MessageChannel) -> Self {
+        Self { connection, channel }
+    }
+
+    /// Returns a reference to the underlying peer connection.
+    #[must_use]
+    pub const fn connection(&self) -> &PeerConnection {
+        &self.connection
+    }
+
+    /// Returns a mutable reference to the underlying peer connection.
+    #[must_use]
+    pub const fn connection_mut(&mut self) -> &mut PeerConnection {
+        &mut self.connection
+    }
+
+    /// Returns the peer ID.
+    #[must_use]
+    pub const fn peer_id(&self) -> PeerId {
+        self.connection.peer_id()
+    }
+
+    /// Returns the remote address.
+    #[must_use]
+    pub const fn remote_addr(&self) -> SocketAddr {
+        self.connection.remote_addr()
+    }
+
+    /// Returns the current connection state.
+    #[must_use]
+    pub const fn state(&self) -> ConnectionState {
+        self.connection.state()
+    }
+
+    /// Returns true if the connection is usable.
+    #[must_use]
+    pub const fn is_usable(&self) -> bool {
+        self.connection.is_usable()
+    }
+
+    /// Sends a message to the peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection is not usable or the channel fails.
+    pub async fn send(&mut self, msg: P2pMessage) -> Result<(), P2pError> {
+        if !self.connection.is_usable() {
+            return Err(P2pError::Connection(format!(
+                "Connection not usable (state: {:?})",
+                self.connection.state()
+            )));
+        }
+
+        self.channel.send(msg).await?;
+        self.connection.record_message_sent();
+        Ok(())
+    }
+
+    /// Receives a message from the peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection is not usable or the channel fails.
+    pub async fn recv(&mut self) -> Result<P2pMessage, P2pError> {
+        if !self.connection.is_usable() {
+            return Err(P2pError::Connection(format!(
+                "Connection not usable (state: {:?})",
+                self.connection.state()
+            )));
+        }
+
+        let msg = self.channel.recv().await?;
+        self.connection.record_message_received();
+        Ok(msg)
+    }
+
+    /// Tries to receive a message without blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection is not usable or the channel is closed.
+    pub fn try_recv(&mut self) -> Result<Option<P2pMessage>, P2pError> {
+        if !self.connection.is_usable() {
+            return Err(P2pError::Connection(format!(
+                "Connection not usable (state: {:?})",
+                self.connection.state()
+            )));
+        }
+
+        let result = self.channel.try_recv()?;
+        if result.is_some() {
+            self.connection.record_message_received();
+        }
+        Ok(result)
+    }
+
+    /// Marks the connection as connected.
+    pub fn mark_connected(&mut self) {
+        self.connection.mark_connected();
+    }
+
+    /// Marks the connection as disconnecting.
+    pub fn mark_disconnecting(&mut self) {
+        self.connection.mark_disconnecting();
+    }
+
+    /// Marks the connection as disconnected.
+    pub const fn mark_disconnected(&mut self) {
+        self.connection.mark_disconnected();
+    }
+
+    /// Marks the connection as failed.
+    pub fn mark_failed(&mut self, error: impl Into<String>) {
+        self.connection.mark_failed(error);
+    }
+
+    /// Records a successful ping.
+    pub fn record_ping_success(&mut self, rtt: Duration) {
+        self.connection.record_ping_success(rtt);
+    }
+
+    /// Records a failed ping.
+    pub const fn record_ping_failure(&mut self) {
+        self.connection.record_ping_failure();
+    }
+
+    /// Returns the connection health.
+    #[must_use]
+    pub const fn health(&self) -> &ConnectionHealth {
+        self.connection.health()
+    }
+
+    /// Creates a connected pair of active connections for testing.
+    ///
+    /// Both connections start in the Connected state.
+    #[must_use]
+    pub fn connected_pair(
+        peer_a: PeerId,
+        addr_a: SocketAddr,
+        peer_b: PeerId,
+        addr_b: SocketAddr,
+    ) -> (Self, Self) {
+        let (channel_a, channel_b) = MessageChannel::connected_pair();
+
+        let mut conn_a = PeerConnection::new(peer_a, addr_a);
+        let mut conn_b = PeerConnection::new(peer_b, addr_b);
+
+        conn_a.mark_connected();
+        conn_b.mark_connected();
+
+        let active_a = Self::new(conn_a, channel_a);
+        let active_b = Self::new(conn_b, channel_b);
+
+        (active_a, active_b)
     }
 }
 
@@ -418,7 +683,10 @@ impl ConnectionPool {
     /// Returns all active (usable) connections.
     #[must_use]
     pub fn active_connections(&self) -> Vec<&PeerConnection> {
-        self.connections.values().filter(|c| c.is_usable()).collect()
+        self.connections
+            .values()
+            .filter(|c| c.is_usable())
+            .collect()
     }
 
     /// Returns all connections in a specific state.
@@ -466,7 +734,7 @@ impl ConnectionPool {
     }
 }
 
-/// Thread-safe wrapper around ConnectionPool.
+/// Thread-safe wrapper around [`ConnectionPool`].
 #[derive(Debug, Clone)]
 pub struct SharedConnectionPool {
     inner: Arc<RwLock<ConnectionPool>>,
@@ -543,597 +811,5 @@ impl SharedConnectionPool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
-    use std::net::{IpAddr, Ipv4Addr};
-
-    fn make_peer_id() -> PeerId {
-        let signing_key = SigningKey::generate(&mut OsRng);
-        PeerId::from_public_key(&signing_key.verifying_key())
-    }
-
-    fn make_socket_addr(port: u16) -> SocketAddr {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, port as u8)), port)
-    }
-
-    fn make_connection(port: u16) -> PeerConnection {
-        PeerConnection::new(make_peer_id(), make_socket_addr(port))
-    }
-
-    // ========== ConnectionState Tests ==========
-
-    #[test]
-    fn connection_state_is_usable() {
-        assert!(!ConnectionState::Connecting.is_usable());
-        assert!(ConnectionState::Connected.is_usable());
-        assert!(!ConnectionState::Disconnecting.is_usable());
-        assert!(!ConnectionState::Disconnected.is_usable());
-        assert!(!ConnectionState::Failed.is_usable());
-    }
-
-    #[test]
-    fn connection_state_is_terminal() {
-        assert!(!ConnectionState::Connecting.is_terminal());
-        assert!(!ConnectionState::Connected.is_terminal());
-        assert!(!ConnectionState::Disconnecting.is_terminal());
-        assert!(ConnectionState::Disconnected.is_terminal());
-        assert!(ConnectionState::Failed.is_terminal());
-    }
-
-    // ========== ConnectionHealth Tests ==========
-
-    #[test]
-    fn connection_health_new() {
-        let health = ConnectionHealth::new();
-        assert!(health.last_rtt.is_none());
-        assert_eq!(health.successful_pings, 0);
-        assert_eq!(health.failed_pings, 0);
-        assert_eq!(health.messages_sent, 0);
-        assert_eq!(health.messages_received, 0);
-    }
-
-    #[test]
-    fn connection_health_record_ping_success() {
-        let mut health = ConnectionHealth::new();
-        let rtt = Duration::from_millis(50);
-
-        health.record_ping_success(rtt);
-
-        assert_eq!(health.last_rtt, Some(rtt));
-        assert_eq!(health.successful_pings, 1);
-        assert_eq!(health.failed_pings, 0);
-    }
-
-    #[test]
-    fn connection_health_record_ping_failure() {
-        let mut health = ConnectionHealth::new();
-
-        health.record_ping_failure();
-
-        assert!(health.last_rtt.is_none());
-        assert_eq!(health.successful_pings, 0);
-        assert_eq!(health.failed_pings, 1);
-    }
-
-    #[test]
-    fn connection_health_ping_success_rate() {
-        let mut health = ConnectionHealth::new();
-
-        // No pings yet - assume 100% healthy
-        assert!((health.ping_success_rate() - 1.0).abs() < f64::EPSILON);
-
-        // 3 successes, 1 failure = 75%
-        health.record_ping_success(Duration::from_millis(10));
-        health.record_ping_success(Duration::from_millis(10));
-        health.record_ping_success(Duration::from_millis(10));
-        health.record_ping_failure();
-
-        assert!((health.ping_success_rate() - 0.75).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn connection_health_message_tracking() {
-        let mut health = ConnectionHealth::new();
-
-        health.record_message_sent();
-        health.record_message_sent();
-        health.record_message_received();
-
-        assert_eq!(health.messages_sent, 2);
-        assert_eq!(health.messages_received, 1);
-    }
-
-    #[test]
-    fn connection_health_is_healthy() {
-        let mut health = ConnectionHealth::new();
-        let max_silence = Duration::from_secs(60);
-
-        // Fresh connection should be healthy
-        assert!(health.is_healthy(max_silence));
-
-        // After many failures, should be unhealthy
-        for _ in 0..10 {
-            health.record_ping_failure();
-        }
-        health.record_ping_success(Duration::from_millis(10)); // Touch last_seen
-        assert!(!health.is_healthy(max_silence)); // < 50% success rate
-    }
-
-    // ========== PeerConnection Tests ==========
-
-    #[test]
-    fn peer_connection_new() {
-        let peer_id = make_peer_id();
-        let addr = make_socket_addr(8080);
-
-        let conn = PeerConnection::new(peer_id, addr);
-
-        assert_eq!(conn.peer_id(), peer_id);
-        assert_eq!(conn.remote_addr(), addr);
-        assert_eq!(conn.state(), ConnectionState::Connecting);
-        assert!(conn.established_at().is_none());
-        assert!(conn.error_message().is_none());
-    }
-
-    #[test]
-    fn peer_connection_mark_connected() {
-        let mut conn = make_connection(8080);
-
-        assert_eq!(conn.state(), ConnectionState::Connecting);
-        assert!(conn.established_at().is_none());
-
-        conn.mark_connected();
-
-        assert_eq!(conn.state(), ConnectionState::Connected);
-        assert!(conn.established_at().is_some());
-        assert!(conn.is_usable());
-    }
-
-    #[test]
-    fn peer_connection_mark_disconnecting() {
-        let mut conn = make_connection(8080);
-
-        // Disconnecting from Connecting state does nothing
-        conn.mark_disconnecting();
-        assert_eq!(conn.state(), ConnectionState::Connecting);
-
-        // Disconnecting from Connected state works
-        conn.mark_connected();
-        conn.mark_disconnecting();
-        assert_eq!(conn.state(), ConnectionState::Disconnecting);
-    }
-
-    #[test]
-    fn peer_connection_mark_disconnected() {
-        let mut conn = make_connection(8080);
-        conn.mark_connected();
-        conn.mark_disconnecting();
-        conn.mark_disconnected();
-
-        assert_eq!(conn.state(), ConnectionState::Disconnected);
-        assert!(!conn.is_usable());
-    }
-
-    #[test]
-    fn peer_connection_mark_failed() {
-        let mut conn = make_connection(8080);
-
-        conn.mark_failed("Connection refused");
-
-        assert_eq!(conn.state(), ConnectionState::Failed);
-        assert_eq!(conn.error_message(), Some("Connection refused"));
-        assert!(!conn.is_usable());
-    }
-
-    #[test]
-    fn peer_connection_health_tracking() {
-        let mut conn = make_connection(8080);
-        conn.mark_connected();
-
-        conn.record_ping_success(Duration::from_millis(50));
-        conn.record_message_sent();
-        conn.record_message_received();
-
-        assert_eq!(conn.health().successful_pings, 1);
-        assert_eq!(conn.health().messages_sent, 1);
-        assert_eq!(conn.health().messages_received, 1);
-    }
-
-    #[test]
-    fn peer_connection_duration() {
-        let mut conn = make_connection(8080);
-
-        // Not established yet
-        assert!(conn.connection_duration().is_none());
-
-        conn.mark_connected();
-        std::thread::sleep(Duration::from_millis(10));
-
-        let duration = conn.connection_duration();
-        assert!(duration.is_some());
-        assert!(duration.unwrap() >= Duration::from_millis(10));
-    }
-
-    // ========== ConnectionPoolConfig Tests ==========
-
-    #[test]
-    fn connection_pool_config_default() {
-        let config = ConnectionPoolConfig::default();
-
-        assert_eq!(config.max_connections, 100);
-        assert_eq!(config.connect_timeout, Duration::from_secs(10));
-        assert_eq!(config.ping_interval, Duration::from_secs(30));
-        assert_eq!(config.max_silence, Duration::from_secs(90));
-    }
-
-    #[test]
-    fn connection_pool_config_builder() {
-        let config = ConnectionPoolConfig::new(50)
-            .with_connect_timeout(Duration::from_secs(5))
-            .with_ping_interval(Duration::from_secs(15))
-            .with_max_silence(Duration::from_secs(45));
-
-        assert_eq!(config.max_connections, 50);
-        assert_eq!(config.connect_timeout, Duration::from_secs(5));
-        assert_eq!(config.ping_interval, Duration::from_secs(15));
-        assert_eq!(config.max_silence, Duration::from_secs(45));
-    }
-
-    // ========== ConnectionPool Tests ==========
-
-    #[test]
-    fn connection_pool_new() {
-        let pool = ConnectionPool::with_defaults();
-
-        assert!(pool.is_empty());
-        assert_eq!(pool.len(), 0);
-        assert_eq!(pool.active_count(), 0);
-    }
-
-    #[test]
-    fn connection_pool_add_connection() {
-        let mut pool = ConnectionPool::with_defaults();
-        let conn = make_connection(8080);
-        let peer_id = conn.peer_id();
-
-        pool.add_connection(conn).expect("should add connection");
-
-        assert_eq!(pool.len(), 1);
-        assert!(pool.contains(&peer_id));
-    }
-
-    #[test]
-    fn connection_pool_add_duplicate_fails() {
-        let mut pool = ConnectionPool::with_defaults();
-        let peer_id = make_peer_id();
-        let addr = make_socket_addr(8080);
-
-        let conn1 = PeerConnection::new(peer_id, addr);
-        let conn2 = PeerConnection::new(peer_id, addr);
-
-        pool.add_connection(conn1).expect("first add should succeed");
-        let result = pool.add_connection(conn2);
-
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), P2pError::Connection(_)));
-    }
-
-    #[test]
-    fn connection_pool_max_connections() {
-        let config = ConnectionPoolConfig::new(2);
-        let mut pool = ConnectionPool::new(config);
-
-        pool.add_connection(make_connection(8081))
-            .expect("first add should succeed");
-        pool.add_connection(make_connection(8082))
-            .expect("second add should succeed");
-
-        assert!(pool.is_full());
-
-        let result = pool.add_connection(make_connection(8083));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn connection_pool_get_and_get_mut() {
-        let mut pool = ConnectionPool::with_defaults();
-        let conn = make_connection(8080);
-        let peer_id = conn.peer_id();
-
-        pool.add_connection(conn).expect("should add connection");
-
-        // Get immutable reference
-        let conn_ref = pool.get(&peer_id);
-        assert!(conn_ref.is_some());
-        assert_eq!(conn_ref.unwrap().state(), ConnectionState::Connecting);
-
-        // Get mutable reference and modify
-        let conn_mut = pool.get_mut(&peer_id);
-        assert!(conn_mut.is_some());
-        conn_mut.unwrap().mark_connected();
-
-        // Verify modification
-        assert_eq!(pool.get(&peer_id).unwrap().state(), ConnectionState::Connected);
-    }
-
-    #[test]
-    fn connection_pool_remove() {
-        let mut pool = ConnectionPool::with_defaults();
-        let conn = make_connection(8080);
-        let peer_id = conn.peer_id();
-
-        pool.add_connection(conn).expect("should add connection");
-        assert!(pool.contains(&peer_id));
-
-        let removed = pool.remove(&peer_id);
-        assert!(removed.is_some());
-        assert!(!pool.contains(&peer_id));
-        assert!(pool.is_empty());
-    }
-
-    #[test]
-    fn connection_pool_active_count() {
-        let mut pool = ConnectionPool::with_defaults();
-
-        let mut conn1 = make_connection(8081);
-        let mut conn2 = make_connection(8082);
-        let conn3 = make_connection(8083);
-
-        conn1.mark_connected();
-        conn2.mark_connected();
-        // conn3 is still Connecting
-
-        pool.add_connection(conn1).expect("add conn1");
-        pool.add_connection(conn2).expect("add conn2");
-        pool.add_connection(conn3).expect("add conn3");
-
-        assert_eq!(pool.len(), 3);
-        assert_eq!(pool.active_count(), 2);
-    }
-
-    #[test]
-    fn connection_pool_peer_ids() {
-        let mut pool = ConnectionPool::with_defaults();
-
-        let conn1 = make_connection(8081);
-        let conn2 = make_connection(8082);
-        let id1 = conn1.peer_id();
-        let id2 = conn2.peer_id();
-
-        pool.add_connection(conn1).expect("add conn1");
-        pool.add_connection(conn2).expect("add conn2");
-
-        let ids = pool.peer_ids();
-        assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&id1));
-        assert!(ids.contains(&id2));
-    }
-
-    #[test]
-    fn connection_pool_active_connections() {
-        let mut pool = ConnectionPool::with_defaults();
-
-        let mut conn1 = make_connection(8081);
-        let mut conn2 = make_connection(8082);
-        let mut conn3 = make_connection(8083);
-
-        conn1.mark_connected();
-        conn2.mark_failed("error");
-        conn3.mark_connected();
-
-        pool.add_connection(conn1).expect("add");
-        pool.add_connection(conn2).expect("add");
-        pool.add_connection(conn3).expect("add");
-
-        let active = pool.active_connections();
-        assert_eq!(active.len(), 2);
-    }
-
-    #[test]
-    fn connection_pool_connections_in_state() {
-        let mut pool = ConnectionPool::with_defaults();
-
-        let mut conn1 = make_connection(8081);
-        let mut conn2 = make_connection(8082);
-        let conn3 = make_connection(8083);
-
-        conn1.mark_connected();
-        conn2.mark_connected();
-        // conn3 is Connecting
-
-        pool.add_connection(conn1).expect("add");
-        pool.add_connection(conn2).expect("add");
-        pool.add_connection(conn3).expect("add");
-
-        let connected = pool.connections_in_state(ConnectionState::Connected);
-        let connecting = pool.connections_in_state(ConnectionState::Connecting);
-
-        assert_eq!(connected.len(), 2);
-        assert_eq!(connecting.len(), 1);
-    }
-
-    #[test]
-    fn connection_pool_cleanup_terminal() {
-        let mut pool = ConnectionPool::with_defaults();
-
-        let mut conn1 = make_connection(8081);
-        let mut conn2 = make_connection(8082);
-        let mut conn3 = make_connection(8083);
-
-        conn1.mark_connected();
-        conn2.mark_failed("error");
-        conn3.mark_connected();
-        conn3.mark_disconnecting();
-        conn3.mark_disconnected();
-
-        pool.add_connection(conn1).expect("add");
-        pool.add_connection(conn2).expect("add");
-        pool.add_connection(conn3).expect("add");
-
-        assert_eq!(pool.len(), 3);
-
-        let removed = pool.cleanup_terminal();
-        assert_eq!(removed, 2); // conn2 (Failed) and conn3 (Disconnected)
-        assert_eq!(pool.len(), 1);
-    }
-
-    #[test]
-    fn connection_pool_iter() {
-        let mut pool = ConnectionPool::with_defaults();
-
-        pool.add_connection(make_connection(8081)).expect("add");
-        pool.add_connection(make_connection(8082)).expect("add");
-
-        let count = pool.iter().count();
-        assert_eq!(count, 2);
-    }
-
-    #[test]
-    fn connection_pool_iter_mut() {
-        let mut pool = ConnectionPool::with_defaults();
-
-        pool.add_connection(make_connection(8081)).expect("add");
-        pool.add_connection(make_connection(8082)).expect("add");
-
-        // Mark all as connected using iter_mut
-        for (_, conn) in pool.iter_mut() {
-            conn.mark_connected();
-        }
-
-        assert_eq!(pool.active_count(), 2);
-    }
-
-    // ========== SharedConnectionPool Tests ==========
-
-    #[tokio::test]
-    async fn shared_connection_pool_basic_operations() {
-        let pool = SharedConnectionPool::with_defaults();
-
-        assert!(pool.is_empty().await);
-
-        let conn = make_connection(8080);
-        let peer_id = conn.peer_id();
-
-        pool.add_connection(conn).await.expect("should add");
-
-        assert_eq!(pool.len().await, 1);
-        assert!(pool.contains(&peer_id).await);
-
-        pool.remove(&peer_id).await;
-        assert!(pool.is_empty().await);
-    }
-
-    #[tokio::test]
-    async fn shared_connection_pool_concurrent_access() {
-        let pool = SharedConnectionPool::with_defaults();
-
-        let pool1 = pool.clone();
-        let pool2 = pool.clone();
-
-        let handle1 = tokio::spawn(async move {
-            for i in 0..10 {
-                let conn = make_connection(8000 + i);
-                let _ = pool1.add_connection(conn).await;
-            }
-        });
-
-        let handle2 = tokio::spawn(async move {
-            for _ in 0..50 {
-                let _ = pool2.len().await;
-                tokio::task::yield_now().await;
-            }
-        });
-
-        handle1.await.expect("task 1 should complete");
-        handle2.await.expect("task 2 should complete");
-
-        // Should have added some connections (exact count depends on timing)
-        assert!(pool.len().await > 0);
-    }
-
-    #[tokio::test]
-    async fn shared_connection_pool_cleanup_terminal() {
-        let pool = SharedConnectionPool::with_defaults();
-
-        let mut conn1 = make_connection(8081);
-        let mut conn2 = make_connection(8082);
-
-        conn1.mark_connected();
-        conn2.mark_failed("test error");
-
-        pool.add_connection(conn1).await.expect("add");
-        pool.add_connection(conn2).await.expect("add");
-
-        assert_eq!(pool.len().await, 2);
-
-        let removed = pool.cleanup_terminal().await;
-        assert_eq!(removed, 1);
-        assert_eq!(pool.len().await, 1);
-    }
-
-    // ========== Proptest ==========
-
-    mod proptest_tests {
-        use super::*;
-        use proptest::prelude::*;
-
-        proptest! {
-            #[test]
-            fn connection_health_ping_rate_bounds(
-                successes in 0u64..1000,
-                failures in 0u64..1000
-            ) {
-                let mut health = ConnectionHealth::new();
-                
-                for _ in 0..successes {
-                    health.record_ping_success(Duration::from_millis(10));
-                }
-                for _ in 0..failures {
-                    health.record_ping_failure();
-                }
-                
-                let rate = health.ping_success_rate();
-                prop_assert!(rate >= 0.0 && rate <= 1.0);
-            }
-
-            #[test]
-            fn connection_pool_add_up_to_max(max_conns in 1usize..20) {
-                let config = ConnectionPoolConfig::new(max_conns);
-                let mut pool = ConnectionPool::new(config);
-                
-                for i in 0..max_conns {
-                    let result = pool.add_connection(make_connection(8000 + i as u16));
-                    prop_assert!(result.is_ok());
-                }
-                
-                prop_assert!(pool.is_full());
-                prop_assert_eq!(pool.len(), max_conns);
-            }
-
-            #[test]
-            fn connection_state_transitions_valid(
-                should_connect in any::<bool>(),
-                should_fail in any::<bool>()
-            ) {
-                let mut conn = make_connection(8080);
-                prop_assert_eq!(conn.state(), ConnectionState::Connecting);
-                
-                if should_fail {
-                    conn.mark_failed("test");
-                    prop_assert_eq!(conn.state(), ConnectionState::Failed);
-                } else if should_connect {
-                    conn.mark_connected();
-                    prop_assert_eq!(conn.state(), ConnectionState::Connected);
-                    
-                    conn.mark_disconnecting();
-                    prop_assert_eq!(conn.state(), ConnectionState::Disconnecting);
-                    
-                    conn.mark_disconnected();
-                    prop_assert_eq!(conn.state(), ConnectionState::Disconnected);
-                }
-            }
-        }
-    }
-}
+#[path = "connection_tests.rs"]
+mod tests;

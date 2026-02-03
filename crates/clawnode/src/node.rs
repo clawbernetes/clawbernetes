@@ -10,16 +10,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use claw_proto::{GatewayMessage, GpuCapability, GpuMetricsProto, NodeCapabilities, NodeId, NodeMessage};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
 use crate::config::NodeConfig;
 use crate::error::NodeError;
-use crate::gateway::{ConnectionState, GatewayClient, GatewayEvent};
-use crate::gpu::{FakeGpuDetector, GpuDetector, GpuInfo, GpuMetrics, NvidiaDetector};
+use crate::gateway::{GatewayClient, GatewayEvent};
+use crate::gpu::{FakeGpuDetector, GpuDetector, NvidiaDetector};
+use crate::handlers::{handle_gateway_message, HandlerContext};
 use crate::metrics::to_proto_metrics;
 use crate::runtime::{ContainerRuntime, FakeContainerRuntime};
+use crate::state::NodeState as NodeStateData;
 
 /// Shutdown signal receiver.
 pub type ShutdownRx = tokio::sync::broadcast::Receiver<()>;
@@ -27,9 +29,9 @@ pub type ShutdownRx = tokio::sync::broadcast::Receiver<()>;
 /// Shutdown signal sender.
 pub type ShutdownTx = tokio::sync::broadcast::Sender<()>;
 
-/// Node state.
+/// Node lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeState {
+pub enum NodeLifecycleState {
     /// Node is initializing.
     Initializing,
     /// Node is running and connected.
@@ -42,6 +44,9 @@ pub enum NodeState {
     Stopped,
 }
 
+/// Alias for backward compatibility.
+pub type NodeState = NodeLifecycleState;
+
 /// The main node orchestrator.
 ///
 /// Owns all components and coordinates their operation.
@@ -50,17 +55,22 @@ pub struct Node {
     config: NodeConfig,
     /// Unique node identifier.
     node_id: NodeId,
-    /// Current node state.
-    state: NodeState,
+    /// Current node lifecycle state.
+    lifecycle_state: NodeLifecycleState,
     /// Gateway client.
     gateway: GatewayClient,
     /// GPU detector.
     gpu_detector: Arc<dyn GpuDetector>,
     /// Container runtime.
-    #[allow(dead_code)]
     runtime: Arc<dyn ContainerRuntime>,
+    /// Node state (workloads, GPUs, etc.).
+    node_state: Arc<RwLock<NodeStateData>>,
     /// Shutdown signal sender.
     shutdown_tx: ShutdownTx,
+    /// Heartbeat interval in seconds (from gateway registration).
+    heartbeat_interval_secs: Arc<RwLock<u32>>,
+    /// Metrics interval in seconds (from gateway registration).
+    metrics_interval_secs: Arc<RwLock<u32>>,
 }
 
 impl Node {
@@ -120,14 +130,20 @@ impl Node {
         // Create shutdown channel
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
+        // Create node state with detected GPUs
+        let node_state = Arc::new(RwLock::new(NodeStateData::with_gpus(gpu_count as u32)));
+
         Ok(Self {
             config,
             node_id,
-            state: NodeState::Initializing,
+            lifecycle_state: NodeLifecycleState::Initializing,
             gateway,
             gpu_detector,
             runtime,
+            node_state,
             shutdown_tx,
+            heartbeat_interval_secs: Arc::new(RwLock::new(30)), // Default 30s
+            metrics_interval_secs: Arc::new(RwLock::new(10)),   // Default 10s
         })
     }
 
@@ -145,14 +161,21 @@ impl Node {
 
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
+        // Detect GPU count for state
+        let gpu_count = gpu_detector.detect_gpus().map(|g| g.len()).unwrap_or(0);
+        let node_state = Arc::new(RwLock::new(NodeStateData::with_gpus(gpu_count as u32)));
+
         Self {
             config,
             node_id,
-            state: NodeState::Initializing,
+            lifecycle_state: NodeLifecycleState::Initializing,
             gateway,
             gpu_detector,
             runtime,
+            node_state,
             shutdown_tx,
+            heartbeat_interval_secs: Arc::new(RwLock::new(30)),
+            metrics_interval_secs: Arc::new(RwLock::new(10)),
         }
     }
 
@@ -178,10 +201,10 @@ impl Node {
         &self.config.name
     }
 
-    /// Get the current node state.
+    /// Get the current node lifecycle state.
     #[must_use]
-    pub fn state(&self) -> NodeState {
-        self.state
+    pub fn state(&self) -> NodeLifecycleState {
+        self.lifecycle_state
     }
 
     /// Get a reference to the gateway client (for testing).
@@ -210,7 +233,7 @@ impl Node {
     ///
     /// Returns an error if a fatal error occurs.
     pub async fn run(mut self) -> Result<(), NodeError> {
-        self.state = NodeState::Running;
+        self.lifecycle_state = NodeLifecycleState::Running;
         info!(node_id = %self.node_id, name = %self.config.name, "node starting");
 
         // Connect to gateway
@@ -224,6 +247,10 @@ impl Node {
                 return Err(e);
             }
         };
+
+        // Set up heartbeat interval (default, will be updated from gateway registration)
+        let heartbeat_interval = Arc::clone(&self.heartbeat_interval_secs);
+        let mut heartbeat_ticker = interval(Duration::from_secs(30));
 
         // Set up metrics collection interval
         let metrics_interval = Duration::from_secs(self.config.gpu.poll_interval_secs);
@@ -259,6 +286,16 @@ impl Node {
                     }
                 }
 
+                // Heartbeat timer
+                _ = heartbeat_ticker.tick() => {
+                    let interval_secs = *heartbeat_interval.read().await;
+                    if interval_secs > 0 {
+                        if let Err(e) = self.send_heartbeat(&gateway_tx).await {
+                            warn!(error = %e, "failed to send heartbeat");
+                        }
+                    }
+                }
+
                 // Metrics collection timer
                 _ = metrics_ticker.tick() => {
                     if let Err(e) = self.collect_and_send_metrics(&gateway_tx).await {
@@ -269,7 +306,7 @@ impl Node {
                 // Shutdown signal
                 _ = shutdown_rx.recv() => {
                     info!("shutdown signal received, stopping node");
-                    self.state = NodeState::ShuttingDown;
+                    self.lifecycle_state = NodeLifecycleState::ShuttingDown;
                     break;
                 }
             }
@@ -277,7 +314,7 @@ impl Node {
 
         // Cleanup
         self.gateway.stop();
-        self.state = NodeState::Stopped;
+        self.lifecycle_state = NodeLifecycleState::Stopped;
         info!("node stopped");
 
         Ok(())
@@ -287,7 +324,7 @@ impl Node {
     async fn handle_gateway_event(
         &mut self,
         event: GatewayEvent,
-        _gateway_tx: &mpsc::Sender<NodeMessage>,
+        gateway_tx: &mpsc::Sender<NodeMessage>,
     ) -> Result<(), NodeError> {
         match event {
             GatewayEvent::Connected => {
@@ -295,13 +332,13 @@ impl Node {
             }
             GatewayEvent::Disconnected { reason } => {
                 warn!(reason = %reason, "disconnected from gateway");
-                self.state = NodeState::Reconnecting;
+                self.lifecycle_state = NodeLifecycleState::Reconnecting;
             }
             GatewayEvent::Reconnecting { attempt, delay } => {
                 info!(attempt, delay_ms = delay.as_millis(), "reconnecting to gateway");
             }
             GatewayEvent::Message(msg) => {
-                self.handle_gateway_message(msg).await?;
+                self.handle_gateway_message(msg, gateway_tx).await?;
             }
             GatewayEvent::Error(error) => {
                 error!(error = %error, "gateway error");
@@ -311,37 +348,66 @@ impl Node {
     }
 
     /// Handle a message from the gateway.
-    async fn handle_gateway_message(&mut self, msg: GatewayMessage) -> Result<(), NodeError> {
-        match &msg {
-            GatewayMessage::Registered { node_id, .. } => {
-                info!(node_id = %node_id, "node registered with gateway");
+    async fn handle_gateway_message(
+        &mut self,
+        msg: GatewayMessage,
+        gateway_tx: &mpsc::Sender<NodeMessage>,
+    ) -> Result<(), NodeError> {
+        // Update intervals from registration response
+        if let GatewayMessage::Registered {
+            heartbeat_interval_secs,
+            metrics_interval_secs,
+            ..
+        } = &msg
+        {
+            *self.heartbeat_interval_secs.write().await = *heartbeat_interval_secs;
+            *self.metrics_interval_secs.write().await = *metrics_interval_secs;
+            info!(
+                heartbeat_interval = heartbeat_interval_secs,
+                metrics_interval = metrics_interval_secs,
+                "updated intervals from gateway"
+            );
+        }
+
+        // Use the handlers module for full message processing
+        let mut state = self.node_state.write().await;
+        let mut ctx = HandlerContext {
+            state: &mut state,
+            runtime: self.runtime.as_ref(),
+            node_id: self.node_id,
+        };
+
+        match handle_gateway_message(msg, &mut ctx) {
+            Ok(Some(response)) => {
+                // Send response back to gateway
+                gateway_tx
+                    .send(response)
+                    .await
+                    .map_err(|e| NodeError::GatewayConnection(format!("send failed: {e}")))?;
             }
-            GatewayMessage::HeartbeatAck { server_time } => {
-                debug!(server_time = %server_time, "heartbeat acknowledged");
+            Ok(None) => {
+                // No response needed
             }
-            GatewayMessage::StartWorkload { workload_id, spec } => {
-                info!(workload_id = %workload_id, image = %spec.image, "received workload start request");
-                // TODO: Implement workload scheduling
-            }
-            GatewayMessage::StopWorkload {
-                workload_id,
-                grace_period_secs,
-            } => {
-                info!(workload_id = %workload_id, grace_period = grace_period_secs, "received workload stop request");
-                // TODO: Implement workload stopping
-            }
-            GatewayMessage::RequestMetrics => {
-                debug!("received metrics request");
-            }
-            GatewayMessage::RequestCapabilities => {
-                debug!("received capabilities request");
-            }
-            GatewayMessage::Error { code, message } => {
-                error!(code, message = %message, "received error from gateway");
+            Err(e) => {
+                warn!(error = %e, "handler error");
+                // Don't propagate non-fatal errors
             }
         }
 
         Ok(())
+    }
+
+    /// Send a heartbeat to the gateway.
+    async fn send_heartbeat(
+        &self,
+        gateway_tx: &mpsc::Sender<NodeMessage>,
+    ) -> Result<(), NodeError> {
+        debug!("sending heartbeat");
+        let msg = NodeMessage::heartbeat(self.node_id);
+        gateway_tx
+            .send(msg)
+            .await
+            .map_err(|e| NodeError::GatewayConnection(format!("heartbeat send failed: {e}")))
     }
 
     /// Collect and send metrics to the gateway.
@@ -396,6 +462,7 @@ fn system_memory_mib() -> u64 {
 mod tests {
     use super::*;
     use crate::gateway::ConnectionState;
+    use crate::gpu::{GpuInfo, GpuMetrics};
 
     fn test_config() -> NodeConfig {
         NodeConfig {

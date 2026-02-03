@@ -28,8 +28,8 @@ pub mod network;
 pub mod protocol;
 
 pub use connection::{
-    ConnectionHealth, ConnectionPool, ConnectionPoolConfig, ConnectionState, PeerConnection,
-    SharedConnectionPool,
+    ActiveConnection, ConnectionHealth, ConnectionPool, ConnectionPoolConfig, ConnectionState,
+    MessageChannel, PeerConnection, SharedConnectionPool,
 };
 pub use discovery::{BootstrapNode, PeerTable};
 pub use error::P2pError;

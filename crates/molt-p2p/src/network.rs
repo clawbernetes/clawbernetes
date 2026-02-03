@@ -170,37 +170,37 @@ impl NetworkStats {
     }
 
     /// Records that the network went offline.
-    pub fn mark_offline(&mut self) {
+    pub const fn mark_offline(&mut self) {
         self.online_since = None;
     }
 
     /// Records a message sent.
-    pub fn record_message_sent(&mut self) {
+    pub const fn record_message_sent(&mut self) {
         self.messages_sent += 1;
     }
 
     /// Records a message received.
-    pub fn record_message_received(&mut self) {
+    pub const fn record_message_received(&mut self) {
         self.messages_received += 1;
     }
 
     /// Records a successful join.
-    pub fn record_successful_join(&mut self) {
+    pub const fn record_successful_join(&mut self) {
         self.successful_joins += 1;
     }
 
     /// Records a failed join.
-    pub fn record_failed_join(&mut self) {
+    pub const fn record_failed_join(&mut self) {
         self.failed_joins += 1;
     }
 
     /// Records a capacity broadcast.
-    pub fn record_announcement_broadcast(&mut self) {
+    pub const fn record_announcement_broadcast(&mut self) {
         self.announcements_broadcast += 1;
     }
 
     /// Records a provider search.
-    pub fn record_provider_search(&mut self) {
+    pub const fn record_provider_search(&mut self) {
         self.provider_searches += 1;
     }
 }
@@ -244,7 +244,7 @@ impl ProviderSearchResult {
     }
 }
 
-/// Inner state for MoltNetwork (behind RwLock).
+/// Inner state for [`MoltNetwork`] (behind [`RwLock`]).
 #[derive(Debug)]
 struct NetworkInner {
     state: NetworkState,
@@ -349,6 +349,7 @@ impl MoltNetwork {
     /// # Errors
     ///
     /// Returns an error if already online or if joining fails.
+    #[allow(clippy::significant_drop_tightening)] // Simplified impl; guard usage is intentional
     pub async fn join(&self, bootstrap_nodes: &[String]) -> Result<(), P2pError> {
         let mut inner = self.inner.write().await;
 
@@ -402,6 +403,7 @@ impl MoltNetwork {
     /// # Errors
     ///
     /// Returns an error if not currently online.
+    #[allow(clippy::significant_drop_tightening)] // Multiple lock acquisitions needed
     pub async fn leave(&self) -> Result<(), P2pError> {
         let mut inner = self.inner.write().await;
 
@@ -441,6 +443,7 @@ impl MoltNetwork {
     /// # Errors
     ///
     /// Returns an error if not online.
+    #[allow(clippy::significant_drop_tightening)] // Guard held for state consistency
     pub async fn broadcast_capacity(
         &self,
         announcement: CapacityAnnouncement,
@@ -479,6 +482,7 @@ impl MoltNetwork {
     /// # Errors
     ///
     /// Returns an error if not online.
+    #[allow(clippy::significant_drop_tightening)] // Guard held for atomic search
     pub async fn find_providers(
         &self,
         requirements: &CapacityRequirements,

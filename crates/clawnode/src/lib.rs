@@ -24,6 +24,6 @@ pub mod runtime;
 pub mod state;
 
 pub use error::NodeError;
-pub use handlers::{get_workload_status, handle_gateway_message};
+pub use handlers::{get_workload_status, handle_gateway_message, HandlerContext};
 pub use node::Node;
 pub use state::{GatewayConnectionState, NodeState, WorkloadInfo};
