@@ -106,7 +106,7 @@ impl Default for MetricsCollectorConfig {
 }
 
 /// Collects GPU metrics periodically.
-pub struct MetricsCollector<D: GpuDetector> {
+pub struct MetricsCollector<D: GpuDetector + ?Sized> {
     /// GPU detector.
     detector: Arc<D>,
     /// Node ID.
@@ -115,7 +115,7 @@ pub struct MetricsCollector<D: GpuDetector> {
     config: MetricsCollectorConfig,
 }
 
-impl<D: GpuDetector + 'static> MetricsCollector<D> {
+impl<D: GpuDetector + ?Sized + 'static> MetricsCollector<D> {
     /// Create a new metrics collector.
     #[must_use]
     pub fn new(detector: Arc<D>, node_id: NodeId, config: MetricsCollectorConfig) -> Self {

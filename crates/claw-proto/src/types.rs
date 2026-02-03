@@ -131,7 +131,7 @@ pub struct NodeCapabilities {
 impl NodeCapabilities {
     /// Create new capabilities.
     #[must_use]
-    pub fn new(cpu_cores: u32, memory_mib: u64) -> Self {
+    pub const fn new(cpu_cores: u32, memory_mib: u64) -> Self {
         Self {
             gpus: Vec::new(),
             memory_mib,
@@ -221,73 +221,6 @@ impl fmt::Display for WorkloadState {
     }
 }
 
-/// Workload specification.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkloadSpec {
-    /// Container image.
-    pub image: String,
-    /// Command to run (optional override).
-    pub command: Option<Vec<String>>,
-    /// Environment variables.
-    pub env: Vec<(String, String)>,
-    /// GPU indices to attach.
-    pub gpu_indices: Vec<u32>,
-    /// Memory limit in MiB.
-    pub memory_limit_mib: Option<u64>,
-    /// CPU limit (fractional cores).
-    pub cpu_limit: Option<f32>,
-}
-
-impl WorkloadSpec {
-    /// Create a new workload spec with just an image.
-    #[must_use]
-    pub fn new(image: impl Into<String>) -> Self {
-        Self {
-            image: image.into(),
-            command: None,
-            env: Vec::new(),
-            gpu_indices: Vec::new(),
-            memory_limit_mib: None,
-            cpu_limit: None,
-        }
-    }
-
-    /// Set the command.
-    #[must_use]
-    pub fn with_command(mut self, cmd: Vec<String>) -> Self {
-        self.command = Some(cmd);
-        self
-    }
-
-    /// Add an environment variable.
-    #[must_use]
-    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.env.push((key.into(), value.into()));
-        self
-    }
-
-    /// Set GPU indices.
-    #[must_use]
-    pub fn with_gpus(mut self, indices: Vec<u32>) -> Self {
-        self.gpu_indices = indices;
-        self
-    }
-
-    /// Set memory limit.
-    #[must_use]
-    pub fn with_memory_limit(mut self, limit_mib: u64) -> Self {
-        self.memory_limit_mib = Some(limit_mib);
-        self
-    }
-
-    /// Set CPU limit.
-    #[must_use]
-    pub fn with_cpu_limit(mut self, limit: f32) -> Self {
-        self.cpu_limit = Some(limit);
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,14 +248,5 @@ mod tests {
     fn test_workload_state_is_terminal() {
         assert!(!WorkloadState::Pending.is_terminal());
         assert!(WorkloadState::Failed.is_terminal());
-    }
-
-    #[test]
-    fn test_workload_spec_builder() {
-        let spec = WorkloadSpec::new("nginx:latest")
-            .with_gpus(vec![0])
-            .with_memory_limit(1024);
-        assert_eq!(spec.image, "nginx:latest");
-        assert_eq!(spec.gpu_indices, vec![0]);
     }
 }

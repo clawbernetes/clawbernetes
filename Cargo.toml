@@ -9,6 +9,7 @@ members = [
     "crates/molt-agent",
     "crates/molt-market",
     "crates/molt-attestation",
+    "crates/molt-integration-tests",
 ]
 
 [workspace.package]

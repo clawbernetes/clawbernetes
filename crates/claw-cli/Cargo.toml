@@ -27,6 +27,9 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# UUID
+uuid = { workspace = true }
+
 # Internal
 clawnode = { path = "../clawnode" }
 molt-core = { path = "../molt-core" }

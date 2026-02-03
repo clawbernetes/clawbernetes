@@ -17,9 +17,13 @@ pub mod config;
 pub mod error;
 pub mod gateway;
 pub mod gpu;
+pub mod handlers;
 pub mod metrics;
+pub mod node;
 pub mod runtime;
+pub mod state;
 
 pub use error::NodeError;
-
-// Re-exports will be added as types are implemented
+pub use handlers::{get_workload_status, handle_gateway_message};
+pub use node::Node;
+pub use state::{GatewayConnectionState, NodeState, WorkloadInfo};

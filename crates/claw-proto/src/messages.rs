@@ -3,9 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{
-    GpuMetricsProto, NodeCapabilities, NodeId, WorkloadId, WorkloadSpec, WorkloadState,
-};
+use crate::types::{GpuMetricsProto, NodeCapabilities, NodeId, WorkloadId, WorkloadState};
+use crate::workload::WorkloadSpec;
 
 /// Messages sent from node to gateway.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -61,7 +60,7 @@ pub enum NodeMessage {
 }
 
 /// Messages sent from gateway to node.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GatewayMessage {
     /// Registered.
@@ -169,7 +168,7 @@ impl NodeMessage {
 impl GatewayMessage {
     /// Create registered response.
     #[must_use]
-    pub fn registered(node_id: NodeId, heartbeat_interval_secs: u32, metrics_interval_secs: u32) -> Self {
+    pub const fn registered(node_id: NodeId, heartbeat_interval_secs: u32, metrics_interval_secs: u32) -> Self {
         Self::Registered {
             node_id,
             heartbeat_interval_secs,
