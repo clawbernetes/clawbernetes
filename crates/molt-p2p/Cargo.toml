@@ -1,0 +1,56 @@
+[package]
+name = "molt-p2p"
+description = "MOLT P2P networking — peer discovery, gossip protocol, capacity announcements"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Async
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+
+# Networking
+quinn = { workspace = true }
+rustls = { workspace = true }
+
+# Crypto
+ed25519-dalek = { workspace = true }
+blake3 = { workspace = true }
+rand = { workspace = true }
+bs58 = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+prost = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Internal
+molt-core = { path = "../molt-core" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+test-case = { workspace = true }
+tokio-test = "0.4"
+
+[[bench]]
+name = "p2p_benchmarks"
+harness = false
+
+[lints]
+workspace = true

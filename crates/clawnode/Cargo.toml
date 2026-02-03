@@ -1,0 +1,71 @@
+[package]
+name = "clawnode"
+description = "Clawbernetes node agent — GPU detection, container runtime, metrics streaming"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Core
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+prost = { workspace = true }
+toml = "0.8"
+
+# Networking
+tokio-tungstenite = { workspace = true }
+
+# Crypto
+ed25519-dalek = { workspace = true }
+blake3 = { workspace = true }
+rand = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Internal
+claw-proto = { path = "../claw-proto" }
+molt-core = { path = "../molt-core", optional = true }
+molt-p2p = { path = "../molt-p2p", optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+test-case = { workspace = true }
+tokio-test = "0.4"
+tempfile = "3.14"
+
+[features]
+default = []
+molt = ["dep:molt-core", "dep:molt-p2p"]
+
+[[bin]]
+name = "clawnode"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[[bench]]
+name = "node_benchmarks"
+harness = false
+
+[lints]
+workspace = true

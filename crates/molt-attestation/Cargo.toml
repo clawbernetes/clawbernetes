@@ -1,0 +1,41 @@
+[package]
+name = "molt-attestation"
+description = "MOLT attestation — hardware verification, execution proofs, reputation updates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Crypto
+ed25519-dalek = { workspace = true }
+blake3 = { workspace = true }
+rand = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Internal
+molt-core = { path = "../molt-core" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+test-case = { workspace = true }
+
+[[bench]]
+name = "attestation_benchmarks"
+harness = false
+
+[lints]
+workspace = true

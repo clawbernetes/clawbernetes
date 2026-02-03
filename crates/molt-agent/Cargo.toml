@@ -1,0 +1,48 @@
+[package]
+name = "molt-agent"
+description = "MOLT autonomous agent — provider/buyer logic, autonomy modes, negotiation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Async
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Internal
+molt-core = { path = "../molt-core" }
+molt-p2p = { path = "../molt-p2p" }
+molt-market = { path = "../molt-market" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+test-case = { workspace = true }
+tokio-test = "0.4"
+
+[[bench]]
+name = "agent_benchmarks"
+harness = false
+
+[lints]
+workspace = true

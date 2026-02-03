@@ -1,0 +1,43 @@
+[package]
+name = "claw-cli"
+description = "Clawbernetes CLI — cluster management, MOLT operations, diagnostics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Async
+tokio = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Internal
+clawnode = { path = "../clawnode" }
+molt-core = { path = "../molt-core" }
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+
+[[bin]]
+name = "clawbernetes"
+path = "src/main.rs"
+
+[lints]
+workspace = true

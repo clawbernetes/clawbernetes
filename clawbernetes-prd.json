@@ -1,0 +1,1592 @@
+{
+  "$schema": "https://clawbernetes.com/schemas/prd/v1.json",
+  "document": {
+    "title": "Clawbernetes — Product Requirements Document",
+    "version": "1.0.0",
+    "status": "draft",
+    "created": "2026-02-02",
+    "updated": "2026-02-02",
+    "authors": [
+      {
+        "name": "Omar Sobh",
+        "role": "Founder & CEO",
+        "email": "omar@clawbernetes.com"
+      }
+    ],
+    "confidentiality": "CONFIDENTIAL — Internal Use Only"
+  },
+
+  "executive_summary": {
+    "one_liner": "Clawbernetes is an AI-native orchestration platform that replaces Kubernetes' declarative reconciliation model with intelligent agent-driven infrastructure management, built on the OpenClaw agent runtime.",
+    "elevator_pitch": "Kubernetes was designed for stateless web services in 2014. The world has moved to AI/ML workloads, GPU clusters, hybrid infrastructure, and distributed training — but orchestration hasn't kept up. Clawbernetes replaces YAML-driven reconciliation loops with autonomous AI agents that understand intent, reason about hardware topology, and continuously optimize placement, scaling, and operations. It's not a layer on top of K8s — it's the replacement.",
+    "key_differentiators": [
+      "Agent-as-control-plane: The AI isn't bolted on — it IS the control plane. Reasoning replaces reconciliation.",
+      "Intent-based infrastructure: 'Keep latency under 10ms and minimize cost' instead of HPA YAML with arbitrary thresholds.",
+      "GPU-aware intelligent scheduling: Understands PCIe topology, NVLink, VRAM utilization, thermal profiles, and workload characteristics.",
+      "Hardware-heterogeneous by design: Seamlessly orchestrates across x86, ARM, Apple Silicon, NVIDIA GPUs, AMD GPUs, TPUs, and custom accelerators.",
+      "Channel-native operations: Manage infrastructure from WhatsApp, Slack, Discord, CLI, API, or WebChat — not just kubectl.",
+      "Skill-based extensibility: Replace Go operators and CRDs with natural-language skill definitions the agent can learn and apply.",
+      "Built for the compute marketplace: Native billing, metering, and trust layers for peer-to-peer GPU sharing.",
+      "Rust-native data plane: High-performance runtime, scheduler, and networking built in Rust for safety and speed."
+    ]
+  },
+
+  "vision_and_mission": {
+    "vision": "A world where infrastructure management is conversational, intelligent, and invisible — where developers describe what they want and the platform figures out how to deliver it across any hardware, anywhere.",
+    "mission": "Build the orchestration platform that makes Kubernetes unnecessary for the AI/HPC era — one that understands hardware, reasons about trade-offs, and operates autonomously.",
+    "north_star_metric": "Time from workload intent to optimal running state (measured in seconds, not hours of YAML debugging).",
+    "core_principles": [
+      {
+        "principle": "Intelligence over configuration",
+        "description": "The agent reasons about the right action rather than requiring humans to encode every decision in YAML."
+      },
+      {
+        "principle": "Hardware-aware by default",
+        "description": "Every scheduling and placement decision considers the full hardware topology — GPUs, interconnects, memory hierarchy, thermals, cost."
+      },
+      {
+        "principle": "Intent over state",
+        "description": "Users declare what they want to achieve, not the low-level state to achieve it. The agent bridges the gap."
+      },
+      {
+        "principle": "Local-first, cloud-burst",
+        "description": "Your infrastructure is the default. Cloud is for overflow. No vendor lock-in, no cloud-first assumptions."
+      },
+      {
+        "principle": "Rust for the data plane, TypeScript for the control plane",
+        "description": "Performance-critical paths (scheduler, networking, container runtime) in Rust. Agent runtime and gateway leverage OpenClaw's proven TypeScript stack."
+      },
+      {
+        "principle": "Open ecosystem, defensible core",
+        "description": "MIT-licensed skills and community contributions. Proprietary intelligence in the scheduling, optimization, and marketplace layers."
+      }
+    ]
+  },
+
+  "market_analysis": {
+    "problem_statement": {
+      "primary": "Kubernetes is the de-facto standard for container orchestration, but its declarative reconciliation model was designed for stateless web services. The rise of AI/ML workloads, GPU computing, distributed training, and heterogeneous hardware has exposed fundamental limitations that no amount of operators and CRDs can fix.",
+      "pain_points": [
+        {
+          "pain": "YAML complexity explosion",
+          "severity": "critical",
+          "description": "A simple GPU training job requires 200+ lines of YAML across Deployment, Service, PVC, ResourceQuota, PriorityClass, and custom CRDs. Entire companies (Helm, Kustomize, Pulumi) exist to manage this complexity.",
+          "affected_users": "All K8s users, especially ML engineers and data scientists"
+        },
+        {
+          "pain": "Dumb scheduling for smart hardware",
+          "severity": "critical",
+          "description": "K8s scheduler treats GPUs as generic countable resources. It doesn't understand PCIe topology, NVLink interconnects, VRAM fragmentation, thermal throttling, or workload-specific hardware preferences.",
+          "affected_users": "AI/ML teams, HPC operators, GPU cluster administrators"
+        },
+        {
+          "pain": "No root-cause reasoning",
+          "severity": "high",
+          "description": "Controllers reconcile desired vs actual state without understanding WHY something failed. A CrashLoopBackOff is treated the same whether it's an OOM, a missing config, or a hardware fault.",
+          "affected_users": "SREs, DevOps engineers, platform teams"
+        },
+        {
+          "pain": "Operational burden",
+          "severity": "high",
+          "description": "K8s clusters are themselves complex systems requiring constant maintenance: etcd health, certificate rotation, version upgrades, node draining, CNI/CSI management. The 'cattle not pets' promise doesn't apply to the clusters themselves.",
+          "affected_users": "Platform teams, small teams without dedicated infrastructure staff"
+        },
+        {
+          "pain": "Poor fit for long-running GPU workloads",
+          "severity": "critical",
+          "description": "K8s pods are designed for relatively short-lived, restartable processes. Multi-day GPU training jobs with checkpointing, elastic scaling, and gang scheduling require extensive custom tooling (KubeFlow, PyTorch Elastic, MPI Operator).",
+          "affected_users": "ML engineers, research teams, AI startups"
+        },
+        {
+          "pain": "No cost intelligence",
+          "severity": "medium",
+          "description": "K8s has no native understanding of cost. Spot/preemptible instance management, cost-aware scheduling, and budget enforcement all require third-party tools.",
+          "affected_users": "Engineering leadership, FinOps teams"
+        },
+        {
+          "pain": "Hybrid/edge is an afterthought",
+          "severity": "medium",
+          "description": "Running K8s across on-prem, cloud, and edge requires complex federation (KubeFed, Liqo, Admiralty) that is fragile and poorly supported.",
+          "affected_users": "Enterprises with hybrid infrastructure, edge computing teams"
+        }
+      ]
+    },
+    "target_market": {
+      "primary_segments": [
+        {
+          "segment": "AI/ML Infrastructure Teams",
+          "size": "Growing rapidly — estimated $30B+ market by 2028",
+          "persona": "ML Platform Engineer who manages GPU clusters for training and inference",
+          "needs": "Simple workload submission, intelligent GPU scheduling, cost optimization, multi-cluster management",
+          "current_solution": "K8s + KubeFlow + custom operators + NVIDIA GPU Operator + lots of glue"
+        },
+        {
+          "segment": "GPU Compute Providers",
+          "size": "Emerging market — Lambda Labs, CoreWeave, Together AI, RunPod",
+          "persona": "Infrastructure operator who rents GPU compute to AI teams",
+          "needs": "Multi-tenant scheduling, billing/metering, SLA management, hardware utilization optimization",
+          "current_solution": "Custom K8s distributions with extensive modifications"
+        },
+        {
+          "segment": "Home Lab / Small Cluster Operators",
+          "size": "Large and enthusiastic — r/homelab has 1M+ members, growing GPU home lab segment",
+          "persona": "Technical enthusiast or indie developer with 1-10 GPU nodes wanting to run AI workloads",
+          "needs": "Zero-ops orchestration, easy setup, hybrid cloud bursting, optionally monetize idle compute",
+          "current_solution": "Manual Docker, k3s, or no orchestration at all"
+        },
+        {
+          "segment": "Startups Building AI Products",
+          "size": "Tens of thousands globally",
+          "persona": "CTO/founding engineer who needs to run inference and fine-tuning without a platform team",
+          "needs": "Fast setup, auto-scaling, cost control, focus on product not infrastructure",
+          "current_solution": "Managed K8s (EKS/GKE) + expensive DevOps hires or cloud AI platforms"
+        }
+      ],
+      "secondary_segments": [
+        "Enterprise hybrid cloud teams migrating from VMware",
+        "Edge computing / IoT orchestration",
+        "Research institutions with heterogeneous compute clusters",
+        "Decentralized compute networks (Akash, Render, etc.)"
+      ]
+    },
+    "competitive_landscape": [
+      {
+        "competitor": "Kubernetes (vanilla)",
+        "positioning": "De-facto standard, massive ecosystem",
+        "strengths": ["Ecosystem size", "Enterprise adoption", "Talent availability", "CNCF governance"],
+        "weaknesses": ["YAML complexity", "Dumb scheduling", "Poor GPU support natively", "Massive operational burden"],
+        "our_advantage": "Replaces the paradigm entirely — intelligence replaces configuration"
+      },
+      {
+        "competitor": "K8s + KubeFlow + NVIDIA GPU Operator",
+        "positioning": "K8s ecosystem solution for ML workloads",
+        "strengths": ["Built on familiar K8s", "NVIDIA investment", "Pipeline abstraction"],
+        "weaknesses": ["Still K8s complexity underneath", "Fragile multi-component stack", "Poor scheduling intelligence"],
+        "our_advantage": "Single coherent platform vs. duct-taped stack of 5+ projects"
+      },
+      {
+        "competitor": "Nomad (HashiCorp)",
+        "positioning": "Simpler alternative to K8s",
+        "strengths": ["Simpler than K8s", "Single binary", "Multi-workload (containers + VMs + raw exec)"],
+        "weaknesses": ["Smaller ecosystem", "No AI/GPU intelligence", "HashiCorp licensing changes", "No agent reasoning"],
+        "our_advantage": "Agent intelligence + GPU-native + open source commitment"
+      },
+      {
+        "competitor": "Slurm",
+        "positioning": "Traditional HPC job scheduler",
+        "strengths": ["HPC standard", "Mature", "Well-understood by HPC community"],
+        "weaknesses": ["Ancient architecture", "No container-native", "Poor cloud integration", "No intelligence"],
+        "our_advantage": "Modern agent-driven approach with container support, cloud bursting, and self-healing"
+      },
+      {
+        "competitor": "Ray / Anyscale",
+        "positioning": "Distributed computing framework for AI",
+        "strengths": ["Python-native", "Good for distributed training", "Anyscale managed offering"],
+        "weaknesses": ["Python-only ecosystem", "Not a general orchestrator", "Vendor lock-in with Anyscale"],
+        "our_advantage": "Language-agnostic, general-purpose orchestration, open marketplace model"
+      },
+      {
+        "competitor": "RunPod / Lambda Labs / CoreWeave",
+        "positioning": "GPU cloud providers",
+        "strengths": ["Managed GPU infrastructure", "Simple API", "No orchestration burden"],
+        "weaknesses": ["Vendor lock-in", "Cost at scale", "No on-prem/hybrid", "No customization"],
+        "our_advantage": "Orchestrate YOUR hardware + cloud burst, with potential to CREATE a compute marketplace"
+      }
+    ]
+  },
+
+  "architecture": {
+    "overview": "Clawbernetes uses a three-tier architecture: the Agent Control Plane (built on OpenClaw Gateway), the Scheduler Intelligence Layer (Rust), and the Node Data Plane (Rust). The agent reasons about intent and translates it into placement, scaling, and operational decisions. The Rust data plane executes those decisions with maximum performance and safety.",
+
+    "design_philosophy": {
+      "agent_as_control_plane": "The OpenClaw agent IS the control plane. It doesn't generate YAML for K8s to execute — it directly manages the fleet through skills and tools. This eliminates the impedance mismatch between human intent and machine configuration.",
+      "separation_of_concerns": "Agent (TypeScript/OpenClaw) handles reasoning, communication, and decision-making. Rust handles execution, scheduling algorithms, networking, and container runtime. Clean RPC boundary between them.",
+      "eventual_intelligence": "Like K8s' eventual consistency, but smarter. The agent continuously reasons about the gap between intent and reality, considering context, history, and predicted future state.",
+      "capability_driven_nodes": "Nodes are not generic compute. Each node advertises its full capability profile — hardware, runtimes, permissions, cost, location, trust level. The agent uses this for intelligent placement."
+    },
+
+    "system_components": {
+      "tier_1_agent_control_plane": {
+        "description": "Built on OpenClaw's Gateway + Agent runtime. Handles all user interaction, intent interpretation, decision-making, and high-level orchestration.",
+        "components": [
+          {
+            "name": "Clawbernetes Gateway",
+            "based_on": "OpenClaw Gateway",
+            "role": "WebSocket control plane for all communication — user channels, node registration, inter-agent messaging, metrics streaming",
+            "technology": "TypeScript (OpenClaw fork/extension)",
+            "ports": {
+              "ws_control": 18789,
+              "http_api": 18790,
+              "canvas_ui": 18793,
+              "metrics": 18794
+            },
+            "extensions_over_openclaw": [
+              "Node fleet registry with hardware topology",
+              "Workload state machine and lifecycle management",
+              "Cluster federation protocol",
+              "Billing/metering event stream",
+              "HA mode with Gateway-to-Gateway replication"
+            ]
+          },
+          {
+            "name": "Fleet Agent",
+            "based_on": "OpenClaw Pi Agent (RPC mode)",
+            "role": "Primary reasoning agent for cluster operations. Interprets user intent, coordinates with Scheduler Agent, manages workload lifecycle, handles self-healing.",
+            "technology": "OpenClaw Agent Runtime + Custom Skills",
+            "capabilities": [
+              "Natural language workload submission and management",
+              "Root-cause analysis for failures (not just restart loops)",
+              "Predictive scaling based on historical patterns and intent",
+              "Cross-cluster workload migration reasoning",
+              "Cost optimization recommendations and autonomous action",
+              "Incident response and escalation"
+            ]
+          },
+          {
+            "name": "Scheduler Agent",
+            "based_on": "New — specialized agent with Rust-backed scoring",
+            "role": "GPU-aware, topology-aware, cost-aware workload placement. Combines AI reasoning with algorithmic optimization.",
+            "technology": "OpenClaw Agent + Rust FFI for scoring algorithms",
+            "scheduling_factors": [
+              "GPU type, count, VRAM, interconnect topology (NVLink, PCIe gen/lanes)",
+              "Network locality (same rack, same switch, same region)",
+              "Thermal headroom and sustained performance profiles",
+              "Current utilization and predicted availability windows",
+              "Cost per GPU-hour (owned vs. marketplace vs. cloud burst)",
+              "Workload affinity/anti-affinity based on communication patterns",
+              "Data locality (minimize data transfer for training jobs)",
+              "Trust level and security classification",
+              "SLA requirements (latency, availability, preemptability)"
+            ]
+          },
+          {
+            "name": "Skills Registry",
+            "based_on": "OpenClaw Skills + ClawHub",
+            "role": "Modular capability definitions that teach agents how to manage specific workload types, hardware, and services.",
+            "technology": "SKILL.md files (YAML frontmatter + natural language instructions)",
+            "skill_categories": [
+              "workload-types: training, inference, batch, streaming, cron",
+              "hardware: nvidia-gpu, amd-gpu, apple-silicon, tpu, fpga",
+              "networking: cni-management, service-mesh, load-balancing",
+              "storage: csi-management, distributed-fs, checkpoint-management",
+              "cloud-providers: aws, gcp, azure, lambda-labs, coreweave, fly-io",
+              "observability: metrics, logging, tracing, alerting",
+              "security: rbac, network-policy, secret-management, sandboxing",
+              "marketplace: billing, metering, trust, sla-enforcement"
+            ]
+          }
+        ]
+      },
+
+      "tier_2_scheduler_intelligence": {
+        "description": "Rust-native scheduling engine that provides high-performance scoring, bin-packing, and optimization algorithms. Called by the Scheduler Agent via FFI/RPC.",
+        "components": [
+          {
+            "name": "Topology Engine",
+            "role": "Maintains a real-time graph of all hardware topology — GPU interconnects, network switches, storage paths, power domains.",
+            "technology": "Rust",
+            "data_structures": [
+              "GPU Topology Graph (PCIe tree, NVLink mesh, VRAM state)",
+              "Network Topology Graph (switch hierarchy, latency matrix)",
+              "Storage Topology Graph (local SSD, NAS paths, distributed FS)",
+              "Power/Thermal Graph (PDU tree, cooling zones, throttle thresholds)"
+            ]
+          },
+          {
+            "name": "Scoring Engine",
+            "role": "Multi-objective optimization for workload placement. Balances performance, cost, reliability, and locality.",
+            "technology": "Rust",
+            "algorithms": [
+              "Weighted multi-factor scoring with configurable priorities",
+              "GPU bin-packing with fragmentation minimization",
+              "Gang scheduling for distributed training (all-or-nothing placement)",
+              "Preemption analysis (cost/benefit of preempting lower-priority work)",
+              "Predictive scoring using historical performance data"
+            ]
+          },
+          {
+            "name": "Capacity Planner",
+            "role": "Forecasts capacity needs and recommends cloud burst or marketplace procurement.",
+            "technology": "Rust",
+            "capabilities": [
+              "Time-series analysis of workload patterns",
+              "Cost modeling across owned/marketplace/cloud compute",
+              "Reservation and spot instance strategy optimization",
+              "Queue depth and wait time prediction"
+            ]
+          }
+        ]
+      },
+
+      "tier_3_node_data_plane": {
+        "description": "Rust-native node agent that runs on every machine in the fleet. Handles container lifecycle, GPU management, resource isolation, metrics collection, and secure execution.",
+        "components": [
+          {
+            "name": "Claw Node Agent (clawnode)",
+            "role": "Primary agent on each node. Registers with Gateway, reports capabilities, executes workload lifecycle commands.",
+            "technology": "Rust",
+            "responsibilities": [
+              "Hardware discovery and capability advertisement",
+              "Container runtime management (containerd, podman, or native)",
+              "GPU device management and VRAM allocation",
+              "Resource isolation (cgroups v2, namespaces)",
+              "Health monitoring and anomaly detection",
+              "Secure execution environment setup",
+              "Local metrics collection and streaming",
+              "Checkpoint coordination for training jobs"
+            ]
+          },
+          {
+            "name": "GPU Manager",
+            "role": "Deep GPU management beyond what nvidia-container-toolkit provides.",
+            "technology": "Rust (with NVML/ROCm/Metal bindings)",
+            "capabilities": [
+              "Real-time GPU utilization, VRAM, temperature, power draw",
+              "MIG (Multi-Instance GPU) partition management",
+              "MPS (Multi-Process Service) for GPU sharing",
+              "NVLink topology detection and bandwidth monitoring",
+              "Thermal throttle prediction and proactive migration",
+              "VRAM fragmentation analysis and defragmentation"
+            ]
+          },
+          {
+            "name": "Network Agent",
+            "role": "Node-level networking — container networking, service discovery, and traffic management.",
+            "technology": "Rust (eBPF where available)",
+            "capabilities": [
+              "Container network namespace management",
+              "Service discovery and DNS",
+              "Load balancing (L4/L7)",
+              "Network policy enforcement",
+              "RDMA/InfiniBand management for HPC workloads",
+              "Bandwidth allocation and QoS"
+            ]
+          },
+          {
+            "name": "Storage Agent",
+            "role": "Local and distributed storage management for workloads.",
+            "technology": "Rust",
+            "capabilities": [
+              "Volume lifecycle (create, mount, snapshot, migrate)",
+              "Distributed filesystem client (NFS, Ceph, Lustre)",
+              "Checkpoint storage with lifecycle management",
+              "Data staging for training jobs (prefetch to local SSD)",
+              "Storage performance monitoring"
+            ]
+          }
+        ]
+      }
+    },
+
+    "communication_model": {
+      "gateway_to_node": {
+        "protocol": "WebSocket (TLS) + Protobuf-encoded messages",
+        "direction": "Bidirectional — Gateway pushes commands, Nodes stream state",
+        "auth": "mTLS + per-node token (rotated automatically)",
+        "reconnect": "Automatic with exponential backoff, session resume"
+      },
+      "agent_to_scheduler": {
+        "protocol": "RPC (local) or gRPC (remote)",
+        "description": "Fleet Agent requests placement decisions from Scheduler Agent. Scheduler Agent calls Rust scoring engine via FFI."
+      },
+      "node_to_node": {
+        "protocol": "Direct peer connections for data plane (RDMA/TCP)",
+        "use_cases": "Distributed training communication (AllReduce, etc.), checkpoint replication, data transfer"
+      },
+      "user_to_gateway": {
+        "protocol": "OpenClaw channel adapters (WhatsApp, Slack, Discord, CLI, API, WebChat)",
+        "description": "Users interact via any connected channel. Gateway routes to Fleet Agent."
+      },
+      "gateway_to_gateway": {
+        "protocol": "Federation protocol (gRPC + Raft consensus for shared state)",
+        "description": "Multi-cluster federation for cross-cluster workload placement and migration."
+      }
+    },
+
+    "state_management": {
+      "approach": "Distributed state with agent memory, not centralized etcd",
+      "components": [
+        {
+          "name": "Gateway State",
+          "description": "Session state, node registry, workload state machines. Stored locally in Gateway, replicated to peers in HA mode.",
+          "technology": "SQLite (single Gateway) or Raft-replicated log (HA mode)",
+          "data": ["Node fleet registry", "Workload state machines", "Session history", "Scheduling decisions", "Billing events"]
+        },
+        {
+          "name": "Agent Memory",
+          "description": "Long-term knowledge about the fleet — hardware quirks, failure patterns, optimization history, user preferences.",
+          "technology": "OpenClaw workspace files (Markdown) + vector index",
+          "data": ["Hardware performance profiles", "Failure history and patterns", "Cost optimization learnings", "User intent history"]
+        },
+        {
+          "name": "Node State",
+          "description": "Local node state — running containers, resource utilization, hardware metrics.",
+          "technology": "In-memory (Rust) with periodic snapshots to disk",
+          "data": ["Container state", "GPU state", "Resource utilization", "Network connections"]
+        }
+      ]
+    },
+
+    "high_availability": {
+      "gateway_ha": {
+        "description": "Multiple Gateway instances with Raft consensus for leader election and state replication.",
+        "minimum_nodes": 3,
+        "failover_time": "<5 seconds",
+        "state_replication": "Synchronous for critical state (workload lifecycle), async for metrics/logs"
+      },
+      "node_agent_resilience": {
+        "description": "Node agent runs as a systemd service with watchdog. Workloads survive agent restart. Agent-less grace period allows workloads to continue if agent is temporarily unavailable.",
+        "watchdog": "systemd watchdog with 30s interval",
+        "agent_less_grace": "5 minutes — workloads continue, no new scheduling"
+      },
+      "workload_resilience": {
+        "checkpoint_frequency": "Configurable per workload, default every 15 minutes for training jobs",
+        "auto_migration": "Agent detects impending node failure and proactively migrates workloads",
+        "gang_failure_policy": "If one member of a distributed training job fails, agent can decide: restart member, checkpoint and reschedule all, or scale down elastically"
+      }
+    }
+  },
+
+  "feature_sets": {
+    "description": "Features organized as epics with user stories. Priority: P0 (must-have for launch), P1 (needed within 3 months post-launch), P2 (6-month roadmap), P3 (12-month vision).",
+
+    "epic_01_node_management": {
+      "priority": "P0",
+      "description": "Register, monitor, and manage heterogeneous compute nodes",
+      "user_stories": [
+        {
+          "id": "US-001",
+          "story": "As a cluster operator, I want to add a node by running a single command so that new hardware joins the fleet immediately.",
+          "acceptance_criteria": [
+            "clawnode join --gateway ws://gateway:18789 --token <token> completes in under 30 seconds",
+            "Node automatically discovers hardware (CPUs, GPUs, memory, storage, network)",
+            "Gateway receives and stores full capability profile",
+            "Agent is notified and can immediately schedule to the new node"
+          ],
+          "technical_notes": "Leverage OpenClaw's existing node pairing protocol. Extend with hardware discovery (NVML, lscpu, lsblk, ip link)."
+        },
+        {
+          "id": "US-002",
+          "story": "As a cluster operator, I want to see the full hardware topology of my fleet so I can understand placement decisions.",
+          "acceptance_criteria": [
+            "Fleet dashboard shows all nodes with GPU details, network topology, storage",
+            "Topology view shows which GPUs are connected via NVLink",
+            "Real-time utilization overlaid on topology view",
+            "Accessible via WebChat, CLI, and API"
+          ]
+        },
+        {
+          "id": "US-003",
+          "story": "As a cluster operator, I want to drain a node gracefully so maintenance doesn't disrupt workloads.",
+          "acceptance_criteria": [
+            "'Drain node-3' via any channel triggers graceful workload migration",
+            "Agent reasons about where to move workloads based on current fleet state",
+            "Training jobs are checkpointed before migration",
+            "Node marked unschedulable during drain",
+            "Agent reports completion with summary of what was moved where"
+          ]
+        },
+        {
+          "id": "US-004",
+          "story": "As a cluster operator, I want automatic detection and response to hardware failures so the fleet self-heals.",
+          "acceptance_criteria": [
+            "GPU Xid errors detected and reported within 5 seconds",
+            "Agent determines severity and takes appropriate action (restart vs. migrate vs. mark bad)",
+            "Thermal throttle prediction migrates workloads BEFORE performance degrades",
+            "Node unreachable triggers workload rescheduling after configurable grace period",
+            "All actions logged with reasoning explanation"
+          ]
+        }
+      ]
+    },
+
+    "epic_02_workload_lifecycle": {
+      "priority": "P0",
+      "description": "Submit, monitor, and manage workloads through intent-based interface",
+      "user_stories": [
+        {
+          "id": "US-010",
+          "story": "As a developer, I want to submit a workload using natural language so I don't have to write YAML.",
+          "acceptance_criteria": [
+            "'Run my training script train.py on 4 GPUs with the latest PyTorch' via WhatsApp/Slack/CLI",
+            "Agent resolves container image, GPU requirements, and scheduling constraints",
+            "Agent asks clarifying questions only when genuinely ambiguous",
+            "Workload starts within 60 seconds of submission (assuming resources available)",
+            "Agent reports back with workload ID, node assignment, and estimated completion"
+          ]
+        },
+        {
+          "id": "US-011",
+          "story": "As a developer, I want to submit a workload using a minimal config file so I have reproducibility.",
+          "acceptance_criteria": [
+            "clawbernetes run -f workload.toml (or .yaml, .json) accepted",
+            "Config file is minimal — name, image, intent (resources inferred by agent)",
+            "Agent fills in scheduling details, resource limits, and placement",
+            "Equivalent to K8s Deployment but 10-20x less verbose"
+          ],
+          "config_example": {
+            "name": "llama-finetune",
+            "image": "ghcr.io/myorg/trainer:latest",
+            "intent": {
+              "gpus": 4,
+              "gpu_type_preference": ["A100", "H100", "4090"],
+              "max_cost_per_hour": 8.00,
+              "max_latency_to_data": "50ms",
+              "checkpoint_interval": "30m",
+              "priority": "normal"
+            },
+            "data": {
+              "input": "s3://my-bucket/training-data/",
+              "output": "s3://my-bucket/checkpoints/",
+              "cache_locally": true
+            }
+          }
+        },
+        {
+          "id": "US-012",
+          "story": "As a developer, I want to check on my workload's progress conversationally so I can stay informed without a dashboard.",
+          "acceptance_criteria": [
+            "'How's my training job doing?' returns loss curves, GPU utilization, estimated time to completion",
+            "'Why is it slow?' triggers agent analysis of bottlenecks (data loading, GPU utilization, network)",
+            "Agent proactively notifies on significant events (loss plateau, GPU error, completion)",
+            "Accessible from any connected channel"
+          ]
+        },
+        {
+          "id": "US-013",
+          "story": "As a developer, I want to scale my workload up or down by expressing intent so the agent handles the complexity.",
+          "acceptance_criteria": [
+            "'Scale the training to 8 GPUs' triggers elastic scaling",
+            "Agent coordinates checkpoint, adds nodes, resumes from checkpoint",
+            "'Reduce cost by 50%' triggers agent to find cheaper nodes or scale down",
+            "'Speed this up' triggers agent to find faster GPUs or add more workers"
+          ]
+        },
+        {
+          "id": "US-014",
+          "story": "As a developer, I want workloads to automatically recover from failures without my intervention.",
+          "acceptance_criteria": [
+            "Single GPU failure: agent detects, migrates affected worker, resumes from checkpoint",
+            "Node failure: agent reschedules all affected workloads to healthy nodes",
+            "Agent explains what happened and what it did in the user's channel",
+            "Recovery time < 5 minutes for checkpointed workloads"
+          ]
+        }
+      ]
+    },
+
+    "epic_03_intelligent_scheduling": {
+      "priority": "P0",
+      "description": "GPU-aware, topology-aware, cost-aware workload placement",
+      "user_stories": [
+        {
+          "id": "US-020",
+          "story": "As a platform operator, I want the scheduler to consider full GPU topology so distributed training jobs get optimal placement.",
+          "acceptance_criteria": [
+            "4-GPU training job placed on NVLink-connected GPUs when available",
+            "Cross-node training uses GPUs on the same network switch when possible",
+            "Scheduler explains placement reasoning when asked",
+            "Placement decision made in <500ms for typical fleet sizes (<100 nodes)"
+          ]
+        },
+        {
+          "id": "US-021",
+          "story": "As a platform operator, I want the scheduler to optimize for cost so I don't overpay for compute.",
+          "acceptance_criteria": [
+            "Low-priority jobs scheduled on cheapest available hardware",
+            "Agent recommends spot/preemptible instances for fault-tolerant workloads",
+            "Cost per workload tracked and reported",
+            "Agent alerts when cost anomalies detected"
+          ]
+        },
+        {
+          "id": "US-022",
+          "story": "As a platform operator, I want gang scheduling for distributed training so all workers start simultaneously.",
+          "acceptance_criteria": [
+            "N-worker training job either gets all N placements or queues entirely",
+            "No partial scheduling that wastes resources waiting for remaining workers",
+            "Queue priority respects workload priority classes",
+            "Agent communicates queue position and estimated start time"
+          ]
+        },
+        {
+          "id": "US-023",
+          "story": "As a platform operator, I want preemption based on intelligent analysis, not just priority numbers.",
+          "acceptance_criteria": [
+            "Agent considers checkpoint state before preempting (prefer to preempt recently-checkpointed jobs)",
+            "Agent considers remaining runtime (don't preempt a job 95% done for a new one)",
+            "Agent considers workload owner and SLA tier",
+            "Preemption decisions explained and logged"
+          ]
+        }
+      ]
+    },
+
+    "epic_04_multi_channel_operations": {
+      "priority": "P0",
+      "description": "Manage clusters from any messaging channel",
+      "user_stories": [
+        {
+          "id": "US-030",
+          "story": "As a cluster operator, I want to manage my fleet from WhatsApp so I can respond to issues from anywhere.",
+          "acceptance_criteria": [
+            "All major operations available: status, deploy, scale, drain, troubleshoot",
+            "Agent sends proactive alerts to configured channels",
+            "Image/chart rendering for GPU utilization and training curves",
+            "Natural language — no special command syntax required (but commands work too)"
+          ]
+        },
+        {
+          "id": "US-031",
+          "story": "As a team lead, I want different team members to interact through different channels but manage the same cluster.",
+          "acceptance_criteria": [
+            "ML engineer uses Slack, DevOps uses CLI, CTO checks WhatsApp — all see consistent state",
+            "Per-user permissions enforced regardless of channel",
+            "Audit log captures all operations with user identity and channel"
+          ]
+        },
+        {
+          "id": "US-032",
+          "story": "As a developer, I want a rich web dashboard for detailed monitoring alongside conversational management.",
+          "acceptance_criteria": [
+            "WebChat UI with real-time fleet visualization",
+            "Canvas-based topology view (leveraging OpenClaw Canvas/A2UI)",
+            "Live GPU utilization, training curves, cost dashboards",
+            "Deep-link from conversational alerts to dashboard views"
+          ]
+        }
+      ]
+    },
+
+    "epic_05_skills_and_extensibility": {
+      "priority": "P1",
+      "description": "Extensible skill system for workload types, hardware, and integrations",
+      "user_stories": [
+        {
+          "id": "US-040",
+          "story": "As a platform developer, I want to write a skill that teaches the agent how to manage a new workload type (e.g., vLLM inference).",
+          "acceptance_criteria": [
+            "Skill is a directory with SKILL.md describing management procedures",
+            "Agent learns health checks, scaling signals, common failure modes from the skill",
+            "No Go/Rust code required — just natural language instructions + optional scripts",
+            "Skill can be shared on ClawHub for community use"
+          ],
+          "skill_example": {
+            "name": "vllm-inference",
+            "description": "Manage vLLM inference deployments with tensor parallelism, KV cache optimization, and model loading.",
+            "instructions_outline": [
+              "How to detect optimal tensor parallelism degree based on model size and GPU VRAM",
+              "How to monitor KV cache utilization and scale replicas",
+              "Common failure modes: OOM during model loading, CUDA errors, tokenizer issues",
+              "Health check: /health endpoint + GPU utilization check",
+              "Scaling signal: request queue depth > threshold"
+            ]
+          }
+        },
+        {
+          "id": "US-041",
+          "story": "As a hardware vendor, I want to write a skill that teaches the agent about my specific hardware so scheduling is optimal.",
+          "acceptance_criteria": [
+            "Skill describes hardware characteristics, performance profiles, known issues",
+            "Agent uses this information in scheduling decisions",
+            "Example: 'NVIDIA B200 has 192GB HBM3e, optimal batch size ranges, thermal characteristics'"
+          ]
+        },
+        {
+          "id": "US-042",
+          "story": "As a cluster operator, I want to install community skills from ClawHub to add capabilities without custom development.",
+          "acceptance_criteria": [
+            "clawbernetes skill install <name> from ClawHub registry",
+            "Skill security vetting (hash verification, community trust score)",
+            "Skills hot-reload without gateway restart (leveraging OpenClaw's skill watcher)"
+          ]
+        }
+      ]
+    },
+
+    "epic_06_container_runtime": {
+      "priority": "P0",
+      "description": "Container lifecycle management on nodes",
+      "user_stories": [
+        {
+          "id": "US-050",
+          "story": "As a platform operator, I want workloads to run in containers with GPU passthrough so they're isolated and reproducible.",
+          "acceptance_criteria": [
+            "Support containerd and podman as runtimes",
+            "GPU passthrough via NVIDIA Container Toolkit (or AMD/Apple equivalent)",
+            "cgroups v2 resource limits enforced",
+            "Image pull with layer caching and pre-warming"
+          ]
+        },
+        {
+          "id": "US-051",
+          "story": "As a developer, I want to run workloads without containers (bare metal) for maximum performance when I trust the code.",
+          "acceptance_criteria": [
+            "Direct execution mode with cgroup-based isolation",
+            "Useful for MPI jobs, custom CUDA kernels, or performance-critical training",
+            "Security: requires explicit opt-in and trust level on the node"
+          ]
+        },
+        {
+          "id": "US-052",
+          "story": "As a platform operator, I want support for VM-based isolation for multi-tenant security.",
+          "acceptance_criteria": [
+            "Kata Containers or Firecracker integration for strong isolation",
+            "GPU passthrough via VFIO for VM-based workloads",
+            "Useful for marketplace mode where untrusted code runs on your hardware"
+          ]
+        }
+      ]
+    },
+
+    "epic_07_networking": {
+      "priority": "P1",
+      "description": "Container networking, service discovery, and traffic management",
+      "user_stories": [
+        {
+          "id": "US-060",
+          "story": "As a platform operator, I want automatic container networking so workloads can communicate without manual configuration.",
+          "acceptance_criteria": [
+            "Overlay network (WireGuard-based) connects containers across nodes",
+            "DNS-based service discovery (workload-name.namespace.claw.local)",
+            "Network policy enforcement for multi-tenant isolation"
+          ]
+        },
+        {
+          "id": "US-061",
+          "story": "As a platform operator, I want RDMA/InfiniBand support for HPC workloads so distributed training gets maximum bandwidth.",
+          "acceptance_criteria": [
+            "RDMA device passthrough to containers",
+            "Agent aware of RDMA fabric topology for scheduling",
+            "GPUDirect RDMA support for direct GPU-to-GPU communication"
+          ]
+        },
+        {
+          "id": "US-062",
+          "story": "As a developer, I want to expose my inference service with automatic load balancing and TLS.",
+          "acceptance_criteria": [
+            "'Expose my vLLM service publicly' handled by agent",
+            "Automatic TLS via Let's Encrypt or Tailscale",
+            "L7 load balancing across replicas",
+            "Canary deployments with traffic splitting"
+          ]
+        }
+      ]
+    },
+
+    "epic_08_storage": {
+      "priority": "P1",
+      "description": "Storage management for workloads — local, distributed, and cloud",
+      "user_stories": [
+        {
+          "id": "US-070",
+          "story": "As a developer, I want my training data automatically staged to local SSD before my job starts so data loading isn't a bottleneck.",
+          "acceptance_criteria": [
+            "Agent detects data source (S3, NFS, etc.) and pre-stages to local NVMe",
+            "Scheduler considers data locality in placement decisions",
+            "Intelligent caching — frequently used datasets kept warm"
+          ]
+        },
+        {
+          "id": "US-071",
+          "story": "As a developer, I want automatic checkpoint management so I never lose more than N minutes of training progress.",
+          "acceptance_criteria": [
+            "Checkpoint interval configurable per workload",
+            "Checkpoints written to durable storage (NAS, S3)",
+            "Automatic cleanup of old checkpoints based on retention policy",
+            "Agent can resume from any checkpoint on any compatible node"
+          ]
+        }
+      ]
+    },
+
+    "epic_09_observability": {
+      "priority": "P1",
+      "description": "Monitoring, logging, and alerting — agent-interpreted, not just dashboards",
+      "user_stories": [
+        {
+          "id": "US-080",
+          "story": "As a platform operator, I want the agent to interpret metrics and tell me what's wrong, not just show me graphs.",
+          "acceptance_criteria": [
+            "'Why is GPU utilization low on node-3?' gets a root-cause analysis, not a dashboard link",
+            "Agent correlates metrics across GPU, network, storage, and workload dimensions",
+            "Proactive anomaly detection with contextual alerts"
+          ]
+        },
+        {
+          "id": "US-081",
+          "story": "As a developer, I want live training metrics streamed to my chat channel.",
+          "acceptance_criteria": [
+            "Loss, learning rate, throughput (samples/sec) streamed periodically",
+            "Agent detects loss plateaus and recommends action (adjust LR, increase data, stop early)",
+            "GPU utilization and memory usage included"
+          ]
+        },
+        {
+          "id": "US-082",
+          "story": "As a platform operator, I want traditional metrics export (Prometheus) alongside agent intelligence.",
+          "acceptance_criteria": [
+            "Prometheus /metrics endpoint on each node and gateway",
+            "Standard labels: node, workload, gpu_id, namespace",
+            "Grafana dashboard templates provided",
+            "Agent intelligence augments, doesn't replace, traditional observability"
+          ]
+        }
+      ]
+    },
+
+    "epic_10_security": {
+      "priority": "P0",
+      "description": "Multi-tenant security, RBAC, network isolation, and secure operations",
+      "user_stories": [
+        {
+          "id": "US-090",
+          "story": "As a platform operator, I want role-based access control so different users have different permissions.",
+          "acceptance_criteria": [
+            "Roles: admin, operator, developer, viewer",
+            "Per-workspace permissions (inherited from OpenClaw's workspace model)",
+            "API token-based auth with scopes",
+            "Channel-based identity verification (WhatsApp number = identity)"
+          ]
+        },
+        {
+          "id": "US-091",
+          "story": "As a platform operator running a marketplace, I want workloads from untrusted users sandboxed so they can't escape.",
+          "acceptance_criteria": [
+            "VM-level isolation (Firecracker/Kata) for marketplace workloads",
+            "Network isolation — marketplace workloads can't reach other tenants or control plane",
+            "Resource limits strictly enforced — no CPU/GPU/memory/network overage",
+            "Audit logging of all operations"
+          ]
+        },
+        {
+          "id": "US-092",
+          "story": "As a platform operator, I want all control plane communication encrypted and authenticated.",
+          "acceptance_criteria": [
+            "mTLS between Gateway and Nodes",
+            "Token-based auth for user channels",
+            "Secret management for workload credentials (encrypted at rest)",
+            "Certificate auto-rotation"
+          ]
+        }
+      ]
+    },
+
+    "epic_11_compute_marketplace": {
+      "priority": "P2",
+      "description": "Peer-to-peer GPU compute marketplace — the economic endgame",
+      "user_stories": [
+        {
+          "id": "US-100",
+          "story": "As a GPU owner, I want to register my hardware on the marketplace so I can earn money from idle compute.",
+          "acceptance_criteria": [
+            "clawbernetes marketplace register --gpu '4x 3090' --price 0.40/gpu-hr",
+            "Hardware verified via node agent attestation",
+            "Availability schedule (e.g., available 10pm-8am weekdays, all weekend)",
+            "Reputation score based on uptime, performance consistency, and buyer ratings"
+          ]
+        },
+        {
+          "id": "US-101",
+          "story": "As a compute buyer, I want to find and use marketplace GPUs seamlessly alongside my own hardware.",
+          "acceptance_criteria": [
+            "Agent automatically considers marketplace nodes when own fleet is at capacity",
+            "'Run this training, budget $50 max' — agent procures marketplace compute within budget",
+            "Transparent pricing with no hidden fees",
+            "Workload placement optimized across owned + marketplace + cloud"
+          ]
+        },
+        {
+          "id": "US-102",
+          "story": "As a marketplace operator, I want automated billing and settlement so transactions happen without manual intervention.",
+          "acceptance_criteria": [
+            "Per-GPU-minute metering with tamper-evident logs",
+            "Escrow model: buyer funds escrowed, released on workload completion",
+            "Dispute resolution process for SLA violations",
+            "Payment integration (Stripe, crypto optional)"
+          ]
+        },
+        {
+          "id": "US-103",
+          "story": "As a compute buyer, I want SLA guarantees from marketplace providers so I can trust the compute.",
+          "acceptance_criteria": [
+            "Providers publish SLA tiers (99%, 99.9%, 99.99% availability)",
+            "Automatic penalty (reduced payout) for SLA violations",
+            "Agent considers provider reliability history in placement decisions",
+            "Workload migration to alternative provider if SLA breach detected"
+          ]
+        }
+      ]
+    },
+
+    "epic_12_federation": {
+      "priority": "P2",
+      "description": "Multi-cluster federation for cross-organizational compute sharing",
+      "user_stories": [
+        {
+          "id": "US-110",
+          "story": "As an enterprise, I want to federate multiple Clawbernetes clusters so workloads can span data centers.",
+          "acceptance_criteria": [
+            "Gateway-to-Gateway federation protocol",
+            "Cross-cluster workload placement with data locality awareness",
+            "Federated identity and RBAC",
+            "Network connectivity via Tailscale or WireGuard mesh"
+          ]
+        },
+        {
+          "id": "US-111",
+          "story": "As a research institution, I want to share compute with partner organizations without losing control.",
+          "acceptance_criteria": [
+            "Fine-grained sharing policies (share 20% of cluster capacity with org B)",
+            "Workload isolation between organizations (VM-level)",
+            "Usage tracking and cost allocation per organization"
+          ]
+        }
+      ]
+    },
+
+    "epic_13_developer_experience": {
+      "priority": "P1",
+      "description": "SDK, CLI, and developer tools for building on Clawbernetes",
+      "user_stories": [
+        {
+          "id": "US-120",
+          "story": "As a developer, I want a Python SDK to submit and manage workloads programmatically.",
+          "acceptance_criteria": [
+            "pip install clawbernetes",
+            "Simple API: cb.run(image='...', gpus=4, intent='minimize latency')",
+            "Async support for long-running operations",
+            "Callbacks for workload events (started, checkpoint, completed, failed)"
+          ]
+        },
+        {
+          "id": "US-121",
+          "story": "As a developer, I want a Rust SDK for building high-performance integrations.",
+          "acceptance_criteria": [
+            "cargo add clawbernetes",
+            "Type-safe API with full async support",
+            "Direct access to scheduling and topology APIs for advanced use cases"
+          ]
+        },
+        {
+          "id": "US-122",
+          "story": "As a developer, I want a CLI for scriptable operations.",
+          "acceptance_criteria": [
+            "clawbernetes node list, clawbernetes run, clawbernetes status, clawbernetes logs",
+            "JSON output mode for scripting",
+            "Shell completion (bash, zsh, fish)",
+            "clawbernetes chat for conversational mode (equivalent to WhatsApp/Slack interaction)"
+          ]
+        },
+        {
+          "id": "US-123",
+          "story": "As a K8s user, I want a migration path from Kubernetes so I can transition gradually.",
+          "acceptance_criteria": [
+            "clawbernetes import-k8s <deployment.yaml> converts to Clawbernetes workload config",
+            "Agent understands K8s concepts and maps them to Clawbernetes equivalents",
+            "Can run alongside K8s (manage some workloads with Clawbernetes, others with K8s)",
+            "Skill for managing K8s clusters as 'nodes' in Clawbernetes fleet (hybrid mode)"
+          ]
+        }
+      ]
+    }
+  },
+
+  "technical_requirements": {
+    "performance": {
+      "scheduling_latency": {
+        "target": "<500ms for single workload placement on <100 node fleet",
+        "target_large": "<2s for gang scheduling on <1000 node fleet",
+        "measurement": "Time from placement request to scheduling decision"
+      },
+      "node_heartbeat": {
+        "interval": "5 seconds",
+        "staleness_threshold": "30 seconds (node marked suspect), 60 seconds (node marked unreachable)"
+      },
+      "workload_start_latency": {
+        "target": "<30 seconds from scheduling decision to container running (assuming image cached)",
+        "cold_start": "<120 seconds including image pull"
+      },
+      "gateway_throughput": {
+        "target": "10,000 concurrent WebSocket connections per Gateway instance",
+        "message_rate": "100,000 messages/second aggregate"
+      },
+      "metrics_pipeline": {
+        "collection_interval": "1 second for GPU metrics, 5 seconds for system metrics",
+        "e2e_latency": "<2 seconds from node to dashboard"
+      }
+    },
+    "scalability": {
+      "nodes_per_cluster": "Target: 1,000 nodes per Gateway cluster",
+      "clusters_per_federation": "Target: 100 federated clusters",
+      "workloads_per_cluster": "Target: 50,000 concurrent workloads",
+      "gpus_per_cluster": "Target: 10,000 GPUs"
+    },
+    "reliability": {
+      "gateway_availability": "99.99% (52 min downtime/year) in HA mode",
+      "workload_recovery": "<5 minutes for checkpointed workloads after node failure",
+      "data_durability": "No workload state loss in single Gateway failure (replicated state)"
+    },
+    "supported_platforms": {
+      "gateway": ["Linux x86_64 (primary)", "Linux ARM64", "macOS ARM64 (Apple Silicon)", "macOS x86_64"],
+      "node_agent": ["Linux x86_64 (primary)", "Linux ARM64", "macOS ARM64 (for Apple Silicon GPU workloads)"],
+      "gpu_support": {
+        "nvidia": ["CUDA 12.x+", "Driver 535+", "MIG support for A100/H100/B200"],
+        "amd": ["ROCm 6.x+ (P2)"],
+        "apple_silicon": ["Metal Performance Shaders (P2)"],
+        "intel": ["oneAPI (P3)"]
+      },
+      "container_runtimes": ["containerd 1.7+", "podman 4.x+"],
+      "operating_systems": {
+        "node": ["Ubuntu 22.04+", "Debian 12+", "Rocky Linux 9+", "NixOS (via clawdinators)"],
+        "gateway": ["Same as node + macOS 14+"]
+      }
+    },
+    "technology_stack": {
+      "control_plane": {
+        "language": "TypeScript",
+        "runtime": "Node.js 22+",
+        "base": "OpenClaw Gateway (fork/extension)",
+        "agent": "OpenClaw Pi Agent Runtime",
+        "ui": "React (OpenClaw Canvas/A2UI)"
+      },
+      "data_plane": {
+        "language": "Rust",
+        "components": ["clawnode (node agent)", "claw-scheduler (scoring engine)", "claw-net (networking)", "claw-store (storage agent)", "claw-gpu (GPU manager)"],
+        "async_runtime": "Tokio",
+        "serialization": "Protobuf (node↔gateway), JSON (API)",
+        "container_interface": "containerd gRPC API (tonic)"
+      },
+      "sdks": {
+        "python": "clawbernetes (PyPI)",
+        "rust": "clawbernetes (crates.io)",
+        "typescript": "@clawbernetes/client (npm)",
+        "go": "clawbernetes-go (for K8s ecosystem interop)"
+      },
+      "infrastructure": {
+        "state_store": "SQLite (single) / Raft-replicated (HA)",
+        "metrics": "Prometheus-compatible exposition + internal time-series",
+        "networking": "WireGuard (overlay), eBPF (datapath)",
+        "service_discovery": "CoreDNS (embedded)"
+      }
+    }
+  },
+
+  "security_model": {
+    "threat_model": [
+      {
+        "threat": "Prompt injection via workload metadata",
+        "severity": "critical",
+        "mitigation": "All workload metadata treated as untrusted input. Agent uses structured tool calls for actions, not interpreted text. Input sanitization at Gateway boundary."
+      },
+      {
+        "threat": "Container escape to host",
+        "severity": "critical",
+        "mitigation": "Default: container isolation with seccomp + AppArmor. Marketplace: VM isolation (Firecracker/Kata). No privileged containers by default."
+      },
+      {
+        "threat": "Unauthorized GPU access",
+        "severity": "high",
+        "mitigation": "GPU devices mapped exclusively to assigned containers via cgroup device rules. MIG partitions for hardware-level isolation on supported GPUs."
+      },
+      {
+        "threat": "Malicious skill injection",
+        "severity": "high",
+        "mitigation": "Skill integrity verification (SHA256 hashes). Community trust scores on ClawHub. Mandatory review for skills with shell commands. Sandboxed execution of skill-provided scripts."
+      },
+      {
+        "threat": "Man-in-the-middle on control plane",
+        "severity": "high",
+        "mitigation": "mTLS for all Gateway↔Node communication. Certificate pinning for federation. Automatic certificate rotation via built-in CA."
+      },
+      {
+        "threat": "Marketplace fraud (compute buyer/seller)",
+        "severity": "medium",
+        "mitigation": "Hardware attestation via node agent. Workload performance verification (expected vs actual throughput). Escrow-based payment. Reputation system with staking."
+      },
+      {
+        "threat": "Agent hallucination causing destructive action",
+        "severity": "high",
+        "mitigation": "Destructive operations (node drain, workload termination, data deletion) require confirmation via channel for high-severity actions. Undo window for reversible operations. All agent reasoning logged for audit."
+      }
+    ],
+    "compliance": {
+      "target_certifications": ["SOC 2 Type II (P2)", "ISO 27001 (P3)"],
+      "data_residency": "All state stored locally — no cloud dependency. Data never leaves the cluster unless explicitly configured (e.g., S3 checkpoints).",
+      "audit_logging": "Complete audit trail of all control plane operations with user identity, channel, timestamp, and agent reasoning."
+    }
+  },
+
+  "roadmap": {
+    "phase_0_foundation": {
+      "name": "Foundation — 'It Works'",
+      "duration": "3 months",
+      "goal": "Single-cluster Clawbernetes managing GPU workloads on a home lab with agent-driven operations.",
+      "deliverables": [
+        "clawnode agent (Rust): hardware discovery, container lifecycle, GPU management",
+        "Clawbernetes Gateway (OpenClaw extension): node fleet registry, workload state machine",
+        "Fleet Agent skills: workload submission, status, basic scheduling, self-healing",
+        "Scheduler Agent with Rust scoring engine: GPU-aware placement, basic bin-packing",
+        "CLI: clawbernetes run, status, logs, node list",
+        "Natural language workload management via WhatsApp/Slack/CLI",
+        "Basic observability: GPU metrics, workload status, agent decision logs"
+      ],
+      "success_criteria": [
+        "Submit a distributed PyTorch training job via WhatsApp, have it placed on optimal GPUs, and monitor progress conversationally",
+        "Agent detects GPU failure and migrates workload to healthy node automatically",
+        "Scheduling outperforms K8s default scheduler on GPU placement quality (measured by training throughput)"
+      ],
+      "target_fleet": "5-20 nodes, 10-50 GPUs"
+    },
+    "phase_1_production": {
+      "name": "Production Ready — 'People Can Use It'",
+      "duration": "3 months (months 4-6)",
+      "goal": "Production-quality platform for small-medium GPU clusters with full operational capabilities.",
+      "deliverables": [
+        "Gateway HA (Raft consensus, 3-node minimum)",
+        "Container networking (WireGuard overlay, DNS service discovery)",
+        "Storage management (local SSD staging, checkpoint lifecycle, NFS/S3 integration)",
+        "RBAC with workspace isolation",
+        "Python SDK and Rust SDK",
+        "Web dashboard with fleet topology visualization",
+        "Skill authoring guide and initial ClawHub skills",
+        "K8s import tool (convert K8s YAML to Clawbernetes config)",
+        "Comprehensive documentation and getting-started guide",
+        "Security hardening: mTLS, secret management, audit logging"
+      ],
+      "success_criteria": [
+        "Run production AI inference workloads with 99.9% availability",
+        "Onboard a new user from zero to running workloads in <30 minutes",
+        "Community contributes first 10 skills to ClawHub"
+      ],
+      "target_fleet": "20-100 nodes, 50-500 GPUs"
+    },
+    "phase_2_scale": {
+      "name": "Scale + Marketplace — 'The Economic Engine'",
+      "duration": "6 months (months 7-12)",
+      "goal": "Multi-cluster federation and compute marketplace launch.",
+      "deliverables": [
+        "Compute marketplace: provider registration, buyer procurement, billing/metering, SLA enforcement",
+        "Federation protocol: cross-cluster workload placement and migration",
+        "VM-level isolation for marketplace workloads (Firecracker/Kata)",
+        "Advanced scheduling: preemption analysis, predictive scaling, cost optimization",
+        "Cloud burst integration: Lambda Labs, CoreWeave, Fly.io, AWS/GCP/Azure",
+        "RDMA/InfiniBand support",
+        "AMD ROCm support",
+        "Enterprise features: SSO, LDAP, fine-grained audit logging",
+        "Reputation and trust system for marketplace"
+      ],
+      "success_criteria": [
+        "First marketplace transactions (GPU sellers earning revenue)",
+        "Cross-cluster workload migration with <60 second downtime",
+        "1,000+ node federation running stable"
+      ]
+    },
+    "phase_3_ecosystem": {
+      "name": "Ecosystem + Dominance — 'The Platform'",
+      "duration": "Months 13-24",
+      "goal": "Clawbernetes becomes the default orchestration platform for AI/GPU workloads.",
+      "deliverables": [
+        "Managed Clawbernetes offering (hosted Gateway + marketplace)",
+        "Apple Silicon GPU support (Metal)",
+        "Intel GPU support (oneAPI)",
+        "TPU support (GCP)",
+        "Advanced networking: service mesh, global load balancing",
+        "SOC 2 Type II certification",
+        "Enterprise support tiers",
+        "Clawbernetes Certification program",
+        "University and research partnerships",
+        "Mobile app for fleet monitoring (iOS/Android)"
+      ]
+    }
+  },
+
+  "success_metrics": {
+    "product_metrics": [
+      {
+        "metric": "Time to First Workload",
+        "target": "<15 minutes from install to running workload",
+        "measurement": "Onboarding funnel analytics"
+      },
+      {
+        "metric": "Scheduling Quality Score",
+        "target": "20% better GPU utilization vs K8s default scheduler",
+        "measurement": "A/B testing on shared workload sets, measured by training throughput per GPU-dollar"
+      },
+      {
+        "metric": "Mean Time to Recovery (MTTR)",
+        "target": "<3 minutes for checkpointed workloads",
+        "measurement": "Automated failure injection testing"
+      },
+      {
+        "metric": "Agent Resolution Rate",
+        "target": "80% of operational issues resolved by agent without human intervention",
+        "measurement": "Ratio of auto-resolved incidents to total incidents"
+      },
+      {
+        "metric": "Configuration Lines Saved",
+        "target": "90% reduction vs equivalent K8s deployment",
+        "measurement": "Compare equivalent workload definitions (YAML lines vs Clawbernetes config)"
+      }
+    ],
+    "business_metrics": [
+      {
+        "metric": "GitHub Stars",
+        "target": "10K stars in first 6 months",
+        "measurement": "GitHub API"
+      },
+      {
+        "metric": "Active Clusters",
+        "target": "1,000 active clusters in first year",
+        "measurement": "Opt-in telemetry (anonymous)"
+      },
+      {
+        "metric": "Marketplace GMV",
+        "target": "$1M/month GPU compute transacted by month 18",
+        "measurement": "Marketplace billing system"
+      },
+      {
+        "metric": "Community Skills",
+        "target": "100 community-contributed skills in first year",
+        "measurement": "ClawHub registry"
+      },
+      {
+        "metric": "Enterprise Customers",
+        "target": "10 paying enterprise customers by month 18",
+        "measurement": "Sales pipeline"
+      }
+    ]
+  },
+
+  "business_model": {
+    "open_source_core": {
+      "license": "MIT (matching OpenClaw)",
+      "includes": [
+        "Gateway + Fleet Agent",
+        "Node Agent (clawnode)",
+        "Scheduler (basic)",
+        "CLI + SDKs",
+        "Community skills",
+        "Single-cluster management"
+      ]
+    },
+    "commercial_offerings": [
+      {
+        "tier": "Clawbernetes Pro",
+        "target": "Small teams and startups",
+        "price": "$499/month per cluster",
+        "features": [
+          "Advanced scheduling (predictive, cost-optimized)",
+          "Priority support",
+          "Pre-built enterprise skills",
+          "Web dashboard (premium features)"
+        ]
+      },
+      {
+        "tier": "Clawbernetes Enterprise",
+        "target": "Large organizations",
+        "price": "Custom pricing",
+        "features": [
+          "Multi-cluster federation",
+          "SSO/LDAP integration",
+          "Compliance reporting",
+          "SLA guarantees",
+          "Dedicated support",
+          "Custom skill development"
+        ]
+      },
+      {
+        "tier": "Clawbernetes Marketplace",
+        "target": "GPU compute buyers and sellers",
+        "price": "5-10% transaction fee",
+        "features": [
+          "Compute marketplace access",
+          "Billing and settlement",
+          "SLA enforcement",
+          "Dispute resolution"
+        ]
+      },
+      {
+        "tier": "Managed Clawbernetes",
+        "target": "Teams that don't want to run their own Gateway",
+        "price": "Usage-based",
+        "features": [
+          "Hosted Gateway (HA)",
+          "Managed upgrades",
+          "Integrated monitoring",
+          "Global node fleet management"
+        ]
+      }
+    ]
+  },
+
+  "brand_and_ip_protection": {
+    "domain_portfolio": {
+      "primary": "clawbernetes.com",
+      "defensive": ["clawbernetes.io", "clawbernetes.ai", "clawbernetes.dev", "clawbernetes.org", "clawbernetes.net", "clawb8s.com"],
+      "status": "clawbernetes.com registered, others TBD"
+    },
+    "trademark": {
+      "mark": "Clawbernetes",
+      "classes": ["Class 9 (Software)", "Class 42 (SaaS / Cloud Computing Services)"],
+      "jurisdictions": ["USPTO (primary)", "EUIPO (secondary)"],
+      "filing_date": "2026-02-03 (planned)",
+      "first_use_in_commerce": "2026-02-02 (domain registration + initial commit)"
+    },
+    "namespace_reservations": {
+      "github": "github.com/clawbernetes",
+      "npm": "@clawbernetes",
+      "crates_io": "clawbernetes",
+      "pypi": "clawbernetes",
+      "docker_hub": "clawbernetes",
+      "social": {
+        "twitter": "@clawbernetes",
+        "linkedin": "company/clawbernetes",
+        "discord": "clawbernetes",
+        "reddit": "r/clawbernetes"
+      }
+    },
+    "additional_protections": [
+      "Provisional patent: Agent-driven orchestration with intent-based workload placement (defensive filing)",
+      "Copyright registration for core documentation and architecture specification",
+      "Contributor License Agreement (CLA) for open-source contributions",
+      "First-use-in-commerce evidence: timestamped git commits, domain WHOIS, archived web pages"
+    ]
+  },
+
+  "risks_and_mitigations": [
+    {
+      "risk": "OpenClaw project changes license or direction",
+      "probability": "low",
+      "impact": "high",
+      "mitigation": "Fork at known-good version. MIT license is irrevocable for existing code. Maintain ability to diverge completely."
+    },
+    {
+      "risk": "Kubernetes ecosystem responds with AI-native features",
+      "probability": "medium",
+      "impact": "medium",
+      "mitigation": "Move fast. K8s governance is slow (KEPs take 6-18 months). Our advantage is starting fresh without backward compatibility constraints."
+    },
+    {
+      "risk": "Agent reasoning quality insufficient for production operations",
+      "probability": "medium",
+      "impact": "high",
+      "mitigation": "Hybrid approach: agent reasoning + deterministic fallbacks. Critical operations have coded safety nets. Agent improves over time; deterministic paths ensure correctness now."
+    },
+    {
+      "risk": "GPU market shifts (cloud becomes dominant, home lab shrinks)",
+      "probability": "low",
+      "impact": "medium",
+      "mitigation": "Clawbernetes is cloud-compatible. If cloud dominates, we become the best multi-cloud GPU orchestrator."
+    },
+    {
+      "risk": "OpenClaw trademark/naming issues recur (Anthropic, others)",
+      "probability": "low",
+      "impact": "medium",
+      "mitigation": "Clawbernetes is a distinct brand. Trademark filing provides legal protection. Name doesn't reference any AI company's products."
+    },
+    {
+      "risk": "Security incident in marketplace (malicious workload, data breach)",
+      "probability": "medium",
+      "impact": "critical",
+      "mitigation": "VM-level isolation by default for marketplace. Security audit before marketplace launch. Bug bounty program. Insurance."
+    },
+    {
+      "risk": "Talent acquisition for specialized Rust + distributed systems",
+      "probability": "medium",
+      "impact": "medium",
+      "mitigation": "Open source attracts contributors. Rust community is enthusiastic about infrastructure projects. Remote-first hiring."
+    }
+  ],
+
+  "team_requirements": {
+    "founding_team": [
+      {
+        "role": "CEO / Chief Architect",
+        "person": "Omar Sobh",
+        "focus": "Architecture, Rust data plane, GPU scheduling, strategic direction"
+      },
+      {
+        "role": "Founding Engineer — Control Plane",
+        "focus": "OpenClaw Gateway extensions, agent skills, TypeScript runtime",
+        "hire_priority": "P0 (month 1)"
+      },
+      {
+        "role": "Founding Engineer — Data Plane",
+        "focus": "Rust node agent, container runtime, GPU management",
+        "hire_priority": "P0 (month 1)"
+      },
+      {
+        "role": "Founding Engineer — Networking",
+        "focus": "WireGuard overlay, eBPF datapath, RDMA, service discovery",
+        "hire_priority": "P1 (month 3)"
+      }
+    ],
+    "growth_hires": [
+      {"role": "DevRel / Community Lead", "timing": "Month 4"},
+      {"role": "Security Engineer", "timing": "Month 6"},
+      {"role": "Marketplace Engineer", "timing": "Month 8"},
+      {"role": "Enterprise Sales", "timing": "Month 10"}
+    ]
+  },
+
+  "appendices": {
+    "appendix_a_kubernetes_mapping": {
+      "description": "Complete mapping of Kubernetes concepts to Clawbernetes equivalents",
+      "mappings": [
+        {"k8s": "Pod", "clawbernetes": "Task (single container unit of execution)", "notes": "Tasks can be grouped into TaskGroups for co-scheduling"},
+        {"k8s": "Deployment", "clawbernetes": "Service (long-running, replicated workload)", "notes": "Agent manages rollouts, scaling, and health"},
+        {"k8s": "StatefulSet", "clawbernetes": "StatefulService (ordered, persistent identity)", "notes": "Agent understands data persistence requirements"},
+        {"k8s": "Job/CronJob", "clawbernetes": "Job / ScheduledJob", "notes": "Agent manages completion, retries, and scheduling"},
+        {"k8s": "DaemonSet", "clawbernetes": "FleetTask (runs on every/matching node)", "notes": "Used for monitoring agents, log collectors, etc."},
+        {"k8s": "Namespace", "clawbernetes": "Workspace", "notes": "Inherited from OpenClaw — richer isolation model"},
+        {"k8s": "Service + Ingress", "clawbernetes": "Endpoint (agent-managed exposure)", "notes": "Agent handles DNS, TLS, load balancing"},
+        {"k8s": "ConfigMap/Secret", "clawbernetes": "Config / Secret (encrypted at rest)", "notes": "Agent manages injection and rotation"},
+        {"k8s": "PersistentVolume/Claim", "clawbernetes": "Volume (agent-managed storage)", "notes": "Agent considers data locality in scheduling"},
+        {"k8s": "HPA/VPA", "clawbernetes": "Intent-based scaling (no separate autoscaler)", "notes": "'Keep latency under 50ms' vs 'scale at 80% CPU'"},
+        {"k8s": "Operator + CRD", "clawbernetes": "Skill", "notes": "Natural language instructions replace Go reconciliation loops"},
+        {"k8s": "Helm Chart", "clawbernetes": "Skill Pack (bundled skills + config)", "notes": "Composable, versionable, shareable via ClawHub"},
+        {"k8s": "kubectl", "clawbernetes": "clawbernetes CLI + any messaging channel", "notes": "CLI for automation, channels for humans"},
+        {"k8s": "etcd", "clawbernetes": "Gateway state (SQLite/Raft) + Agent memory", "notes": "No separate consensus cluster to manage"},
+        {"k8s": "kube-scheduler", "clawbernetes": "Scheduler Agent + Rust Scoring Engine", "notes": "AI reasoning + algorithmic optimization"},
+        {"k8s": "kubelet", "clawbernetes": "clawnode", "notes": "Rust-native, GPU-aware, capability-based"},
+        {"k8s": "kube-proxy", "clawbernetes": "Network Agent (eBPF-based)", "notes": "No iptables chains"},
+        {"k8s": "CNI", "clawbernetes": "Built-in WireGuard overlay", "notes": "No plugin ecosystem needed — one proven solution"},
+        {"k8s": "CSI", "clawbernetes": "Storage Agent skills", "notes": "Agent-managed storage provisioning"},
+        {"k8s": "Admission Webhooks", "clawbernetes": "Agent guardrails + validation skills", "notes": "Agent validates intent before execution"}
+      ]
+    },
+
+    "appendix_b_openclaw_integration_points": {
+      "description": "Specific OpenClaw components leveraged and how they're extended",
+      "integrations": [
+        {
+          "openclaw_component": "Gateway (ws://127.0.0.1:18789)",
+          "clawbernetes_usage": "Core control plane — extended with node fleet registry, workload state machine, federation protocol",
+          "modification_type": "Extension (upstream-compatible fork)"
+        },
+        {
+          "openclaw_component": "Pi Agent (RPC mode)",
+          "clawbernetes_usage": "Fleet Agent runtime — same agent loop with Clawbernetes-specific skills",
+          "modification_type": "Configuration + skills (no code changes)"
+        },
+        {
+          "openclaw_component": "Skills system (SKILL.md)",
+          "clawbernetes_usage": "Workload type definitions, hardware drivers, cloud integrations — all as skills",
+          "modification_type": "New skills (fully compatible with ClawHub)"
+        },
+        {
+          "openclaw_component": "Multi-agent routing + workspaces",
+          "clawbernetes_usage": "Multi-tenant workload isolation — each workspace = one tenant's workloads",
+          "modification_type": "Configuration (no code changes)"
+        },
+        {
+          "openclaw_component": "Channel adapters (WhatsApp, Slack, etc.)",
+          "clawbernetes_usage": "Operations interface — manage clusters from any messaging platform",
+          "modification_type": "No changes — used as-is"
+        },
+        {
+          "openclaw_component": "Canvas / A2UI",
+          "clawbernetes_usage": "Fleet topology visualization, GPU utilization dashboards, training curve rendering",
+          "modification_type": "New canvas layouts (compatible with OpenClaw canvas system)"
+        },
+        {
+          "openclaw_component": "Nodes (macOS/iOS/Android)",
+          "clawbernetes_usage": "Extended to include GPU compute nodes (Linux), not just device nodes",
+          "modification_type": "Extension (new node type alongside existing ones)"
+        },
+        {
+          "openclaw_component": "Cron + webhooks",
+          "clawbernetes_usage": "Scheduled operations (health checks, cost reports), webhook triggers for external events",
+          "modification_type": "Configuration (no code changes)"
+        },
+        {
+          "openclaw_component": "Session model (main, group, isolated)",
+          "clawbernetes_usage": "Workload sessions map to isolated sessions. Main session for cluster-wide operations.",
+          "modification_type": "Conceptual mapping (no code changes)"
+        },
+        {
+          "openclaw_component": "Security model (sandbox, DM pairing, allowlists)",
+          "clawbernetes_usage": "Extended for multi-tenant RBAC, marketplace trust, and VM-level isolation",
+          "modification_type": "Extension (builds on existing security primitives)"
+        }
+      ]
+    },
+
+    "appendix_c_config_example": {
+      "description": "Example clawbernetes.toml configuration file for a home lab cluster",
+      "example": {
+        "cluster": {
+          "name": "omar-home-lab",
+          "gateway": {
+            "port": 18789,
+            "ha_mode": false,
+            "auth_token": "${CLAWBERNETES_TOKEN}"
+          }
+        },
+        "agent": {
+          "model": "anthropic/claude-opus-4-5",
+          "thinking_level": "high",
+          "skills": ["gpu-nvidia", "pytorch-training", "vllm-inference", "checkpoint-s3"]
+        },
+        "scheduling": {
+          "strategy": "balanced",
+          "priorities": {
+            "performance": 0.4,
+            "cost": 0.3,
+            "reliability": 0.2,
+            "locality": 0.1
+          },
+          "gpu_awareness": {
+            "prefer_nvlink": true,
+            "thermal_headroom_pct": 15,
+            "vram_reservation_pct": 5
+          }
+        },
+        "marketplace": {
+          "enabled": false,
+          "offer": {
+            "gpus": ["rtx-3090:4"],
+            "price_per_gpu_hour": 0.40,
+            "availability": "weeknights+weekends",
+            "isolation": "vm"
+          }
+        },
+        "channels": {
+          "whatsapp": {"enabled": true, "allow_from": ["+15555550123"]},
+          "slack": {"enabled": true, "workspace": "omar-lab"},
+          "webchat": {"enabled": true}
+        },
+        "observability": {
+          "prometheus": {"enabled": true, "port": 18794},
+          "alerts": {
+            "channels": ["whatsapp", "slack"],
+            "gpu_temp_warning": 85,
+            "gpu_temp_critical": 95,
+            "workload_failure": true
+          }
+        }
+      }
+    },
+
+    "appendix_d_glossary": {
+      "terms": [
+        {"term": "Clawbernetes", "definition": "AI-native orchestration platform built on OpenClaw. Replaces Kubernetes' declarative reconciliation with intelligent agent-driven infrastructure management."},
+        {"term": "Gateway", "definition": "The central control plane process. Manages WebSocket connections, node registry, workload lifecycle, and agent communication. Based on OpenClaw Gateway."},
+        {"term": "Fleet Agent", "definition": "The primary AI agent responsible for cluster operations — interpreting user intent, managing workloads, and coordinating self-healing."},
+        {"term": "Scheduler Agent", "definition": "Specialized AI agent for workload placement decisions. Uses Rust-backed scoring engine for GPU-aware, topology-aware scheduling."},
+        {"term": "clawnode", "definition": "Rust-native agent running on each compute node. Handles hardware discovery, container lifecycle, GPU management, and metrics collection."},
+        {"term": "Skill", "definition": "A modular capability definition (SKILL.md) that teaches agents how to manage specific workload types, hardware, or services. Replaces K8s operators/CRDs."},
+        {"term": "Workspace", "definition": "An isolated environment for workloads, equivalent to K8s namespaces but with richer agent-driven policies. Inherited from OpenClaw workspace model."},
+        {"term": "Intent", "definition": "A high-level description of what the user wants to achieve, as opposed to low-level desired state. Example: 'minimize latency' vs 'set replicas: 5'."},
+        {"term": "Task", "definition": "The basic unit of execution (equivalent to a K8s Pod). A single container or process running on a node."},
+        {"term": "TaskGroup", "definition": "A set of Tasks that must be co-scheduled (gang scheduling). Used for distributed training jobs."},
+        {"term": "Topology Engine", "definition": "Rust component that maintains a real-time graph of GPU interconnects, network topology, and storage paths for intelligent placement."},
+        {"term": "Compute Marketplace", "definition": "Peer-to-peer platform where GPU owners can sell idle compute and buyers can procure GPU capacity on demand."},
+        {"term": "Federation", "definition": "Protocol for connecting multiple Clawbernetes clusters for cross-cluster workload placement and resource sharing."},
+        {"term": "ClawHub", "definition": "Community skill registry for sharing and discovering Clawbernetes skills. Based on OpenClaw's ClawHub."},
+        {"term": "Canvas", "definition": "Agent-driven visual workspace for fleet topology, GPU dashboards, and training metrics. Based on OpenClaw Canvas/A2UI."}
+      ]
+    }
+  }
+}
