@@ -8,10 +8,15 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[[bin]]
+name = "claw-gateway"
+path = "src/main.rs"
+
 [dependencies]
 claw-proto = { path = "../claw-proto" }
 claw-gateway = { path = "../claw-gateway" }
-tokio = { workspace = true }
+tokio = { version = "1.43", features = ["full", "signal"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
