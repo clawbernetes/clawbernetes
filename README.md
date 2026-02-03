@@ -38,16 +38,61 @@ Clawbernetes replaces Kubernetes' declarative reconciliation model with intellig
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## 📦 Crates
+## 🚀 Quick Start
+
+```bash
+# Build
+make build
+
+# Start gateway
+./target/release/claw-gateway
+
+# Connect a node (another terminal)
+./target/release/clawnode --gateway ws://localhost:8080 --name my-node
+
+# Check status
+./target/release/clawbernetes node list
+```
+
+### Docker
+
+```bash
+# Build images
+make docker
+
+# Start cluster (gateway + 2 nodes)
+make docker-up
+
+# Check logs
+make docker-logs
+
+# Stop
+make docker-down
+```
+
+## 📦 Crates (22 total)
 
 | Crate | Description | Status |
 |-------|-------------|--------|
-| `clawnode` | Node agent — GPU detection, container runtime, metrics | 🚧 In Progress |
-| `claw-proto` | Protobuf definitions for node ↔ gateway communication | 🚧 In Progress |
-| `claw-cli` | Command-line interface | 🚧 In Progress |
-| `molt-core` | MOLT token types and primitives | 🚧 In Progress |
-| `molt-p2p` | P2P discovery and gossip protocol | 🚧 In Progress |
-| `molt-agent` | Autonomous provider/buyer agent logic | 🚧 In Progress |
+| `claw-gateway-server` | WebSocket gateway for node fleet | ✅ Done |
+| `clawnode` | Node agent — GPU detection, metrics | ✅ Done |
+| `claw-cli` | Command-line interface | ✅ Done |
+| `claw-metrics` | Time-series metrics storage | ✅ Done |
+| `claw-logs` | Structured log aggregation | ✅ Done |
+| `claw-observe` | AI-native observability | ✅ Done |
+| `claw-secrets` | Encrypted secrets management | ✅ Done |
+| `claw-pki` | Certificate authority | ✅ Done |
+| `claw-deploy` | Intent-based deployment | ✅ Done |
+| `claw-rollback` | Auto-rollback with analysis | ✅ Done |
+| `claw-wireguard` | WireGuard mesh networking | ✅ Done |
+| `claw-network` | Mesh topology management | ✅ Done |
+| `claw-tailscale` | Tailscale integration | ✅ Done |
+| `molt-core` | MOLT token primitives | ✅ Done |
+| `molt-p2p` | P2P discovery and gossip | ✅ Done |
+| `molt-agent` | Provider/buyer agent logic | ✅ Done |
+| `molt-market` | Orderbook and settlement | ✅ Done |
+| `molt-token` | Solana SPL token client | ✅ Done |
+| `molt-attestation` | Hardware verification | ✅ Done |
 | `molt-market` | Decentralized marketplace protocol | 🚧 In Progress |
 | `molt-attestation` | Hardware and execution attestation | 🚧 In Progress |
 
