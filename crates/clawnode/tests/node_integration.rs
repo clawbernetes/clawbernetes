@@ -14,6 +14,7 @@ fn test_config() -> NodeConfig {
         name: "integration-test-node".to_string(),
         gateway_url: "ws://localhost:19999".to_string(), // Non-existent port
         gpu: Default::default(),
+        network: Default::default(),
         molt: Default::default(),
     }
 }

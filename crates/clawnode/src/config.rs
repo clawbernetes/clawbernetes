@@ -4,6 +4,7 @@
 //! - Node identity and naming
 //! - Gateway connection settings
 //! - GPU configuration
+//! - Network/WireGuard settings
 //! - Optional MOLT network settings
 
 use std::path::Path;
@@ -11,6 +12,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::NodeError;
+use crate::network::{NetworkConfig, WireGuardConfig};
 
 /// Configuration for GPU resources on this node.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -55,7 +57,7 @@ impl Default for MoltConfig {
 }
 
 /// Main node configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeConfig {
     /// Human-readable node name.
     pub name: String,
@@ -64,6 +66,9 @@ pub struct NodeConfig {
     /// GPU configuration.
     #[serde(default)]
     pub gpu: GpuConfig,
+    /// Network configuration.
+    #[serde(default)]
+    pub network: NetworkConfig,
     /// MOLT configuration.
     #[serde(default)]
     pub molt: MoltConfig,
@@ -378,6 +383,7 @@ mod tests {
                 poll_interval_secs: 15,
                 max_temperature_celsius: Some(80),
             },
+            network: NetworkConfig::default(),
             molt: MoltConfig {
                 enabled: true,
                 min_price_microdollars: 50_000,

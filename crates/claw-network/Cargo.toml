@@ -1,0 +1,42 @@
+[package]
+name = "claw-network"
+description = "WireGuard mesh topology management for Clawbernetes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# IP/CIDR handling
+ipnet = { version = "2.10", features = ["serde"] }
+
+# Base64 encoding for WireGuard keys
+base64 = "0.22"
+
+# Concurrency
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

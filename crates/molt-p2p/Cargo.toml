@@ -41,6 +41,7 @@ uuid = { workspace = true }
 
 # Internal
 molt-core = { path = "../molt-core" }
+claw-wireguard = { path = "../claw-wireguard" }
 
 [dev-dependencies]
 proptest = { workspace = true }

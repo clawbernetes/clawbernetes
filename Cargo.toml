@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/clawnode",
+    "crates/claw-tailscale",
     "crates/claw-proto",
     "crates/claw-cli",
     "crates/claw-gateway",
@@ -13,6 +14,8 @@ members = [
     "crates/claw-pki",
     "crates/claw-rollback",
     "crates/claw-secrets",
+    "crates/claw-network",
+    "crates/claw-wireguard",
     "crates/molt-core",
     "crates/molt-p2p",
     "crates/molt-agent",

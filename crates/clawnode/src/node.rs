@@ -463,6 +463,7 @@ mod tests {
             name: "test-node".to_string(),
             gateway_url: "ws://localhost:9999".to_string(),
             gpu: Default::default(),
+            network: Default::default(),
             molt: Default::default(),
         }
     }

@@ -56,6 +56,7 @@ impl Cli {
                 name: String::new(),
                 gateway_url: String::new(),
                 gpu: Default::default(),
+                network: Default::default(),
                 molt: Default::default(),
             },
         };

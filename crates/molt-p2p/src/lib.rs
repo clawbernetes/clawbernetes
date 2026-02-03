@@ -24,8 +24,10 @@ pub mod discovery;
 pub mod error;
 pub mod gossip;
 pub mod message;
+pub mod nat;
 pub mod network;
 pub mod protocol;
+pub mod tunnel;
 
 pub use connection::{
     ActiveConnection, ConnectionHealth, ConnectionPool, ConnectionPoolConfig, ConnectionState,
@@ -37,3 +39,5 @@ pub use gossip::{CapacityAnnouncement, GpuInfo, Pricing};
 pub use message::{CapacityRequirements, P2pMessage};
 pub use network::{MoltNetwork, NetworkConfig, NetworkState, NetworkStats, ProviderSearchResult};
 pub use protocol::{PeerId, PeerInfo};
+pub use tunnel::{BandwidthStats, Job, JobId, JobTunnel, TunnelManager, TunnelState};
+pub use nat::{EndpointDiscovery, NatTraversal, NatType};

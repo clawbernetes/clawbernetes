@@ -19,6 +19,7 @@ pub mod gateway;
 pub mod gpu;
 pub mod handlers;
 pub mod metrics;
+pub mod network;
 pub mod node;
 pub mod runtime;
 pub mod state;

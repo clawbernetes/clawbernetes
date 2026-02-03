@@ -43,8 +43,12 @@ clap = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 
+# IP/Network types
+ipnet = { version = "2.10", features = ["serde"] }
+
 # Internal
 claw-proto = { path = "../claw-proto" }
+claw-wireguard = { path = "../claw-wireguard" }
 molt-core = { path = "../molt-core", optional = true }
 molt-p2p = { path = "../molt-p2p", optional = true }
 
