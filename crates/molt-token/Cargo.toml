@@ -1,0 +1,44 @@
+[package]
+name = "molt-token"
+description = "MOLT token (Solana SPL) for the P2P GPU compute marketplace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Async
+tokio = { version = "1.43", features = ["sync", "time", "macros", "rt-multi-thread"] }
+
+# Crypto
+bs58 = "0.5"
+ed25519-dalek = { version = "2.1", features = ["serde"] }
+rand = "0.8"
+sha2 = "0.10"
+
+# Time
+chrono = { workspace = true }
+
+# UUID for transaction IDs
+uuid = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+test-case = { workspace = true }
+tokio-test = "0.4"
+tempfile = "3.15"
+
+[lints]
+workspace = true

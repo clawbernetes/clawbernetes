@@ -18,6 +18,7 @@ members = [
     "crates/claw-wireguard",
     "crates/molt-core",
     "crates/molt-p2p",
+    "crates/molt-token",
     "crates/molt-agent",
     "crates/molt-market",
     "crates/molt-attestation",
