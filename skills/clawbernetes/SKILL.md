@@ -413,6 +413,267 @@ When user asks "why is X slow?" or "what's wrong?":
    clawbernetes diagnose workload <id>
    ```
 
+## Secrets Management
+
+Secure storage and retrieval of sensitive data (API keys, credentials, certificates).
+
+### Store a Secret
+```bash
+clawbernetes secret set <name> --value <value>
+```
+Store an encrypted secret. Value is encrypted at rest using cluster-level encryption.
+
+```bash
+clawbernetes secret set <name> --file <path>
+```
+Store secret from a file (useful for multi-line values, certificates).
+
+**Flags:**
+- `--namespace <ns>` - Target namespace (default: current context)
+- `--description "<text>"` - Human-readable description
+- `--expires <duration>` - Auto-expire after duration (e.g., "90d")
+
+### Retrieve a Secret
+```bash
+clawbernetes secret get <name>
+```
+Get secret value. **Requires authorization** - access is logged.
+
+**Flags:**
+- `--output <format>` - Output format: `value`, `json`, `yaml`
+- `--version <n>` - Get specific version (default: latest)
+
+### List Secrets
+```bash
+clawbernetes secret list
+```
+List all secret names (values are NOT shown for security).
+
+**Flags:**
+- `--namespace <ns>` - Filter by namespace
+- `--json` - Output as JSON with metadata
+
+### Rotate a Secret
+```bash
+clawbernetes secret rotate <name>
+```
+Generate a new version of the secret. Old version remains accessible until TTL expires.
+
+**Flags:**
+- `--value <value>` - Set new value (prompted if not provided)
+- `--keep-versions <n>` - Number of old versions to retain (default: 3)
+
+### Delete a Secret
+```bash
+clawbernetes secret delete <name>
+```
+Remove secret. Requires confirmation unless `--force` is used.
+
+**Flags:**
+- `--force` - Skip confirmation
+- `--all-versions` - Delete all versions (default: only latest)
+
+### Certificate Management
+
+#### Issue TLS Certificate
+```bash
+clawbernetes cert issue <name> --san <dns-name>
+```
+Issue a TLS certificate from the cluster CA.
+
+**Flags:**
+- `--san <name>` - Subject Alternative Names (repeatable)
+- `--validity <duration>` - Certificate validity (default: "90d")
+- `--key-size <bits>` - RSA key size (default: 2048)
+- `--algorithm <alg>` - ecdsa, rsa (default: ecdsa)
+
+#### List Certificates
+```bash
+clawbernetes cert list
+```
+List all certificates with expiry status.
+
+**Flags:**
+- `--expiring <duration>` - Show certs expiring within duration
+- `--json` - Output as JSON
+
+#### Rotate Certificate
+```bash
+clawbernetes cert rotate <name>
+```
+Rotate certificate before expiry. Old cert remains valid during transition.
+
+**Flags:**
+- `--force` - Rotate even if not near expiry
+- `--revoke-old` - Revoke old certificate immediately
+
+### Secrets Best Practices
+
+When helping users with secrets:
+1. **Never log or display secret values** unless explicitly requested
+2. **Suggest rotation** for secrets older than 90 days
+3. **Use file-based secrets** for certificates and multi-line values
+4. **Check expiry dates** on certificates regularly
+5. **Use namespaces** to isolate secrets between environments
+
+## Smart Deployment
+
+AI-assisted deployment with natural language intent parsing.
+
+### Deploy with Intent
+```bash
+clawbernetes deploy "<intent>"
+```
+Natural language deployment. The AI parses your intent and generates the appropriate deployment strategy.
+
+**Examples:**
+```bash
+# GPU workload with canary
+clawbernetes deploy "deploy pytorch-train with 4 GPUs, canary 10% first"
+
+# Update with auto-rollback
+clawbernetes deploy "update model-server to v2.1, rollback if errors > 1%"
+
+# Simple scaling
+clawbernetes deploy "scale inference to 8 replicas"
+
+# Blue-green deployment
+clawbernetes deploy "blue-green deploy api-server v3.0, switch after health check"
+
+# Resource adjustment
+clawbernetes deploy "increase memory for data-processor to 64Gi"
+
+# Scheduled deployment
+clawbernetes deploy "deploy new-model at 2am with 5% canary, promote after 1 hour if healthy"
+```
+
+**Flags:**
+- `--dry-run` - Show what would be deployed without executing
+- `--confirm` - Require confirmation before applying
+- `--watch` - Watch deployment progress after submission
+- `--timeout <duration>` - Max deployment time (default: "30m")
+
+### Deployment Status
+```bash
+clawbernetes deploy status <id>
+```
+Check deployment progress with real-time status.
+
+**Output includes:**
+- Current phase (pending, rolling, canary, promoting, complete, failed)
+- Replica status (ready/total)
+- Health check results
+- Error messages if any
+- Estimated time remaining
+
+**Flags:**
+- `--watch` / `-w` - Continuous status updates
+- `--json` - Output as JSON
+
+### Promote Canary
+```bash
+clawbernetes deploy promote <id>
+```
+Promote canary deployment to full rollout.
+
+**Flags:**
+- `--force` - Promote even if metrics show warnings
+- `--percentage <n>` - Promote to specific percentage (incremental)
+
+### Rollback
+```bash
+clawbernetes deploy rollback <id>
+```
+Rollback to previous version. Automatic if deployment fails health checks.
+
+```bash
+clawbernetes deploy rollback <id> --to <version>
+```
+Rollback to a specific version.
+
+**Flags:**
+- `--immediate` - Skip graceful drain (emergency rollback)
+- `--reason "<text>"` - Record rollback reason
+
+### Deployment History
+```bash
+clawbernetes deploy history <workload>
+```
+View deployment history for a workload.
+
+**Output includes:**
+- Deployment ID and timestamp
+- Version deployed
+- Strategy used (rolling, canary, blue-green)
+- Duration and outcome
+- Who initiated the deployment
+
+**Flags:**
+- `--limit <n>` - Number of entries (default: 10)
+- `--json` - Output as JSON
+- `--include-failed` - Include failed deployments
+
+### Deployment Strategies
+
+The AI recognizes these deployment patterns:
+
+| Intent Keywords | Strategy | Behavior |
+|-----------------|----------|----------|
+| "canary X%" | Canary | Deploy to X% first, wait for validation |
+| "blue-green" | Blue-Green | Full parallel deployment, instant switch |
+| "rolling" | Rolling Update | Gradual replacement (default) |
+| "immediate" | Recreate | Kill all, then create new |
+| "scale to N" | HPA Adjustment | Adjust replica count |
+| "rollback if" | Auto-Rollback | Set failure conditions |
+
+### AI Deployment Assistance
+
+When helping users deploy:
+
+1. **Parse intent clearly** - Confirm understanding before deploying
+2. **Suggest canary for risky changes** - New versions, major updates
+3. **Recommend rollback conditions** - Error rate, latency thresholds
+4. **Check resource availability** - GPUs, memory before deploying
+5. **Verify secrets exist** - Ensure required secrets are in place
+6. **Watch initial deployment** - Monitor first few minutes for issues
+
+### Example Deployment Workflows
+
+#### Safe Production Update
+```bash
+# User: "deploy model-server v2.5 to production safely"
+
+# AI suggests:
+clawbernetes deploy "canary 10% model-server v2.5, promote after 15m if error_rate < 0.5%"
+
+# Watch progress
+clawbernetes deploy status <id> --watch
+
+# If healthy, promote (or it auto-promotes)
+clawbernetes deploy promote <id>
+```
+
+#### Emergency Rollback
+```bash
+# User: "something's wrong, roll back model-server"
+
+# Check recent deployments
+clawbernetes deploy history model-server --limit 5
+
+# Rollback to previous stable version
+clawbernetes deploy rollback <id> --immediate --reason "elevated error rate"
+```
+
+#### GPU Training Deployment
+```bash
+# User: "deploy the new training job with 8 A100s"
+
+clawbernetes deploy "deploy pytorch-trainer with 8 A100 GPUs, priority high, timeout 48h"
+
+# Check status
+clawbernetes deploy status <id>
+```
+
 ## Error Handling
 
 Common errors and solutions:

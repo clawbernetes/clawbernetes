@@ -1,0 +1,37 @@
+[package]
+name = "claw-deploy"
+description = "Intent-based deployment system for Clawbernetes - replaces ArgoCD/Helm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging/tracing
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# Internal
+claw-proto = { path = "../claw-proto" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+test-case = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true
