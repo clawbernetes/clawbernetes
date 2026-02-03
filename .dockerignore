@@ -1,0 +1,31 @@
+# Build artifacts
+target/
+*.rlib
+*.rmeta
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Documentation (not needed in image)
+docs/
+*.md
+!README.md
+
+# CI/CD
+.github/
+
+# Local config
+*.local
+*.toml.local
+
+# Tests (not needed in production image)
+**/tests/
+**/benches/
+proptest-regressions/
