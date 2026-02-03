@@ -215,6 +215,9 @@ where
 
     info!(session_id = %session_id, "Starting session handler");
 
+    // Channel for sending responses from read task to write task
+    let (response_tx, mut response_rx) = mpsc::channel::<GatewayMessage>(32);
+
     // Task for reading from WebSocket
     let read_session = session.clone();
     let read_registry = registry.clone();
@@ -260,29 +263,48 @@ where
                 route_message(&node_msg, &mut registry, &mut workload_mgr, &read_config)
             };
 
-            // If there's a response, return it
+            // If there's a response, send it through the channel (don't exit the loop!)
             match response {
                 Ok(Some(resp)) => {
-                    return Ok(Some(resp));
+                    if response_tx.send(resp).await.is_err() {
+                        warn!(session_id = %session_id, "Failed to send response to channel");
+                        break;
+                    }
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    // No response needed, continue the loop
+                }
                 Err(e) => {
                     warn!(session_id = %session_id, error = %e, "Handler error");
-                    return Err(e);
+                    // Don't break on handler errors, just log and continue
                 }
             }
         }
 
-        Ok(None)
+        Ok::<_, ServerError>(())
     };
 
-    // Task for writing to WebSocket
+    // Task for writing to WebSocket (handles both outbound channel and responses)
     let write_task = async {
-        while let Some(msg) = outbound_rx.recv().await {
-            let ws_msg = gateway_msg_to_ws(&msg)?;
-            if let Err(e) = ws_sink.send(ws_msg).await {
-                error!(session_id = %session_id, error = %e, "Failed to send message");
-                return Err(ServerError::WebSocket(e.to_string()));
+        loop {
+            tokio::select! {
+                // Handle responses from read task
+                Some(msg) = response_rx.recv() => {
+                    let ws_msg = gateway_msg_to_ws(&msg)?;
+                    if let Err(e) = ws_sink.send(ws_msg).await {
+                        error!(session_id = %session_id, error = %e, "Failed to send response");
+                        return Err(ServerError::WebSocket(e.to_string()));
+                    }
+                }
+                // Handle messages from external outbound channel
+                Some(msg) = outbound_rx.recv() => {
+                    let ws_msg = gateway_msg_to_ws(&msg)?;
+                    if let Err(e) = ws_sink.send(ws_msg).await {
+                        error!(session_id = %session_id, error = %e, "Failed to send message");
+                        return Err(ServerError::WebSocket(e.to_string()));
+                    }
+                }
+                else => break,
             }
         }
         Ok::<_, ServerError>(())
@@ -291,18 +313,8 @@ where
     // Run both tasks concurrently
     tokio::select! {
         read_result = read_task => {
-            match read_result {
-                Ok(Some(response)) => {
-                    // Send any pending response
-                    let ws_msg = gateway_msg_to_ws(&response)?;
-                    if let Err(e) = ws_sink.send(ws_msg).await {
-                        error!(session_id = %session_id, error = %e, "Failed to send final response");
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    warn!(session_id = %session_id, error = %e, "Read task error");
-                }
+            if let Err(e) = read_result {
+                warn!(session_id = %session_id, error = %e, "Read task error");
             }
         }
         write_result = write_task => {
