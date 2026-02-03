@@ -1,0 +1,202 @@
+# Clawbernetes Workload Template
+# ================================
+# Submit with: clawbernetes run --file workload.yaml
+# Override values: clawbernetes run --file workload.yaml --gpus 8
+
+apiVersion: clawbernetes/v1
+kind: Workload
+
+metadata:
+  # Unique name for this workload (auto-generated if omitted)
+  name: my-training-job
+  
+  # Labels for organization and filtering
+  labels:
+    project: ml-experiments
+    team: research
+    experiment: baseline-v1
+  
+  # Annotations for additional metadata
+  annotations:
+    description: "Fine-tuning GPT model on custom dataset"
+    owner: user@example.com
+
+spec:
+  # Container image to run
+  image: pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+  
+  # Command to execute (optional, uses image default if omitted)
+  command:
+    - python
+    - train.py
+    - --epochs=100
+    - --batch-size=32
+    - --learning-rate=1e-4
+  
+  # GPU requirements
+  gpus:
+    count: 4                    # Number of GPUs needed
+    type: A100                  # GPU type preference (optional)
+    memory: 40Gi                # Minimum GPU memory (optional)
+  
+  # CPU and memory resources
+  resources:
+    cpu: 16                     # CPU cores
+    memory: 64Gi                # RAM
+  
+  # Environment variables
+  env:
+    - name: WANDB_PROJECT
+      value: my-experiment
+    - name: WANDB_API_KEY
+      valueFrom:
+        secretRef: wandb-credentials
+    - name: HF_TOKEN
+      valueFrom:
+        secretRef: huggingface-token
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0,1,2,3"
+  
+  # Volume mounts
+  volumes:
+    # Persistent storage for datasets
+    - name: datasets
+      source: s3://my-bucket/datasets
+      mountPath: /data
+      readOnly: true
+    
+    # Output directory for checkpoints
+    - name: checkpoints
+      source: s3://my-bucket/checkpoints
+      mountPath: /output
+    
+    # Shared memory for DataLoader workers
+    - name: shm
+      type: emptyDir
+      medium: Memory
+      mountPath: /dev/shm
+      sizeLimit: 16Gi
+
+  # Scheduling preferences
+  scheduling:
+    # Priority level: low, normal, high
+    priority: normal
+    
+    # Node preferences (optional)
+    nodeSelector:
+      gpu-type: A100
+      region: us-west
+    
+    # Tolerations for specific node conditions
+    tolerations:
+      - key: gpu-preemptible
+        operator: Exists
+        effect: NoSchedule
+
+  # Execution constraints
+  constraints:
+    # Maximum runtime
+    timeout: 48h
+    
+    # Retry policy
+    retries: 2
+    retryDelay: 5m
+    
+    # Checkpointing (if supported by your script)
+    checkpointing:
+      enabled: true
+      interval: 1h
+      path: /output/checkpoints
+
+  # Networking
+  networking:
+    # Expose ports (optional)
+    ports:
+      - name: tensorboard
+        port: 6006
+        protocol: TCP
+    
+    # Enable distributed training
+    distributed:
+      enabled: false
+      # worldSize: 4
+      # masterPort: 29500
+
+  # Lifecycle hooks
+  hooks:
+    # Run before main command
+    preStart:
+      - pip install -r /data/requirements.txt
+    
+    # Run after completion (success or failure)
+    postStop:
+      - aws s3 sync /output s3://my-bucket/results/
+
+---
+# Multi-document YAML: Define multiple related workloads
+
+# Example: Hyperparameter sweep
+apiVersion: clawbernetes/v1
+kind: Workload
+
+metadata:
+  name: hp-sweep-lr-1e3
+  labels:
+    project: ml-experiments
+    sweep: learning-rate
+
+spec:
+  image: pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+  command:
+    - python
+    - train.py
+    - --learning-rate=1e-3
+  gpus:
+    count: 1
+  resources:
+    memory: 16Gi
+  constraints:
+    timeout: 4h
+
+---
+# Inference workload example
+apiVersion: clawbernetes/v1
+kind: Workload
+
+metadata:
+  name: model-inference
+  labels:
+    type: inference
+
+spec:
+  image: my-registry/inference-server:latest
+  
+  gpus:
+    count: 1
+    type: T4  # Inference-optimized
+  
+  resources:
+    cpu: 4
+    memory: 16Gi
+  
+  env:
+    - name: MODEL_PATH
+      value: /models/gpt-finetuned
+    - name: MAX_BATCH_SIZE
+      value: "32"
+  
+  volumes:
+    - name: models
+      source: s3://my-bucket/models
+      mountPath: /models
+      readOnly: true
+  
+  networking:
+    ports:
+      - name: http
+        port: 8080
+  
+  # Keep running (service mode)
+  constraints:
+    timeout: 0  # No timeout - runs until stopped
+    restartPolicy: Always

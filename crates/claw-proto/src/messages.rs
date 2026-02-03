@@ -59,6 +59,60 @@ pub enum NodeMessage {
     },
 }
 
+/// Configuration update for nodes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct NodeConfig {
+    /// Heartbeat interval in seconds.
+    pub heartbeat_interval_secs: Option<u32>,
+    /// Metrics reporting interval in seconds.
+    pub metrics_interval_secs: Option<u32>,
+    /// Maximum concurrent workloads.
+    pub max_concurrent_workloads: Option<u32>,
+    /// Log level (e.g., "debug", "info", "warn", "error").
+    pub log_level: Option<String>,
+}
+
+impl NodeConfig {
+    /// Create a new empty config.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            heartbeat_interval_secs: None,
+            metrics_interval_secs: None,
+            max_concurrent_workloads: None,
+            log_level: None,
+        }
+    }
+
+    /// Set heartbeat interval.
+    #[must_use]
+    pub const fn with_heartbeat_interval(mut self, secs: u32) -> Self {
+        self.heartbeat_interval_secs = Some(secs);
+        self
+    }
+
+    /// Set metrics interval.
+    #[must_use]
+    pub const fn with_metrics_interval(mut self, secs: u32) -> Self {
+        self.metrics_interval_secs = Some(secs);
+        self
+    }
+
+    /// Set max concurrent workloads.
+    #[must_use]
+    pub const fn with_max_concurrent_workloads(mut self, max: u32) -> Self {
+        self.max_concurrent_workloads = Some(max);
+        self
+    }
+
+    /// Set log level.
+    #[must_use]
+    pub fn with_log_level(mut self, level: impl Into<String>) -> Self {
+        self.log_level = Some(level.into());
+        self
+    }
+}
+
 /// Messages sent from gateway to node.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -90,6 +144,11 @@ pub enum GatewayMessage {
         workload_id: WorkloadId,
         /// Grace period.
         grace_period_secs: u32,
+    },
+    /// Configuration update.
+    ConfigUpdate {
+        /// New configuration values.
+        config: NodeConfig,
     },
     /// Request metrics.
     RequestMetrics,
@@ -193,6 +252,12 @@ impl GatewayMessage {
         }
     }
 
+    /// Create config update message.
+    #[must_use]
+    pub const fn config_update(config: NodeConfig) -> Self {
+        Self::ConfigUpdate { config }
+    }
+
     /// Serialize to JSON.
     ///
     /// # Errors
@@ -228,5 +293,54 @@ mod tests {
         let msg = GatewayMessage::registered(NodeId::new(), 30, 10);
         let json = msg.to_json().unwrap();
         assert!(json.contains("registered"));
+    }
+
+    #[test]
+    fn test_config_update_message() {
+        let config = NodeConfig::new()
+            .with_heartbeat_interval(60)
+            .with_metrics_interval(30)
+            .with_log_level("debug");
+
+        let msg = GatewayMessage::config_update(config);
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("config_update"));
+        assert!(json.contains("heartbeat_interval_secs"));
+        assert!(json.contains("60"));
+    }
+
+    #[test]
+    fn test_node_config_builder() {
+        let config = NodeConfig::new()
+            .with_heartbeat_interval(30)
+            .with_metrics_interval(10)
+            .with_max_concurrent_workloads(5)
+            .with_log_level("info");
+
+        assert_eq!(config.heartbeat_interval_secs, Some(30));
+        assert_eq!(config.metrics_interval_secs, Some(10));
+        assert_eq!(config.max_concurrent_workloads, Some(5));
+        assert_eq!(config.log_level, Some("info".to_string()));
+    }
+
+    #[test]
+    fn test_node_config_default_is_empty() {
+        let config = NodeConfig::default();
+        assert!(config.heartbeat_interval_secs.is_none());
+        assert!(config.metrics_interval_secs.is_none());
+        assert!(config.max_concurrent_workloads.is_none());
+        assert!(config.log_level.is_none());
+    }
+
+    #[test]
+    fn test_config_update_serialization_roundtrip() {
+        let config = NodeConfig::new()
+            .with_heartbeat_interval(45)
+            .with_log_level("warn");
+
+        let msg = GatewayMessage::config_update(config);
+        let json = msg.to_json().unwrap();
+        let parsed = GatewayMessage::from_json(&json).unwrap();
+        assert_eq!(msg, parsed);
     }
 }

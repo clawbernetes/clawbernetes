@@ -14,7 +14,7 @@ pub mod workload;
 
 pub use error::ProtoError;
 pub use events::{EventLog, EventMetadata, WorkloadEvent, WorkloadEventKind};
-pub use messages::{GatewayMessage, NodeMessage};
+pub use messages::{GatewayMessage, NodeConfig, NodeMessage};
 pub use types::{
     GpuCapability, GpuMetricsProto, NodeCapabilities, NodeId, WorkloadId,
     WorkloadState,

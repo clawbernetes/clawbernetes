@@ -76,6 +76,12 @@ pub fn handle_gateway_message<R: ContainerRuntime + ?Sized>(
             warn!(code, message = %message, "received error from gateway");
             Ok(None)
         }
+
+        GatewayMessage::ConfigUpdate { config } => {
+            info!(?config, "received config update from gateway");
+            // TODO: Apply config updates (intervals, etc.)
+            Ok(None)
+        }
     }
 }
 

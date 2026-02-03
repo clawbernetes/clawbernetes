@@ -1,0 +1,30 @@
+[package]
+name = "claw-gateway-server"
+description = "WebSocket gateway server for Clawbernetes node fleet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+claw-proto = { path = "../claw-proto" }
+claw-gateway = { path = "../claw-gateway" }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+test-case = { workspace = true }
+tokio-test = "0.4"
+
+[lints]
+workspace = true

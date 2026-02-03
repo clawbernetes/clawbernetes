@@ -5,6 +5,7 @@ members = [
     "crates/claw-proto",
     "crates/claw-cli",
     "crates/claw-gateway",
+    "crates/claw-gateway-server",
     "crates/molt-core",
     "crates/molt-p2p",
     "crates/molt-agent",
