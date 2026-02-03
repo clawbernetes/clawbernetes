@@ -6,6 +6,9 @@ members = [
     "crates/claw-cli",
     "crates/claw-gateway",
     "crates/claw-gateway-server",
+    "crates/claw-metrics",
+    "crates/claw-logs",
+    "crates/claw-observe",
     "crates/molt-core",
     "crates/molt-p2p",
     "crates/molt-agent",
@@ -66,6 +69,9 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # UUID
 uuid = { version = "1.11", features = ["v4", "serde"] }
+
+# Concurrency
+parking_lot = "0.12"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

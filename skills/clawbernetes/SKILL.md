@@ -231,6 +231,188 @@ When helping users with Clawbernetes:
 5. **Use workload names** for easier tracking and discussion
 6. **Check MOLT status** if user mentions cost optimization or GPU sharing
 
+## Observability Commands
+
+### Quick Health Check
+```bash
+clawbernetes health
+```
+Overall cluster health with AI diagnosis. Returns:
+- Cluster-wide health score (0-100)
+- Node status summary (healthy/degraded/critical counts)
+- Resource utilization overview
+- Active alerts and warnings
+
+### Node Diagnostics
+```bash
+clawbernetes diagnose node <node-id>
+```
+Deep analysis of a specific node:
+- **GPU thermal status** - Temperature, throttling state, fan speed
+- **Memory pressure** - RAM usage, swap activity, OOM risk
+- **Recent errors** - Last 24h of warnings/errors from logs
+- **Performance trends** - Utilization patterns, anomaly detection
+
+**Flags:**
+- `--verbose` - Include raw metrics data
+- `--json` - Output as JSON for parsing
+- `--history <duration>` - Analysis window (default: "1h")
+
+### Workload Diagnostics
+```bash
+clawbernetes diagnose workload <workload-id>
+```
+Analyze workload health:
+- **Resource utilization** - GPU%, memory, CPU, I/O
+- **Error patterns** - Crash loops, restarts, OOM events
+- **Performance metrics** - Throughput, latency, efficiency
+- **Bottleneck analysis** - Data pipeline, compute, memory bound
+
+**Flags:**
+- `--compare <baseline-id>` - Compare against baseline run
+- `--recommendations` - Include AI-generated suggestions
+
+### View Metrics
+```bash
+clawbernetes metrics <name> [--last 1h]
+```
+Query specific metrics:
+- `gpu.utilization` - GPU compute usage
+- `gpu.memory` - VRAM usage
+- `gpu.temperature` - Thermal readings
+- `cpu.usage` - CPU utilization
+- `memory.usage` - RAM consumption
+- `network.throughput` - Network I/O
+- `disk.iops` - Storage performance
+
+**Flags:**
+- `--last <duration>` - Time range (e.g., "1h", "24h", "7d")
+- `--node <id>` - Filter by node
+- `--workload <id>` - Filter by workload
+- `--aggregate <fn>` - avg, max, min, p95, p99
+
+### View Logs
+```bash
+clawbernetes logs <workload-id> [--level error] [--tail]
+```
+View workload logs with filtering:
+
+**Flags:**
+- `--level <level>` - Filter by level: debug, info, warn, error, fatal
+- `--tail [n]` - Show last n lines (default: 100)
+- `--follow` / `-f` - Stream logs in real-time
+- `--since <time>` - Logs since timestamp or duration (e.g., "1h ago")
+- `--search <pattern>` - Grep-style pattern matching
+- `--context <n>` - Lines of context around matches
+
+### AI Insights
+
+When user asks "why is X slow?" or "what's wrong?":
+
+1. **Run `clawbernetes health`** for cluster overview
+2. **If specific workload mentioned**, run `clawbernetes diagnose workload <id>`
+3. **If specific node mentioned**, run `clawbernetes diagnose node <id>`
+4. **Summarize insights** in plain language
+5. **Suggest remediation steps** with concrete commands
+
+**Key diagnostic questions to consider:**
+- Is the cluster under resource pressure?
+- Are there thermal/throttling issues?
+- Is the workload hitting memory limits?
+- Are there network or storage bottlenecks?
+- Has performance degraded over time?
+
+## Example Diagnostic Workflows
+
+### "Why is my training slow?"
+
+1. **Get workload diagnostics:**
+   ```bash
+   clawbernetes diagnose workload <id> --recommendations
+   ```
+
+2. **Check GPU utilization:**
+   - If **low (<70%)** → Likely data pipeline bottleneck
+   - If **high but slow** → May be memory-bound or batch size issue
+
+3. **Check GPU temperature:**
+   ```bash
+   clawbernetes metrics gpu.temperature --workload <id> --last 1h
+   ```
+   - If **throttling (>80°C)** → Suggest migration to cooler node
+
+4. **Check memory pressure:**
+   ```bash
+   clawbernetes metrics memory.usage --workload <id> --last 1h
+   ```
+   - If **near limit/swapping** → Suggest larger instance or reduce batch size
+
+5. **Check for errors:**
+   ```bash
+   clawbernetes logs <id> --level error --since "1h ago"
+   ```
+
+### "Is the cluster healthy?"
+
+1. **Get health overview:**
+   ```bash
+   clawbernetes health
+   ```
+
+2. **Report findings:**
+   - Any degraded/critical nodes
+   - Resource utilization summary
+   - Active alerts
+
+3. **Deep dive on problem nodes:**
+   ```bash
+   clawbernetes diagnose node <problem-node-id>
+   ```
+
+4. **Flag concerning trends:**
+   ```bash
+   clawbernetes metrics gpu.temperature --aggregate max --last 24h
+   ```
+
+### "What's wrong with node X?"
+
+1. **Full node diagnosis:**
+   ```bash
+   clawbernetes diagnose node <id> --verbose
+   ```
+
+2. **Check recent events:**
+   ```bash
+   clawbernetes node events <id> --since "24h ago"
+   ```
+
+3. **Compare to healthy baseline:**
+   ```bash
+   clawbernetes metrics gpu.utilization --node <id> --last 7d
+   ```
+
+### "Why did my job fail?"
+
+1. **Check workload status:**
+   ```bash
+   clawbernetes workload status <id>
+   ```
+
+2. **Get error logs:**
+   ```bash
+   clawbernetes logs <id> --level error --context 10
+   ```
+
+3. **Check for OOM:**
+   ```bash
+   clawbernetes metrics memory.usage --workload <id>
+   ```
+
+4. **Review exit diagnostics:**
+   ```bash
+   clawbernetes diagnose workload <id>
+   ```
+
 ## Error Handling
 
 Common errors and solutions:
@@ -242,3 +424,6 @@ Common errors and solutions:
 | `AUTH_FAILED` | Token expired | Run `clawbernetes auth login` |
 | `IMAGE_NOT_FOUND` | Invalid container image | Verify image name and registry |
 | `OOM_KILLED` | Insufficient memory | Increase `--memory` allocation |
+| `GPU_THERMAL_THROTTLE` | GPU overheating | Migrate workload or reduce load |
+| `NODE_UNREACHABLE` | Network/node failure | Check node status, failover if needed |
+| `WORKLOAD_TIMEOUT` | Exceeded time limit | Increase `--timeout` or optimize code |

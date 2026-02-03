@@ -1,0 +1,40 @@
+[package]
+name = "claw-metrics"
+description = "Embedded time-series database for GPU workload monitoring - Prometheus replacement for Clawbernetes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Fast locks
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+test-case = { workspace = true }
+tokio = { workspace = true }
+
+# [[bench]]
+# name = "metrics_benchmarks"
+# harness = false
+
+[lints]
+workspace = true
