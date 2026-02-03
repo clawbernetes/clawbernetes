@@ -1,3 +1,4 @@
+#![allow(clippy::unnecessary_wraps, clippy::items_after_statements, clippy::missing_errors_doc)]
 //! Rollback execution engine.
 //!
 //! This module provides functionality to plan, validate, and execute
@@ -92,28 +93,28 @@ impl ExecutionOptions {
 
     /// Enables or disables pre-flight validation.
     #[must_use]
-    pub fn with_validation(mut self, validate: bool) -> Self {
+    pub const fn with_validation(mut self, validate: bool) -> Self {
         self.validate = validate;
         self
     }
 
     /// Enables or disables dry run mode.
     #[must_use]
-    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+    pub const fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
     }
 
     /// Sets the execution timeout.
     #[must_use]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
     /// Enables or disables waiting for completion.
     #[must_use]
-    pub fn with_wait(mut self, wait: bool) -> Self {
+    pub const fn with_wait(mut self, wait: bool) -> Self {
         self.wait_for_completion = wait;
         self
     }
@@ -140,29 +141,29 @@ impl RollbackExecutor {
 
     /// Creates an executor with custom options.
     #[must_use]
-    pub fn with_options(history: DeploymentHistory, options: ExecutionOptions) -> Self {
+    pub const fn with_options(history: DeploymentHistory, options: ExecutionOptions) -> Self {
         Self { history, options }
     }
 
     /// Returns a reference to the deployment history.
     #[must_use]
-    pub fn history(&self) -> &DeploymentHistory {
+    pub const fn history(&self) -> &DeploymentHistory {
         &self.history
     }
 
     /// Returns a mutable reference to the deployment history.
-    pub fn history_mut(&mut self) -> &mut DeploymentHistory {
+    pub const fn history_mut(&mut self) -> &mut DeploymentHistory {
         &mut self.history
     }
 
     /// Returns a reference to the execution options.
     #[must_use]
-    pub fn options(&self) -> &ExecutionOptions {
+    pub const fn options(&self) -> &ExecutionOptions {
         &self.options
     }
 
     /// Updates the execution options.
-    pub fn set_options(&mut self, options: ExecutionOptions) {
+    pub const fn set_options(&mut self, options: ExecutionOptions) {
         self.options = options;
     }
 
@@ -450,7 +451,7 @@ impl RollbackExecutor {
         // For now, we simulate success
 
         let total_replicas = plan.from.spec.replicas;
-        let batches = (total_replicas + batch_size - 1) / batch_size;
+        let batches = total_replicas.div_ceil(batch_size);
 
         // Record the rollback target as the new current deployment
         self.history.record(plan.to.clone());

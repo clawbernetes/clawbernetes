@@ -12,7 +12,7 @@ use crate::provider::ProviderId;
 pub type NegotiationId = Uuid;
 
 /// A bid from a provider for a job.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bid {
     /// Unique identifier for this bid.
     pub id: Uuid,
@@ -93,6 +93,7 @@ impl SelectedBid {
 /// Strategy for negotiating and selecting bids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum NegotiationStrategy {
     /// Select the lowest price bid.
     LowestPrice,
@@ -101,14 +102,10 @@ pub enum NegotiationStrategy {
     /// Select the bid available soonest.
     FastestAvailability,
     /// Balance price, reputation, and availability.
+    #[default]
     Balanced,
 }
 
-impl Default for NegotiationStrategy {
-    fn default() -> Self {
-        Self::Balanced
-    }
-}
 
 impl NegotiationStrategy {
     /// Score a bid according to this strategy.
@@ -124,7 +121,7 @@ impl NegotiationStrategy {
                     1.0 - (bid.price as f64 / max_price as f64).min(1.0)
                 }
             }
-            Self::HighestReputation => bid.reputation as f64 / 100.0,
+            Self::HighestReputation => f64::from(bid.reputation) / 100.0,
             Self::FastestAvailability => {
                 let wait = bid.wait_time_secs(now) as f64;
                 // Invert wait time: 0 wait = score 1.0, higher wait = lower score
@@ -137,7 +134,7 @@ impl NegotiationStrategy {
                 } else {
                     1.0 - (bid.price as f64 / max_price as f64).min(1.0)
                 };
-                let reputation_score = bid.reputation as f64 / 100.0;
+                let reputation_score = f64::from(bid.reputation) / 100.0;
                 let wait = bid.wait_time_secs(now) as f64;
                 let availability_score = 1.0 / (1.0 + wait / 3600.0);
 
@@ -148,7 +145,7 @@ impl NegotiationStrategy {
 }
 
 /// Job specification for negotiation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NegotiationJob {
     /// Unique job identifier.
     pub id: Uuid,
@@ -303,13 +300,13 @@ impl NegotiationState {
     }
 
     /// Cancel the negotiation.
-    pub fn cancel(&mut self) {
+    pub const fn cancel(&mut self) {
         self.phase = NegotiationPhase::Cancelled;
     }
 
     /// Returns true if negotiation is still active.
     #[must_use]
-    pub fn is_active(&self) -> bool {
+    pub const fn is_active(&self) -> bool {
         matches!(
             self.phase,
             NegotiationPhase::CollectingBids | NegotiationPhase::Evaluating
@@ -324,7 +321,7 @@ impl NegotiationState {
 }
 
 /// Errors during negotiation.
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NegotiationError {
     /// Cannot add bids when not in collecting phase.
     #[error("negotiation is not in collecting bids phase")]

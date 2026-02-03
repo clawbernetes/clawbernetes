@@ -63,7 +63,7 @@ impl SecretStore {
 
     /// Returns a reference to the access controller.
     #[must_use]
-    pub fn access_controller(&self) -> &AccessController {
+    pub const fn access_controller(&self) -> &AccessController {
         &self.access_controller
     }
 

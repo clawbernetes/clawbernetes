@@ -1,4 +1,5 @@
 //! Embedded time-series database for GPU workload monitoring.
+#![forbid(unsafe_code)]
 //!
 //! `claw-metrics` is a lightweight, high-performance metrics system designed
 //! specifically for Clawbernetes GPU workload monitoring. It provides a simple

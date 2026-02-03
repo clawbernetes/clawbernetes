@@ -71,9 +71,9 @@ impl MetricsReport {
     }
 }
 
-/// Convert internal GpuMetrics to protocol GpuMetricsProto.
+/// Convert internal `GpuMetrics` to protocol `GpuMetricsProto`.
 #[must_use]
-pub fn to_proto_metrics(metrics: &GpuMetrics) -> GpuMetricsProto {
+pub const fn to_proto_metrics(metrics: &GpuMetrics) -> GpuMetricsProto {
     GpuMetricsProto {
         index: metrics.index,
         utilization_percent: metrics.utilization_percent,
@@ -118,7 +118,7 @@ pub struct MetricsCollector<D: GpuDetector + ?Sized> {
 impl<D: GpuDetector + ?Sized + 'static> MetricsCollector<D> {
     /// Create a new metrics collector.
     #[must_use]
-    pub fn new(detector: Arc<D>, node_id: NodeId, config: MetricsCollectorConfig) -> Self {
+    pub const fn new(detector: Arc<D>, node_id: NodeId, config: MetricsCollectorConfig) -> Self {
         Self {
             detector,
             node_id,
@@ -142,6 +142,7 @@ impl<D: GpuDetector + ?Sized + 'static> MetricsCollector<D> {
     /// Start periodic metrics collection.
     ///
     /// Returns a receiver that will receive metrics reports.
+    #[must_use] 
     pub fn start_periodic(&self) -> mpsc::Receiver<MetricsReport> {
         let (tx, rx) = mpsc::channel(32);
         let detector = Arc::clone(&self.detector);

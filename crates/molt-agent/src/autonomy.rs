@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize};
 /// - `Aggressive` — Maximum automation, minimal human intervention
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum AutonomyMode {
     /// Low risk tolerance. Requires approval for most non-trivial decisions.
+    #[default]
     Conservative,
     /// Medium risk tolerance. Auto-approves within configured thresholds.
     Moderate,
@@ -24,11 +26,6 @@ pub enum AutonomyMode {
     Aggressive,
 }
 
-impl Default for AutonomyMode {
-    fn default() -> Self {
-        Self::Conservative
-    }
-}
 
 impl AutonomyMode {
     /// Returns a numeric risk tolerance score (0.0 to 1.0).
@@ -38,7 +35,7 @@ impl AutonomyMode {
     /// - Moderate: 0.50
     /// - Aggressive: 0.85
     #[must_use]
-    pub fn risk_tolerance(&self) -> f64 {
+    pub const fn risk_tolerance(&self) -> f64 {
         match self {
             Self::Conservative => 0.25,
             Self::Moderate => 0.50,
@@ -50,7 +47,7 @@ impl AutonomyMode {
     ///
     /// Jobs exceeding this threshold require human approval.
     #[must_use]
-    pub fn max_auto_approve(&self) -> u64 {
+    pub const fn max_auto_approve(&self) -> u64 {
         match self {
             Self::Conservative => 100,      // Very low auto-approval
             Self::Moderate => 10_000,       // Reasonable threshold
@@ -60,7 +57,7 @@ impl AutonomyMode {
 
     /// Returns whether this mode allows counter-offers.
     #[must_use]
-    pub fn allows_counter_offers(&self) -> bool {
+    pub const fn allows_counter_offers(&self) -> bool {
         match self {
             Self::Conservative => false,
             Self::Moderate => true,
@@ -72,7 +69,7 @@ impl AutonomyMode {
 /// Outcome of evaluating a job opportunity.
 ///
 /// Represents the decision an agent makes when presented with a job.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum JobDecision {
     /// Accept the job as-is.
@@ -99,7 +96,7 @@ pub enum JobDecision {
 impl JobDecision {
     /// Creates an Accept decision.
     #[must_use]
-    pub fn accept() -> Self {
+    pub const fn accept() -> Self {
         Self::Accept
     }
 
@@ -111,7 +108,7 @@ impl JobDecision {
         }
     }
 
-    /// Creates a NeedApproval decision with the given reason.
+    /// Creates a `NeedApproval` decision with the given reason.
     #[must_use]
     pub fn need_approval(reason: impl Into<String>) -> Self {
         Self::NeedApproval {
@@ -119,7 +116,7 @@ impl JobDecision {
         }
     }
 
-    /// Creates a CounterOffer decision.
+    /// Creates a `CounterOffer` decision.
     #[must_use]
     pub fn counter_offer(proposed_price: u64, reason: impl Into<String>) -> Self {
         Self::CounterOffer {
@@ -130,25 +127,25 @@ impl JobDecision {
 
     /// Returns true if this is an Accept decision.
     #[must_use]
-    pub fn is_accept(&self) -> bool {
+    pub const fn is_accept(&self) -> bool {
         matches!(self, Self::Accept)
     }
 
     /// Returns true if this is a Reject decision.
     #[must_use]
-    pub fn is_reject(&self) -> bool {
+    pub const fn is_reject(&self) -> bool {
         matches!(self, Self::Reject { .. })
     }
 
     /// Returns true if this requires human approval.
     #[must_use]
-    pub fn needs_approval(&self) -> bool {
+    pub const fn needs_approval(&self) -> bool {
         matches!(self, Self::NeedApproval { .. })
     }
 
     /// Returns true if this is a counter-offer.
     #[must_use]
-    pub fn is_counter_offer(&self) -> bool {
+    pub const fn is_counter_offer(&self) -> bool {
         matches!(self, Self::CounterOffer { .. })
     }
 }
@@ -167,7 +164,7 @@ pub trait Decision {
 }
 
 /// Thresholds for autonomous decision-making.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionThresholds {
     /// Maximum price (in base units) to auto-accept.
     pub max_auto_accept_price: u64,
@@ -190,7 +187,7 @@ impl Default for DecisionThresholds {
 impl DecisionThresholds {
     /// Create thresholds appropriate for the given autonomy mode.
     #[must_use]
-    pub fn for_mode(mode: AutonomyMode) -> Self {
+    pub const fn for_mode(mode: AutonomyMode) -> Self {
         match mode {
             AutonomyMode::Conservative => Self {
                 max_auto_accept_price: 100,

@@ -159,8 +159,7 @@ pub fn verify_execution_with_data(
             .verify_chain(&attestation.checkpoints[i - 1], &checkpoint_data[i]);
         if !verified {
             return Err(AttestationError::CheckpointVerification(format!(
-                "checkpoint chain verification failed at index {}",
-                i
+                "checkpoint chain verification failed at index {i}"
             )));
         }
     }
@@ -178,6 +177,7 @@ pub fn verify_execution_with_data(
 ///
 /// Returns a vector of results, one for each attestation.
 /// Continues verifying even if some attestations fail.
+#[must_use] 
 pub fn batch_verify_hardware(
     attestations: &[(&HardwareAttestation, &VerifyingKey)],
 ) -> Vec<Result<VerificationResult, AttestationError>> {
@@ -191,6 +191,7 @@ pub fn batch_verify_hardware(
 ///
 /// Returns a vector of results, one for each attestation.
 /// Continues verifying even if some attestations fail.
+#[must_use] 
 pub fn batch_verify_execution(
     attestations: &[(&ExecutionAttestation, &VerifyingKey)],
 ) -> Vec<Result<VerificationResult, AttestationError>> {

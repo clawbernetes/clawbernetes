@@ -22,18 +22,15 @@ pub struct Cli {
 
 /// Output format options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Default)]
 pub enum Format {
     /// Human-readable table format.
+    #[default]
     Table,
     /// JSON output for scripting.
     Json,
 }
 
-impl Default for Format {
-    fn default() -> Self {
-        Self::Table
-    }
-}
 
 /// Top-level subcommands.
 #[derive(Subcommand, Debug, Clone)]
@@ -140,8 +137,10 @@ pub enum MoltCommands {
 
 /// Autonomy level argument for MOLT join.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Default)]
 pub enum AutonomyArg {
     /// Minimal autonomy. Only low-risk, pre-approved jobs.
+    #[default]
     Conservative,
     /// Balanced autonomy. Most jobs within budget.
     Moderate,
@@ -149,11 +148,6 @@ pub enum AutonomyArg {
     Aggressive,
 }
 
-impl Default for AutonomyArg {
-    fn default() -> Self {
-        Self::Conservative
-    }
-}
 
 #[cfg(test)]
 mod tests {

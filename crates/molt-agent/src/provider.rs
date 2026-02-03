@@ -15,7 +15,7 @@ pub type ProviderId = Uuid;
 pub type JobId = Uuid;
 
 /// Current state of a provider agent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderState {
     /// Unique identifier for this provider.
     pub id: ProviderId,
@@ -47,7 +47,7 @@ impl ProviderState {
 
     /// Returns available (unallocated) capacity.
     #[must_use]
-    pub fn available_capacity(&self) -> u64 {
+    pub const fn available_capacity(&self) -> u64 {
         self.capacity.saturating_sub(self.allocated)
     }
 
@@ -85,7 +85,7 @@ impl ProviderState {
     }
 
     /// Release capacity after job completion.
-    pub fn release(&mut self, amount: u64, payment: u64) {
+    pub const fn release(&mut self, amount: u64, payment: u64) {
         self.allocated = self.allocated.saturating_sub(amount);
         self.active_jobs = self.active_jobs.saturating_sub(1);
         self.earnings += payment;
@@ -93,7 +93,7 @@ impl ProviderState {
 }
 
 /// Errors that can occur in provider operations.
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderError {
     /// Not enough capacity available.
     #[error("insufficient capacity: required {required}, available {available}")]
@@ -112,7 +112,7 @@ pub enum ProviderError {
 }
 
 /// A job specification that a provider evaluates.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobSpec {
     /// Unique identifier for this job.
     pub id: JobId,
@@ -192,13 +192,13 @@ pub struct ProviderDecisionMaker {
 impl ProviderDecisionMaker {
     /// Create a new decision maker with the given state.
     #[must_use]
-    pub fn new(state: ProviderState) -> Self {
+    pub const fn new(state: ProviderState) -> Self {
         Self { state: Some(state) }
     }
 
     /// Create a decision maker without state (for policy-only evaluation).
     #[must_use]
-    pub fn stateless() -> Self {
+    pub const fn stateless() -> Self {
         Self { state: None }
     }
 }

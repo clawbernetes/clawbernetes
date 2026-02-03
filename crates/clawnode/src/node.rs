@@ -87,15 +87,12 @@ impl Node {
 
         // Detect GPU capabilities
         let gpu_detector: Arc<dyn GpuDetector> = if config.gpu.enabled {
-            match Self::try_nvidia_detector() {
-                Some(detector) => {
-                    info!("NVIDIA GPU detection enabled");
-                    Arc::new(detector)
-                }
-                None => {
-                    warn!("NVIDIA GPU detection failed, using stub detector");
-                    Arc::new(FakeGpuDetector::new())
-                }
+            if let Some(detector) = Self::try_nvidia_detector() {
+                info!("NVIDIA GPU detection enabled");
+                Arc::new(detector)
+            } else {
+                warn!("NVIDIA GPU detection failed, using stub detector");
+                Arc::new(FakeGpuDetector::new())
             }
         } else {
             info!("GPU detection disabled");
@@ -191,7 +188,7 @@ impl Node {
 
     /// Get the node ID.
     #[must_use]
-    pub fn node_id(&self) -> NodeId {
+    pub const fn node_id(&self) -> NodeId {
         self.node_id
     }
 
@@ -203,13 +200,13 @@ impl Node {
 
     /// Get the current node lifecycle state.
     #[must_use]
-    pub fn state(&self) -> NodeLifecycleState {
+    pub const fn state(&self) -> NodeLifecycleState {
         self.lifecycle_state
     }
 
     /// Get a reference to the gateway client (for testing).
     #[must_use]
-    pub fn gateway(&self) -> &GatewayClient {
+    pub const fn gateway(&self) -> &GatewayClient {
         &self.gateway
     }
 
@@ -262,7 +259,7 @@ impl Node {
         // Set up SIGTERM/SIGINT handler
         let shutdown_tx = self.shutdown_tx.clone();
         tokio::spawn(async move {
-            if let Ok(()) = tokio::signal::ctrl_c().await {
+            if matches!(tokio::signal::ctrl_c().await, Ok(())) {
                 info!("received SIGINT, initiating shutdown");
                 let _ = shutdown_tx.send(());
             }
@@ -273,16 +270,13 @@ impl Node {
             tokio::select! {
                 // Gateway events
                 event = gateway_rx.recv() => {
-                    match event {
-                        Some(event) => {
-                            if let Err(e) = self.handle_gateway_event(event, &gateway_tx).await {
-                                error!(error = %e, "error handling gateway event");
-                            }
+                    if let Some(event) = event {
+                        if let Err(e) = self.handle_gateway_event(event, &gateway_tx).await {
+                            error!(error = %e, "error handling gateway event");
                         }
-                        None => {
-                            warn!("gateway channel closed");
-                            break;
-                        }
+                    } else {
+                        warn!("gateway channel closed");
+                        break;
                     }
                 }
 
@@ -452,7 +446,7 @@ fn num_cpus() -> u32 {
 }
 
 /// Get system memory in MiB.
-fn system_memory_mib() -> u64 {
+const fn system_memory_mib() -> u64 {
     // Use sysinfo crate in production; for now return a placeholder
     // This could be enhanced to read /proc/meminfo on Linux
     16384 // 16 GiB placeholder

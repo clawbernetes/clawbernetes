@@ -15,7 +15,7 @@ use crate::error::NodeError;
 pub struct GpuInfo {
     /// GPU index (0-based).
     pub index: u32,
-    /// GPU name/model (e.g., "NVIDIA GeForce RTX 4090").
+    /// GPU name/model (e.g., "NVIDIA `GeForce` RTX 4090").
     pub name: String,
     /// Total memory in MiB.
     pub memory_total_mib: u64,
@@ -52,14 +52,14 @@ impl GpuMetrics {
 
     /// Check if GPU is under thermal throttling risk.
     #[must_use]
-    pub fn is_thermal_warning(&self, threshold: u32) -> bool {
+    pub const fn is_thermal_warning(&self, threshold: u32) -> bool {
         self.temperature_celsius >= threshold
     }
 }
 
 /// Trait for GPU detection implementations.
 ///
-/// This allows for different backends (nvidia-smi, ROCm, etc.)
+/// This allows for different backends (nvidia-smi, `ROCm`, etc.)
 /// and enables testing with fake implementations.
 pub trait GpuDetector: Send + Sync {
     /// Detect all available GPUs.

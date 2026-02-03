@@ -103,6 +103,7 @@ impl HardwareAttestation {
     }
 
     /// Check if this attestation has expired.
+    #[must_use] 
     pub fn is_expired(&self) -> bool {
         Utc::now() > self.expires_at
     }

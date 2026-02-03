@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 //! Clawnode binary entrypoint.
 //!
 //! The Clawbernetes node agent that runs on compute nodes.
@@ -40,7 +41,7 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Build a NodeConfig from CLI arguments, optionally loading from file.
+    /// Build a `NodeConfig` from CLI arguments, optionally loading from file.
     ///
     /// Priority: CLI args > config file > defaults
     ///

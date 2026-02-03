@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 //! Container runtime interface.
 //!
 //! Provides abstraction over container runtimes (containerd, podman, etc.)
@@ -34,13 +35,13 @@ pub enum ContainerState {
 impl ContainerState {
     /// Check if this is a terminal state.
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
+    pub const fn is_terminal(&self) -> bool {
         matches!(self, Self::Stopped | Self::Exited | Self::Failed)
     }
 
     /// Check if the container is running.
     #[must_use]
-    pub fn is_running(&self) -> bool {
+    pub const fn is_running(&self) -> bool {
         matches!(self, Self::Running)
     }
 }
@@ -160,14 +161,14 @@ impl ContainerSpec {
 
     /// Set memory limit.
     #[must_use]
-    pub fn with_memory_limit(mut self, limit: u64) -> Self {
+    pub const fn with_memory_limit(mut self, limit: u64) -> Self {
         self.memory_limit = Some(limit);
         self
     }
 
     /// Set CPU limit.
     #[must_use]
-    pub fn with_cpu_limit(mut self, limit: f32) -> Self {
+    pub const fn with_cpu_limit(mut self, limit: f32) -> Self {
         self.cpu_limit = Some(limit);
         self
     }
@@ -279,7 +280,7 @@ impl ContainerRuntime for FakeContainerRuntime {
             .write()
             .map_err(|_| NodeError::ContainerRuntime("lock poisoned".to_string()))?;
 
-        containers.insert(id.clone(), container.clone());
+        containers.insert(id, container.clone());
         Ok(container)
     }
 

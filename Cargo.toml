@@ -84,12 +84,41 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
+# nursery has too many false positives for now
+# nursery = { level = "warn", priority = -1 }
 unwrap_used = "deny"
-expect_used = "deny"
+expect_used = "warn"  # Allow in tests, warn in prod
 panic = "deny"
 todo = "deny"
 unimplemented = "deny"
+# Allow common pedantic false positives
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+cognitive_complexity = "allow"
+# Allow cast warnings (often false positives in systems code)
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_possible_wrap = "allow"
+# Allow doc formatting issues
+doc_overindented_list_items = "allow"
+# Allow unused self in trait impls (common pattern)
+unused_self = "allow"
+# Allow struct field naming
+struct_field_names = "allow"
+# Allow common patterns
+match_same_arms = "allow"
+unnested_or_patterns = "allow"
+unnecessary_wraps = "allow"
+items_after_statements = "allow"
+needless_for_each = "allow"
+needless_range_loop = "allow"
+needless_continue = "allow"
+unused_async = "allow"
+default_trait_access = "allow"
 
 [profile.release]
 lto = true

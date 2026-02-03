@@ -48,28 +48,28 @@ impl AuditFilter {
 
     /// Filters by action type.
     #[must_use]
-    pub fn with_action(mut self, action: AuditAction) -> Self {
+    pub const fn with_action(mut self, action: AuditAction) -> Self {
         self.action = Some(action);
         self
     }
 
     /// Filters entries after a given time.
     #[must_use]
-    pub fn after(mut self, time: DateTime<Utc>) -> Self {
+    pub const fn after(mut self, time: DateTime<Utc>) -> Self {
         self.after = Some(time);
         self
     }
 
     /// Filters entries before a given time.
     #[must_use]
-    pub fn before(mut self, time: DateTime<Utc>) -> Self {
+    pub const fn before(mut self, time: DateTime<Utc>) -> Self {
         self.before = Some(time);
         self
     }
 
     /// Limits the number of returned entries.
     #[must_use]
-    pub fn limit(mut self, n: usize) -> Self {
+    pub const fn limit(mut self, n: usize) -> Self {
         self.limit = Some(n);
         self
     }
@@ -121,7 +121,7 @@ pub struct AuditLog {
 impl AuditLog {
     /// Creates a new empty audit log.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             entries: RwLock::new(Vec::new()),
         }

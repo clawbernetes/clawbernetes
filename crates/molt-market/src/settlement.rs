@@ -43,7 +43,8 @@ pub struct SettlementResult {
 ///
 /// # Returns
 /// The calculated payment amount in tokens.
-pub fn calculate_payment(duration_seconds: u64, rate_per_hour: u64) -> u64 {
+#[must_use] 
+pub const fn calculate_payment(duration_seconds: u64, rate_per_hour: u64) -> u64 {
     // Calculate payment: (duration / 3600) * rate
     // Use careful math to avoid overflow and maintain precision
     let hours_scaled = duration_seconds * 1000 / 3600; // Scale up for precision

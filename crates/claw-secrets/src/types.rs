@@ -90,8 +90,7 @@ impl SecretId {
             if !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '-' && c != '_' && c != '.' {
                 return Err(Error::InvalidSecretId {
                     reason: format!(
-                        "identifier contains invalid character '{}'; only lowercase alphanumeric, hyphens, underscores, and periods are allowed",
-                        c
+                        "identifier contains invalid character '{c}'; only lowercase alphanumeric, hyphens, underscores, and periods are allowed"
                     ),
                 });
             }
@@ -140,7 +139,7 @@ pub struct SecretValue {
 impl SecretValue {
     /// Creates a new `SecretValue` from encrypted bytes.
     #[must_use]
-    pub fn new(data: Vec<u8>) -> Self {
+    pub const fn new(data: Vec<u8>) -> Self {
         Self { data }
     }
 
@@ -322,7 +321,7 @@ pub struct AccessPolicy {
 impl AccessPolicy {
     /// Creates a new empty access policy.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             allowed_workloads: Vec::new(),
             allowed_nodes: Vec::new(),
@@ -332,7 +331,7 @@ impl AccessPolicy {
 
     /// Creates a policy that allows the specified workloads.
     #[must_use]
-    pub fn allow_workloads(workloads: Vec<WorkloadId>) -> Self {
+    pub const fn allow_workloads(workloads: Vec<WorkloadId>) -> Self {
         Self {
             allowed_workloads: workloads,
             allowed_nodes: Vec::new(),
@@ -342,7 +341,7 @@ impl AccessPolicy {
 
     /// Creates a policy that allows the specified nodes.
     #[must_use]
-    pub fn allow_nodes(nodes: Vec<NodeId>) -> Self {
+    pub const fn allow_nodes(nodes: Vec<NodeId>) -> Self {
         Self {
             allowed_workloads: Vec::new(),
             allowed_nodes: nodes,
@@ -352,7 +351,7 @@ impl AccessPolicy {
 
     /// Sets the expiration time for this policy.
     #[must_use]
-    pub fn with_expiry(mut self, expires_at: DateTime<Utc>) -> Self {
+    pub const fn with_expiry(mut self, expires_at: DateTime<Utc>) -> Self {
         self.expires_at = Some(expires_at);
         self
     }

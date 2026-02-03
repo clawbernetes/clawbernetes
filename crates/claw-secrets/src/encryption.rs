@@ -61,7 +61,7 @@ impl SecretKey {
 
     /// Returns the key bytes as a slice.
     #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
+    pub const fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
 

@@ -15,7 +15,7 @@ pub type BuyerId = Uuid;
 pub type RequestId = Uuid;
 
 /// Current state of a buyer agent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuyerState {
     /// Unique identifier for this buyer.
     pub id: BuyerId,
@@ -47,7 +47,7 @@ impl BuyerState {
 
     /// Returns remaining budget.
     #[must_use]
-    pub fn remaining_budget(&self) -> u64 {
+    pub const fn remaining_budget(&self) -> u64 {
         self.budget.saturating_sub(self.spent)
     }
 
@@ -59,12 +59,12 @@ impl BuyerState {
 
     /// Returns total jobs (pending + active).
     #[must_use]
-    pub fn total_jobs(&self) -> u32 {
+    pub const fn total_jobs(&self) -> u32 {
         self.pending_jobs + self.active_jobs
     }
 
     /// Record a new pending job submission.
-    pub fn submit_job(&mut self) -> Result<(), BuyerError> {
+    pub const fn submit_job(&mut self) -> Result<(), BuyerError> {
         if self.active_jobs >= self.max_active_jobs {
             return Err(BuyerError::MaxJobsReached {
                 max: self.max_active_jobs,
@@ -92,18 +92,18 @@ impl BuyerState {
     }
 
     /// Complete an active job.
-    pub fn complete_job(&mut self) {
+    pub const fn complete_job(&mut self) {
         self.active_jobs = self.active_jobs.saturating_sub(1);
     }
 
     /// Cancel a pending job.
-    pub fn cancel_pending(&mut self) {
+    pub const fn cancel_pending(&mut self) {
         self.pending_jobs = self.pending_jobs.saturating_sub(1);
     }
 }
 
 /// Errors that can occur in buyer operations.
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BuyerError {
     /// Maximum concurrent jobs reached.
     #[error("maximum active jobs reached: {max}")]
@@ -125,7 +125,7 @@ pub enum BuyerError {
 }
 
 /// Requirements for a job that a buyer wants fulfilled.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobRequirements {
     /// Compute resources needed (abstract units).
     pub resources: u64,
@@ -140,7 +140,7 @@ pub struct JobRequirements {
 impl JobRequirements {
     /// Create new job requirements.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         resources: u64,
         max_price: u64,
         max_duration_secs: u64,
@@ -165,7 +165,7 @@ impl JobRequirements {
 }
 
 /// An offer from a provider in response to a job request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderOffer {
     /// Provider making the offer.
     pub provider_id: ProviderId,
@@ -182,7 +182,7 @@ pub struct ProviderOffer {
 impl ProviderOffer {
     /// Create a new provider offer.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         provider_id: ProviderId,
         price: u64,
         estimated_duration_secs: u64,
@@ -292,7 +292,7 @@ pub fn score_offer(offer: &ProviderOffer, requirements: &JobRequirements) -> f64
     };
 
     // Reputation score: higher is better (normalize to 0-1)
-    let reputation_ratio = offer.provider_reputation as f64 / 100.0;
+    let reputation_ratio = f64::from(offer.provider_reputation) / 100.0;
 
     // Weighted combination
     price_ratio * 0.5 + duration_ratio * 0.2 + reputation_ratio * 0.3

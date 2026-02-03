@@ -1,3 +1,4 @@
+#![allow(clippy::unused_self, clippy::cast_precision_loss, clippy::items_after_statements)]
 //! Root cause analysis for deployment failures.
 //!
 //! This module provides functionality to analyze deployment failures
@@ -80,21 +81,21 @@ impl AnalysisConfig {
 
     /// Sets the high error rate threshold.
     #[must_use]
-    pub fn with_high_error_rate_threshold(mut self, threshold: f64) -> Self {
+    pub const fn with_high_error_rate_threshold(mut self, threshold: f64) -> Self {
         self.high_error_rate_threshold = threshold;
         self
     }
 
     /// Sets the high memory threshold.
     #[must_use]
-    pub fn with_high_memory_threshold(mut self, threshold: f64) -> Self {
+    pub const fn with_high_memory_threshold(mut self, threshold: f64) -> Self {
         self.high_memory_threshold = threshold;
         self
     }
 
     /// Sets the high CPU threshold.
     #[must_use]
-    pub fn with_high_cpu_threshold(mut self, threshold: f64) -> Self {
+    pub const fn with_high_cpu_threshold(mut self, threshold: f64) -> Self {
         self.high_cpu_threshold = threshold;
         self
     }
@@ -138,13 +139,13 @@ impl FailureAnalyzer {
 
     /// Creates an analyzer with custom configuration.
     #[must_use]
-    pub fn with_config(config: AnalysisConfig) -> Self {
+    pub const fn with_config(config: AnalysisConfig) -> Self {
         Self { config }
     }
 
     /// Returns a reference to the configuration.
     #[must_use]
-    pub fn config(&self) -> &AnalysisConfig {
+    pub const fn config(&self) -> &AnalysisConfig {
         &self.config
     }
 

@@ -1,3 +1,4 @@
+#![allow(clippy::doc_overindented_list_items)]
 //! Deployment history tracking for rollback operations.
 //!
 //! This module provides functionality to track deployment history,
@@ -132,7 +133,7 @@ impl DeploymentHistory {
 
     /// Returns the maximum number of snapshots this history can hold.
     #[must_use]
-    pub fn capacity(&self) -> usize {
+    pub const fn capacity(&self) -> usize {
         self.max_snapshots
     }
 

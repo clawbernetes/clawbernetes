@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Gateway WebSocket client.
 //!
 //! Manages the connection between a node and the Clawbernetes gateway,
@@ -55,7 +56,7 @@ impl ReconnectConfig {
 
     /// Check if we should attempt reconnection.
     #[must_use]
-    pub fn should_reconnect(&self, attempt: u32) -> bool {
+    pub const fn should_reconnect(&self, attempt: u32) -> bool {
         match self.max_attempts {
             Some(max) => attempt < max,
             None => true,
@@ -120,7 +121,7 @@ pub struct AtomicConnectionState(AtomicU32);
 impl AtomicConnectionState {
     /// Create a new atomic state.
     #[must_use]
-    pub fn new(state: ConnectionState) -> Self {
+    pub const fn new(state: ConnectionState) -> Self {
         Self(AtomicU32::new(state as u32))
     }
 
@@ -165,7 +166,7 @@ impl GatewayClient {
 
     /// Set reconnection configuration.
     #[must_use]
-    pub fn with_reconnect_config(mut self, config: ReconnectConfig) -> Self {
+    pub const fn with_reconnect_config(mut self, config: ReconnectConfig) -> Self {
         self.reconnect_config = config;
         self
     }
@@ -222,7 +223,7 @@ impl GatewayClient {
             .map_err(|e| NodeError::GatewayConnection(format!("failed to serialize: {e}")))?;
 
         write
-            .send(Message::Text(json.into()))
+            .send(Message::Text(json))
             .await
             .map_err(|e| {
                 NodeError::GatewayConnection(format!("failed to send registration: {e}"))
@@ -309,7 +310,7 @@ impl GatewayClient {
             match rx.recv().await {
                 Some(msg) => {
                     if let Ok(json) = msg.to_json() {
-                        if write.send(Message::Text(json.into())).await.is_err() {
+                        if write.send(Message::Text(json)).await.is_err() {
                             break;
                         }
                     }
@@ -380,7 +381,7 @@ impl GatewayHandle {
 
     /// Get the node ID.
     #[must_use]
-    pub fn node_id(&self) -> NodeId {
+    pub const fn node_id(&self) -> NodeId {
         self.node_id
     }
 
@@ -424,7 +425,7 @@ impl GatewayHandle {
 
         let mut write = write;
         write
-            .send(Message::Text(json.into()))
+            .send(Message::Text(json))
             .await
             .map_err(|e| {
                 NodeError::GatewayConnection(format!("failed to send registration: {e}"))
@@ -619,7 +620,7 @@ impl GatewayHandle {
             match rx.recv().await {
                 Some(msg) => {
                     if let Ok(json) = msg.to_json() {
-                        if write.send(Message::Text(json.into())).await.is_err() {
+                        if write.send(Message::Text(json)).await.is_err() {
                             break;
                         }
                     }

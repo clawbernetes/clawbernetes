@@ -41,6 +41,7 @@ pub struct JobOrder {
 
 impl JobOrder {
     /// Creates a new job order with a generated ID and timestamp.
+    #[must_use] 
     pub fn new(buyer: String, requirements: JobRequirements, max_price: u64) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -80,6 +81,7 @@ pub struct CapacityOffer {
 
 impl CapacityOffer {
     /// Creates a new capacity offer with a generated ID.
+    #[must_use] 
     pub fn new(provider: String, gpus: GpuCapacity, price_per_hour: u64, reputation: u32) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -91,6 +93,7 @@ impl CapacityOffer {
     }
 
     /// Checks if this offer can satisfy the given job requirements.
+    #[must_use] 
     pub fn satisfies(&self, requirements: &JobRequirements) -> bool {
         // Check GPU count
         if self.gpus.count < requirements.min_gpus {
@@ -133,6 +136,7 @@ pub struct OrderBook {
 
 impl OrderBook {
     /// Creates a new empty order book.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -148,11 +152,13 @@ impl OrderBook {
     }
 
     /// Gets an order by ID.
+    #[must_use] 
     pub fn get_order(&self, order_id: &str) -> Option<&JobOrder> {
         self.orders.get(order_id)
     }
 
     /// Gets an offer by ID.
+    #[must_use] 
     pub fn get_offer(&self, offer_id: &str) -> Option<&CapacityOffer> {
         self.offers.get(offer_id)
     }
@@ -181,7 +187,7 @@ impl OrderBook {
             .values()
             .filter(|offer| {
                 offer.satisfies(&order.requirements)
-                    && offer.price_per_hour * order.requirements.max_duration_hours as u64
+                    && offer.price_per_hour * u64::from(order.requirements.max_duration_hours)
                         <= order.max_price
             })
             .map(|offer| OrderMatch {

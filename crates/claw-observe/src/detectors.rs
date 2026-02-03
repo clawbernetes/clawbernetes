@@ -474,7 +474,7 @@ pub fn detect_node_offline(
 ) -> Option<Insight> {
     let node_metrics: Vec<&MetricPoint> = metrics
         .iter()
-        .filter(|m| m.labels.get("node_id").map_or(false, |n| n == node_id))
+        .filter(|m| m.labels.get("node_id").is_some_and(|n| n == node_id))
         .collect();
 
     if node_metrics.is_empty() {

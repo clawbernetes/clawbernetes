@@ -24,17 +24,14 @@ pub enum EscrowState {
 
 impl EscrowState {
     /// Checks if a transition to the target state is valid.
-    pub fn can_transition_to(&self, target: &EscrowState) -> bool {
-        use EscrowState::*;
+    #[must_use] 
+    pub const fn can_transition_to(&self, target: &Self) -> bool {
+        use EscrowState::{Created, Funded, Released, Refunded, Disputed};
 
         matches!(
             (self, target),
-            (Created, Funded)
-                | (Funded, Released)
-                | (Funded, Refunded)
-                | (Funded, Disputed)
-                | (Disputed, Released)
-                | (Disputed, Refunded)
+            (Created, Funded) | (Funded | Disputed, Released) |
+(Funded | Disputed, Refunded) | (Funded, Disputed)
         )
     }
 }
@@ -68,7 +65,8 @@ pub struct EscrowAccount {
 
 impl EscrowAccount {
     /// Creates a new escrow account in the Created state.
-    pub fn new(job_id: String, buyer: String, provider: String, amount: u64) -> Self {
+    #[must_use] 
+    pub const fn new(job_id: String, buyer: String, provider: String, amount: u64) -> Self {
         Self {
             job_id,
             buyer,
@@ -112,7 +110,8 @@ impl EscrowAccount {
     }
 
     /// Returns true if the escrow is in a terminal state.
-    pub fn is_finalized(&self) -> bool {
+    #[must_use] 
+    pub const fn is_finalized(&self) -> bool {
         matches!(self.state, EscrowState::Released | EscrowState::Refunded)
     }
 }

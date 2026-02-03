@@ -42,28 +42,28 @@ impl TriggerConfig {
 
     /// Sets the error rate threshold.
     #[must_use]
-    pub fn with_error_rate_threshold(mut self, threshold: f64) -> Self {
+    pub const fn with_error_rate_threshold(mut self, threshold: f64) -> Self {
         self.error_rate_threshold = Some(threshold);
         self
     }
 
     /// Sets the latency threshold.
     #[must_use]
-    pub fn with_latency_threshold_ms(mut self, threshold: f64) -> Self {
+    pub const fn with_latency_threshold_ms(mut self, threshold: f64) -> Self {
         self.latency_threshold_ms = Some(threshold);
         self
     }
 
     /// Sets the baseline latency for 2x threshold calculations.
     #[must_use]
-    pub fn with_baseline_latency_ms(mut self, baseline: f64) -> Self {
+    pub const fn with_baseline_latency_ms(mut self, baseline: f64) -> Self {
         self.baseline_latency_ms = Some(baseline);
         self
     }
 
     /// Sets the health check failure threshold.
     #[must_use]
-    pub fn with_health_check_failure_threshold(mut self, threshold: u32) -> Self {
+    pub const fn with_health_check_failure_threshold(mut self, threshold: u32) -> Self {
         self.health_check_failure_threshold = Some(threshold);
         self
     }
@@ -77,14 +77,14 @@ impl TriggerConfig {
 
     /// Disables the error rate trigger.
     #[must_use]
-    pub fn without_error_rate_trigger(mut self) -> Self {
+    pub const fn without_error_rate_trigger(mut self) -> Self {
         self.error_rate_threshold = None;
         self
     }
 
     /// Disables the latency trigger.
     #[must_use]
-    pub fn without_latency_trigger(mut self) -> Self {
+    pub const fn without_latency_trigger(mut self) -> Self {
         self.latency_threshold_ms = None;
         self.baseline_latency_ms = None;
         self
@@ -92,7 +92,7 @@ impl TriggerConfig {
 
     /// Disables the health check trigger.
     #[must_use]
-    pub fn without_health_check_trigger(mut self) -> Self {
+    pub const fn without_health_check_trigger(mut self) -> Self {
         self.health_check_failure_threshold = None;
         self
     }
@@ -175,13 +175,13 @@ impl Default for TriggerEvaluator {
 impl TriggerEvaluator {
     /// Creates a new trigger evaluator.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { baseline: None }
     }
 
     /// Creates an evaluator with baseline metrics for comparison.
     #[must_use]
-    pub fn with_baseline(baseline: Metrics) -> Self {
+    pub const fn with_baseline(baseline: Metrics) -> Self {
         Self {
             baseline: Some(baseline),
         }
@@ -194,7 +194,7 @@ impl TriggerEvaluator {
 
     /// Returns the current baseline, if set.
     #[must_use]
-    pub fn baseline(&self) -> Option<&Metrics> {
+    pub const fn baseline(&self) -> Option<&Metrics> {
         self.baseline.as_ref()
     }
 
@@ -218,7 +218,7 @@ impl TriggerEvaluator {
                 current_metrics
                     .custom
                     .get(reason)
-                    .map_or(false, |v| *v > 0.0)
+                    .is_some_and(|v| *v > 0.0)
             }
         }
     }
@@ -243,7 +243,7 @@ impl TriggerEvaluator {
         current_metrics
             .custom
             .get(&config.metric_name)
-            .map_or(false, |value| {
+            .is_some_and(|value| {
                 config.comparison.evaluate(*value, config.threshold)
             })
     }

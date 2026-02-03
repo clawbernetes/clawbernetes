@@ -1,4 +1,5 @@
 //! # claw-observe
+#![forbid(unsafe_code)]
 //!
 //! AI-powered observability analyzer for Clawbernetes.
 //!

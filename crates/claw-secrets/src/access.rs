@@ -20,7 +20,7 @@ pub struct AccessController {
 impl AccessController {
     /// Creates a new access controller with the given audit log.
     #[must_use]
-    pub fn new(audit_log: AuditLog) -> Self {
+    pub const fn new(audit_log: AuditLog) -> Self {
         Self { audit_log }
     }
 
@@ -32,7 +32,7 @@ impl AccessController {
 
     /// Returns a reference to the audit log.
     #[must_use]
-    pub fn audit_log(&self) -> &AuditLog {
+    pub const fn audit_log(&self) -> &AuditLog {
         &self.audit_log
     }
 
@@ -79,7 +79,7 @@ impl AccessController {
         if !allowed {
             self.record_denied(secret_id, accessor, reason, "accessor not in policy");
             return Err(Error::AccessDenied {
-                reason: format!("accessor {} is not allowed by policy", accessor),
+                reason: format!("accessor {accessor} is not allowed by policy"),
             });
         }
 

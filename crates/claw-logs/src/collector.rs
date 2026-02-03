@@ -223,7 +223,7 @@ pub struct WorkloadLogCollector {
 impl WorkloadLogCollector {
     /// Creates a new workload log collector.
     #[must_use]
-    pub fn new(workload_id: Uuid, node_id: Uuid, store: Arc<LogStore>) -> Self {
+    pub const fn new(workload_id: Uuid, node_id: Uuid, store: Arc<LogStore>) -> Self {
         Self {
             workload_id,
             node_id,
@@ -327,7 +327,7 @@ pub struct NodeLogCollector {
 impl NodeLogCollector {
     /// Creates a new node log collector.
     #[must_use]
-    pub fn new(node_id: Uuid, store: Arc<LogStore>) -> Self {
+    pub const fn new(node_id: Uuid, store: Arc<LogStore>) -> Self {
         Self {
             node_id,
             store,

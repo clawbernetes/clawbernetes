@@ -46,8 +46,7 @@ impl MoltCommand {
             MoltCommands::Join { autonomy, max_spend } => {
                 self.join_network(*autonomy, max_spend.clone()).await?;
                 let msg = Message::success(format!(
-                    "Joined MOLT network with {:?} autonomy",
-                    autonomy
+                    "Joined MOLT network with {autonomy:?} autonomy"
                 ));
                 format.write(writer, &msg)?;
             }

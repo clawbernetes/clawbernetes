@@ -251,10 +251,10 @@ impl TableDisplay for NodeDetail {
                 writeln!(writer, "  [{}] {}", gpu.index, gpu.name)?;
                 writeln!(writer, "      VRAM: {} MiB", gpu.memory_mib)?;
                 if let Some(util) = gpu.utilization_percent {
-                    writeln!(writer, "      Utilization: {}%", util)?;
+                    writeln!(writer, "      Utilization: {util}%")?;
                 }
                 if let Some(temp) = gpu.temperature_celsius {
-                    writeln!(writer, "      Temperature: {}°C", temp)?;
+                    writeln!(writer, "      Temperature: {temp}°C")?;
                 }
             }
         }

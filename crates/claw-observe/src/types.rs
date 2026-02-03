@@ -74,8 +74,10 @@ impl std::fmt::Display for HealthStatus {
 /// Severity level for insights and alerts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Severity {
     /// Informational insight, no action required.
+    #[default]
     Info,
     /// Warning that should be monitored.
     Warning,
@@ -120,11 +122,6 @@ impl std::fmt::Display for Severity {
     }
 }
 
-impl Default for Severity {
-    fn default() -> Self {
-        Self::Info
-    }
-}
 
 /// An insight generated from analyzing metrics and logs.
 ///
@@ -216,7 +213,7 @@ impl Insight {
 
     /// Sets the generation timestamp (useful for testing).
     #[must_use]
-    pub fn with_timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
+    pub const fn with_timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
         self.generated_at = timestamp;
         self
     }
@@ -229,7 +226,7 @@ impl Insight {
 
     /// Returns true if this insight has actionable recommendations.
     #[must_use]
-    pub fn has_recommendation(&self) -> bool {
+    pub const fn has_recommendation(&self) -> bool {
         self.recommendation.is_some()
     }
 }
@@ -247,7 +244,7 @@ pub struct Diagnosis {
     pub insights: Vec<Insight>,
     /// When the analysis was performed.
     pub analyzed_at: DateTime<Utc>,
-    /// Optional subject identifier (node_id, workload_id, or "cluster").
+    /// Optional subject identifier (`node_id`, `workload_id`, or "cluster").
     pub subject: Option<String>,
     /// Duration of the analysis in milliseconds.
     pub analysis_duration_ms: u64,
@@ -303,7 +300,7 @@ impl Diagnosis {
 
     /// Sets the analysis timestamp (useful for testing).
     #[must_use]
-    pub fn with_timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
+    pub const fn with_timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
         self.analyzed_at = timestamp;
         self
     }
@@ -424,7 +421,7 @@ impl AnalysisScope {
 
     /// Sets the time range for the analysis.
     #[must_use]
-    pub fn with_time_range(mut self, time_range: TimeRange) -> Self {
+    pub const fn with_time_range(mut self, time_range: TimeRange) -> Self {
         self.time_range = Some(time_range);
         self
     }
@@ -520,7 +517,7 @@ impl TimeRange {
 
     /// Converts to a standard Range for iteration patterns.
     #[must_use]
-    pub fn as_range(&self) -> Range<DateTime<Utc>> {
+    pub const fn as_range(&self) -> Range<DateTime<Utc>> {
         self.start..self.end
     }
 }

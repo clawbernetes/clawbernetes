@@ -22,13 +22,13 @@ impl RollbackId {
 
     /// Creates a rollback ID from an existing UUID.
     #[must_use]
-    pub fn from_uuid(uuid: Uuid) -> Self {
+    pub const fn from_uuid(uuid: Uuid) -> Self {
         Self(uuid)
     }
 
     /// Returns the inner UUID.
     #[must_use]
-    pub fn as_uuid(&self) -> &Uuid {
+    pub const fn as_uuid(&self) -> &Uuid {
         &self.0
     }
 }
@@ -99,7 +99,7 @@ impl DeploymentSpec {
 
     /// Sets the number of replicas.
     #[must_use]
-    pub fn with_replicas(mut self, replicas: u32) -> Self {
+    pub const fn with_replicas(mut self, replicas: u32) -> Self {
         self.replicas = replicas;
         self
     }
@@ -113,14 +113,14 @@ impl DeploymentSpec {
 
     /// Sets the resource limits.
     #[must_use]
-    pub fn with_resources(mut self, resources: ResourceLimits) -> Self {
+    pub const fn with_resources(mut self, resources: ResourceLimits) -> Self {
         self.resources = resources;
         self
     }
 }
 
 /// Resource limits for a deployment.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceLimits {
     /// CPU limit in millicores.
     pub cpu_millis: u64,
@@ -167,28 +167,28 @@ impl Metrics {
 
     /// Sets the error rate.
     #[must_use]
-    pub fn with_error_rate(mut self, rate: f64) -> Self {
+    pub const fn with_error_rate(mut self, rate: f64) -> Self {
         self.error_rate = rate;
         self
     }
 
     /// Sets the P99 latency.
     #[must_use]
-    pub fn with_p99_latency_ms(mut self, latency: f64) -> Self {
+    pub const fn with_p99_latency_ms(mut self, latency: f64) -> Self {
         self.p99_latency_ms = latency;
         self
     }
 
     /// Sets the P50 latency.
     #[must_use]
-    pub fn with_p50_latency_ms(mut self, latency: f64) -> Self {
+    pub const fn with_p50_latency_ms(mut self, latency: f64) -> Self {
         self.p50_latency_ms = latency;
         self
     }
 
     /// Sets the health check failures count.
     #[must_use]
-    pub fn with_health_check_failures(mut self, failures: u32) -> Self {
+    pub const fn with_health_check_failures(mut self, failures: u32) -> Self {
         self.health_check_failures = failures;
         self
     }
@@ -228,7 +228,7 @@ impl DeploymentSnapshot {
 
     /// Creates a snapshot with a specific timestamp.
     #[must_use]
-    pub fn with_timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
+    pub const fn with_timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
         self.timestamp = timestamp;
         self
     }
@@ -271,19 +271,19 @@ pub enum RollbackTrigger {
 impl RollbackTrigger {
     /// Creates a new error rate trigger with the given threshold.
     #[must_use]
-    pub fn error_rate(threshold: f64) -> Self {
+    pub const fn error_rate(threshold: f64) -> Self {
         Self::ErrorRate { threshold }
     }
 
     /// Creates a new latency trigger with the given threshold.
     #[must_use]
-    pub fn latency(threshold_ms: f64) -> Self {
+    pub const fn latency(threshold_ms: f64) -> Self {
         Self::Latency { threshold_ms }
     }
 
     /// Creates a new health check trigger with the given failure threshold.
     #[must_use]
-    pub fn health_check(failure_threshold: u32) -> Self {
+    pub const fn health_check(failure_threshold: u32) -> Self {
         Self::HealthCheck { failure_threshold }
     }
 
@@ -375,7 +375,7 @@ impl RollbackPlan {
 
     /// Creates a plan with a specific ID.
     #[must_use]
-    pub fn with_id(mut self, id: RollbackId) -> Self {
+    pub const fn with_id(mut self, id: RollbackId) -> Self {
         self.id = id;
         self
     }
@@ -464,7 +464,7 @@ impl std::fmt::Display for RootCauseCategory {
 }
 
 /// Root cause analysis result.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootCause {
     /// Category of the root cause.
     pub category: RootCauseCategory,
@@ -508,7 +508,7 @@ impl RootCause {
 }
 
 /// Log entry for root cause analysis.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogEntry {
     /// Timestamp of the log entry.
     pub timestamp: DateTime<Utc>,
@@ -534,7 +534,7 @@ impl LogEntry {
 
     /// Sets the timestamp.
     #[must_use]
-    pub fn with_timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
+    pub const fn with_timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
         self.timestamp = timestamp;
         self
     }

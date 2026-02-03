@@ -1,4 +1,5 @@
 //! # Claw Secrets
+#![forbid(unsafe_code)]
 //!
 //! A secrets management system for Clawbernetes that provides:
 //!

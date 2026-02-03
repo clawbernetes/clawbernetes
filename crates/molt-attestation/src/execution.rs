@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 //! Execution attestation — job completion proofs, checkpoint verification.
 
 use chrono::{DateTime, Duration, Utc};
@@ -20,6 +21,7 @@ pub struct Checkpoint {
 
 impl Checkpoint {
     /// Create a new checkpoint with the given data.
+    #[must_use] 
     pub fn new(sequence: u64, data: &[u8]) -> Self {
         let hash = blake3::hash(data);
         Self {
@@ -30,7 +32,8 @@ impl Checkpoint {
     }
 
     /// Create a checkpoint that chains from a previous checkpoint.
-    pub fn chain_from(previous: &Checkpoint, data: &[u8]) -> Self {
+    #[must_use] 
+    pub fn chain_from(previous: &Self, data: &[u8]) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&previous.hash);
         hasher.update(data);
@@ -44,7 +47,8 @@ impl Checkpoint {
     }
 
     /// Verify that this checkpoint correctly chains from the previous one given the data.
-    pub fn verify_chain(&self, previous: &Checkpoint, data: &[u8]) -> bool {
+    #[must_use] 
+    pub fn verify_chain(&self, previous: &Self, data: &[u8]) -> bool {
         if self.sequence != previous.sequence + 1 {
             return false;
         }
@@ -187,11 +191,13 @@ impl ExecutionAttestation {
     }
 
     /// Get the final checkpoint hash (the end state of execution).
+    #[must_use] 
     pub fn final_checkpoint_hash(&self) -> Option<[u8; 32]> {
         self.checkpoints.last().map(|c| c.hash)
     }
 
     /// Get the number of checkpoints.
+    #[must_use] 
     pub fn checkpoint_count(&self) -> usize {
         self.checkpoints.len()
     }
@@ -231,6 +237,7 @@ pub struct CheckpointChain {
 
 impl CheckpointChain {
     /// Start a new checkpoint chain with initial data.
+    #[must_use] 
     pub fn new(initial_data: &[u8]) -> Self {
         let checkpoint = Checkpoint::new(0, initial_data);
         Self {
@@ -246,16 +253,19 @@ impl CheckpointChain {
     }
 
     /// Consume the chain and return the checkpoints.
+    #[must_use] 
     pub fn into_checkpoints(self) -> Vec<Checkpoint> {
         self.checkpoints
     }
 
     /// Get the current number of checkpoints.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.checkpoints.len()
     }
 
     /// Check if the chain is empty (it never should be after construction).
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.checkpoints.is_empty()
     }

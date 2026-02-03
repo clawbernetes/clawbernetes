@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 /// Pricing strategy for bid calculation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum PricingStrategy {
     /// Fixed markup over cost.
+    #[default]
     FixedMarkup,
     /// Dynamic pricing based on utilization.
     UtilizationBased,
@@ -17,11 +19,6 @@ pub enum PricingStrategy {
     MarketBased,
 }
 
-impl Default for PricingStrategy {
-    fn default() -> Self {
-        Self::FixedMarkup
-    }
-}
 
 impl PricingStrategy {
     /// Calculate bid price based on this strategy.
@@ -45,7 +42,7 @@ impl PricingStrategy {
             Self::UtilizationBased => {
                 // Higher utilization = higher prices
                 // Range from 1.1x (low util) to 2.0x (high util)
-                let multiplier = 1.1 + (utilization * 0.9);
+                let multiplier = utilization.mul_add(0.9, 1.1);
                 ((base_cost as f64) * multiplier).ceil() as u64
             }
             Self::MarketBased => {

@@ -1,4 +1,5 @@
 //! PKI (Public Key Infrastructure) for Clawbernetes.
+#![forbid(unsafe_code)]
 //!
 //! This crate provides certificate authority functionality for agent-managed
 //! certificate issuance, mTLS support, and automatic certificate rotation.
