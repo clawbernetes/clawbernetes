@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 # Async
 tokio = { workspace = true }
+futures = { workspace = true }
 
 # CLI
 clap = { workspace = true }
@@ -30,7 +31,11 @@ tracing-subscriber = { workspace = true }
 # UUID
 uuid = { workspace = true }
 
+# WebSocket
+tokio-tungstenite = { workspace = true }
+
 # Internal
+claw-proto = { path = "../claw-proto" }
 clawnode = { path = "../clawnode" }
 molt-core = { path = "../molt-core" }
 

@@ -7,6 +7,7 @@
 
 use std::io::Write;
 
+use crate::client::GatewayClient;
 use crate::error::CliError;
 use crate::output::{ClusterStatus, OutputFormat};
 
@@ -29,7 +30,11 @@ impl StatusCommand {
     /// # Errors
     ///
     /// Returns an error if connection to gateway fails or output fails.
-    pub async fn execute<W: Write>(&self, writer: &mut W, format: &OutputFormat) -> Result<(), CliError> {
+    pub async fn execute<W: Write>(
+        &self,
+        writer: &mut W,
+        format: &OutputFormat,
+    ) -> Result<(), CliError> {
         let status = self.fetch_status().await?;
         format.write(writer, &status)?;
         Ok(())
@@ -41,26 +46,16 @@ impl StatusCommand {
     ///
     /// Returns an error if connection fails.
     pub async fn fetch_status(&self) -> Result<ClusterStatus, CliError> {
-        // In a real implementation, this would connect to the gateway
-        // For now, we return mock data that can be replaced with real gateway calls
-        
-        // Validate gateway URL format
-        if !self.gateway_url.starts_with("ws://") && !self.gateway_url.starts_with("wss://") {
-            return Err(CliError::Config(format!(
-                "invalid gateway URL: {}, must start with ws:// or wss://",
-                self.gateway_url
-            )));
-        }
+        let mut client = GatewayClient::connect(&self.gateway_url).await?;
+        let status = client.get_status().await?;
 
-        // TODO: Replace with actual gateway connection
-        // This is a placeholder that will be filled in when gateway client is implemented
         Ok(ClusterStatus {
-            node_count: 0,
-            healthy_nodes: 0,
-            gpu_count: 0,
-            active_workloads: 0,
-            total_vram_mib: 0,
-            gateway_version: "0.1.0".into(),
+            node_count: status.node_count as usize,
+            healthy_nodes: status.healthy_nodes as usize,
+            gpu_count: status.gpu_count as usize,
+            active_workloads: status.active_workloads as usize,
+            total_vram_mib: status.total_vram_mib,
+            gateway_version: status.gateway_version,
         })
     }
 }
@@ -74,43 +69,9 @@ pub trait StatusClient: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the request fails.
-    fn fetch_status(&self) -> impl std::future::Future<Output = Result<ClusterStatus, CliError>> + Send;
-}
-
-/// Real gateway client implementation.
-pub struct GatewayStatusClient {
-    url: String,
-}
-
-impl GatewayStatusClient {
-    /// Create a new gateway client.
-    #[must_use]
-    pub fn new(url: impl Into<String>) -> Self {
-        Self { url: url.into() }
-    }
-}
-
-impl StatusClient for GatewayStatusClient {
-    async fn fetch_status(&self) -> Result<ClusterStatus, CliError> {
-        // Validate URL
-        if !self.url.starts_with("ws://") && !self.url.starts_with("wss://") {
-            return Err(CliError::Config(format!(
-                "invalid gateway URL: {}",
-                self.url
-            )));
-        }
-
-        // TODO: Implement actual WebSocket connection to gateway
-        // For now return placeholder
-        Ok(ClusterStatus {
-            node_count: 0,
-            healthy_nodes: 0,
-            gpu_count: 0,
-            active_workloads: 0,
-            total_vram_mib: 0,
-            gateway_version: "0.1.0".into(),
-        })
-    }
+    fn fetch_status(
+        &self,
+    ) -> impl std::future::Future<Output = Result<ClusterStatus, CliError>> + Send;
 }
 
 /// Fake status client for testing.
@@ -150,48 +111,18 @@ mod tests {
         let cmd = StatusCommand::new("http://invalid");
         let result = cmd.fetch_status().await;
         assert!(result.is_err());
-        
+
         let err = result.unwrap_err();
         assert!(err.to_string().contains("invalid gateway URL"));
     }
 
     #[tokio::test]
-    async fn status_command_valid_ws_url() {
-        let cmd = StatusCommand::new("ws://localhost:8080");
+    async fn status_command_connection_refused() {
+        // Try to connect to a port that's not listening
+        let cmd = StatusCommand::new("ws://127.0.0.1:59999");
         let result = cmd.fetch_status().await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn status_command_valid_wss_url() {
-        let cmd = StatusCommand::new("wss://secure.gateway:443");
-        let result = cmd.fetch_status().await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn status_command_execute_table() {
-        let cmd = StatusCommand::new("ws://localhost:8080");
-        let format = OutputFormat::new(Format::Table);
-        let mut buf = Vec::new();
-        
-        cmd.execute(&mut buf, &format).await.expect("should execute");
-        
-        let output = String::from_utf8(buf).expect("valid utf8");
-        assert!(output.contains("Cluster Status"));
-    }
-
-    #[tokio::test]
-    async fn status_command_execute_json() {
-        let cmd = StatusCommand::new("ws://localhost:8080");
-        let format = OutputFormat::new(Format::Json);
-        let mut buf = Vec::new();
-        
-        cmd.execute(&mut buf, &format).await.expect("should execute");
-        
-        let output = String::from_utf8(buf).expect("valid utf8");
-        assert!(output.contains("\"node_count\""));
-        assert!(output.contains("\"gateway_version\""));
+        // Should fail with connection error (no server running)
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -214,18 +145,41 @@ mod tests {
         assert_eq!(status.gateway_version, "1.2.3");
     }
 
-    #[tokio::test]
-    async fn gateway_status_client_validates_url() {
-        let client = GatewayStatusClient::new("invalid-url");
-        let result = client.fetch_status().await;
-        assert!(result.is_err());
+    #[test]
+    fn cluster_status_display() {
+        let status = ClusterStatus {
+            node_count: 3,
+            healthy_nodes: 2,
+            gpu_count: 8,
+            active_workloads: 1,
+            total_vram_mib: 65536,
+            gateway_version: "0.1.0".into(),
+        };
+
+        // Test JSON output (pretty-printed with spaces)
+        let format = OutputFormat::new(Format::Json);
+        let mut buf = Vec::new();
+        format.write(&mut buf, &status).expect("should write");
+        let json = String::from_utf8(buf).expect("valid utf8");
+        assert!(json.contains("\"node_count\": 3"));
+        assert!(json.contains("\"gateway_version\": \"0.1.0\""));
     }
 
-    #[tokio::test]
-    async fn gateway_status_client_accepts_valid_url() {
-        let client = GatewayStatusClient::new("ws://localhost:8080");
-        let result = client.fetch_status().await;
-        // Should succeed (returns placeholder for now)
-        assert!(result.is_ok());
+    #[test]
+    fn cluster_status_table_output() {
+        let status = ClusterStatus {
+            node_count: 3,
+            healthy_nodes: 2,
+            gpu_count: 8,
+            active_workloads: 1,
+            total_vram_mib: 65536,
+            gateway_version: "0.1.0".into(),
+        };
+
+        let format = OutputFormat::new(Format::Table);
+        let mut buf = Vec::new();
+        format.write(&mut buf, &status).expect("should write");
+        let output = String::from_utf8(buf).expect("valid utf8");
+        assert!(output.contains("Cluster Status"));
     }
 }

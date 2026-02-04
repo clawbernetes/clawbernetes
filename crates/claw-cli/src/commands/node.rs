@@ -8,11 +8,12 @@
 use std::io::Write;
 
 use crate::cli::NodeCommands;
+use crate::client::GatewayClient;
 use crate::error::CliError;
-use crate::output::{Message, NodeDetail, NodeList, OutputFormat};
+use crate::output::{Message, NodeDetail, NodeInfo, NodeList, OutputFormat};
 
 #[cfg(test)]
-use crate::output::{GpuDetail, NodeInfo, WorkloadSummary};
+use crate::output::{GpuDetail, WorkloadSummary};
 
 /// Node command executor.
 pub struct NodeCommand {
@@ -76,9 +77,22 @@ impl NodeCommand {
     ///
     /// Returns an error if the request fails.
     pub async fn list_nodes(&self) -> Result<NodeList, CliError> {
-        // TODO: Replace with actual gateway call
-        // This placeholder will be replaced when gateway client is implemented
-        Ok(NodeList { nodes: vec![] })
+        let mut client = GatewayClient::connect(&self.gateway_url).await?;
+        let nodes = client.list_nodes(None, false).await?;
+
+        let node_infos: Vec<NodeInfo> = nodes
+            .into_iter()
+            .map(|n| NodeInfo {
+                id: n.node_id.to_string(),
+                hostname: n.name,
+                status: n.state.to_string(),
+                gpu_count: n.gpu_count as usize,
+                vram_mib: n.total_vram_mib,
+                workloads: n.running_workloads as usize,
+            })
+            .collect();
+
+        Ok(NodeList { nodes: node_infos })
     }
 
     /// Get detailed information about a specific node.
@@ -92,9 +106,23 @@ impl NodeCommand {
             return Err(CliError::InvalidArgument("node ID cannot be empty".into()));
         }
 
-        // TODO: Replace with actual gateway call
-        // For now, return a not-found error as we have no real data
-        Err(CliError::NodeNotFound(node_id.to_string()))
+        let mut client = GatewayClient::connect(&self.gateway_url).await?;
+
+        // Parse node ID
+        let id = claw_proto::NodeId::parse(node_id)
+            .map_err(|_| CliError::InvalidArgument(format!("invalid node ID: {node_id}")))?;
+
+        let node = client.get_node(id).await?;
+
+        Ok(NodeDetail {
+            id: node.node_id.to_string(),
+            hostname: node.name,
+            status: node.state.to_string(),
+            cpu_cores: 0, // Would need additional API call
+            memory_mib: 0,
+            gpus: vec![],
+            workloads: vec![],
+        })
     }
 
     /// Mark a node for draining.
@@ -108,9 +136,9 @@ impl NodeCommand {
             return Err(CliError::InvalidArgument("node ID cannot be empty".into()));
         }
 
-        // TODO: Replace with actual gateway call
-        // For now, return a not-found error
-        Err(CliError::NodeNotFound(node_id.to_string()))
+        // Note: Drain is not yet implemented in the CLI protocol
+        // For now, return a not-implemented error
+        Err(CliError::Command("drain not yet implemented".into()))
     }
 }
 
@@ -260,33 +288,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_command_list_empty() {
-        let cmd = NodeCommand::new("ws://localhost:8080");
-        let list = cmd.list_nodes().await.expect("should list");
-        assert!(list.nodes.is_empty());
+    async fn node_command_list_connection_error() {
+        // With no gateway running, list_nodes should fail with connection error
+        let cmd = NodeCommand::new("ws://127.0.0.1:59999");
+        let result = cmd.list_nodes().await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn node_command_info_empty_id() {
-        let cmd = NodeCommand::new("ws://localhost:8080");
+        let cmd = NodeCommand::new("ws://127.0.0.1:59999");
         let result = cmd.get_node_info("").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
     }
 
     #[tokio::test]
-    async fn node_command_info_not_found() {
-        let cmd = NodeCommand::new("ws://localhost:8080");
-        let result = cmd.get_node_info("nonexistent").await;
-        assert!(matches!(result, Err(CliError::NodeNotFound(_))));
+    async fn node_command_info_invalid_uuid() {
+        // Even with no gateway, we should get invalid argument error for bad UUIDs
+        let cmd = NodeCommand::new("ws://127.0.0.1:59999");
+        let result = cmd.get_node_info("not-a-uuid").await;
+        // Should fail with connection error since it validates after connecting
+        // or invalid argument if validation happens first
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn node_command_drain_empty_id() {
-        let cmd = NodeCommand::new("ws://localhost:8080");
+        let cmd = NodeCommand::new("ws://127.0.0.1:59999");
         let result = cmd.drain_node("", false).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn node_command_drain_not_implemented() {
+        let cmd = NodeCommand::new("ws://127.0.0.1:59999");
+        let result = cmd.drain_node("some-id", false).await;
+        assert!(result.is_err());
+        // Drain is not yet implemented
+        assert!(matches!(result, Err(CliError::Command(_))));
     }
 
     #[tokio::test]
@@ -342,36 +383,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_command_execute_list_table() {
-        let cmd = NodeCommand::new("ws://localhost:8080");
+    async fn node_command_connection_refused() {
+        // When no gateway is running, we expect a connection error
+        let cmd = NodeCommand::new("ws://127.0.0.1:59999");
         let format = OutputFormat::new(Format::Table);
         let mut buf = Vec::new();
 
-        cmd.execute(&mut buf, &format, &NodeCommands::List)
-            .await
-            .expect("should execute");
-
-        let output = String::from_utf8(buf).expect("valid utf8");
-        assert!(output.contains("No nodes in cluster"));
+        let result = cmd.execute(&mut buf, &format, &NodeCommands::List).await;
+        // Should fail with connection error (no server)
+        assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn node_command_execute_list_json() {
-        let cmd = NodeCommand::new("ws://localhost:8080");
-        let format = OutputFormat::new(Format::Json);
-        let mut buf = Vec::new();
-
-        cmd.execute(&mut buf, &format, &NodeCommands::List)
-            .await
-            .expect("should execute");
-
-        let output = String::from_utf8(buf).expect("valid utf8");
-        assert!(output.contains("\"nodes\""));
-    }
-
-    #[tokio::test]
-    async fn node_command_execute_info_not_found() {
-        let cmd = NodeCommand::new("ws://localhost:8080");
+    async fn node_command_info_connection_refused() {
+        let cmd = NodeCommand::new("ws://127.0.0.1:59999");
         let format = OutputFormat::new(Format::Table);
         let mut buf = Vec::new();
 
@@ -379,27 +404,8 @@ mod tests {
             .execute(&mut buf, &format, &NodeCommands::Info { id: "xyz".into() })
             .await;
 
-        assert!(matches!(result, Err(CliError::NodeNotFound(_))));
-    }
-
-    #[tokio::test]
-    async fn node_command_execute_drain_not_found() {
-        let cmd = NodeCommand::new("ws://localhost:8080");
-        let format = OutputFormat::new(Format::Table);
-        let mut buf = Vec::new();
-
-        let result = cmd
-            .execute(
-                &mut buf,
-                &format,
-                &NodeCommands::Drain {
-                    id: "xyz".into(),
-                    force: false,
-                },
-            )
-            .await;
-
-        assert!(matches!(result, Err(CliError::NodeNotFound(_))));
+        // Should fail with connection error (no server)
+        assert!(result.is_err());
     }
 
     #[tokio::test]

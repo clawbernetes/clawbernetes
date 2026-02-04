@@ -19,6 +19,19 @@ pub enum CliError {
     InvalidArgument(String),
     /// IO error.
     Io(std::io::Error),
+    /// Request timeout.
+    Timeout(String),
+    /// Protocol error (malformed messages, unexpected responses).
+    Protocol(String),
+    /// Error returned by the gateway.
+    Gateway {
+        /// Error code.
+        code: u32,
+        /// Error message.
+        message: String,
+    },
+    /// Workload not found.
+    WorkloadNotFound(String),
 }
 
 impl fmt::Display for CliError {
@@ -31,6 +44,12 @@ impl fmt::Display for CliError {
             Self::NodeNotFound(id) => write!(f, "node not found: {id}"),
             Self::InvalidArgument(msg) => write!(f, "invalid argument: {msg}"),
             Self::Io(e) => write!(f, "IO error: {e}"),
+            Self::Timeout(msg) => write!(f, "timeout: {msg}"),
+            Self::Protocol(msg) => write!(f, "protocol error: {msg}"),
+            Self::Gateway { code, message } => {
+                write!(f, "gateway error ({code}): {message}")
+            }
+            Self::WorkloadNotFound(id) => write!(f, "workload not found: {id}"),
         }
     }
 }
