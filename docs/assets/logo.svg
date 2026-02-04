@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="clawGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FF6B35"/>
+      <stop offset="50%" style="stop-color:#F7931E"/>
+      <stop offset="100%" style="stop-color:#FFB347"/>
+    </linearGradient>
+    <linearGradient id="gpuGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00D4AA"/>
+      <stop offset="100%" style="stop-color:#00B894"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="95" fill="#1a1a2e" stroke="url(#clawGrad)" stroke-width="3"/>
+  
+  <!-- GPU chip representation -->
+  <rect x="55" y="55" width="90" height="90" rx="8" fill="#16213e"/>
+  <rect x="60" y="60" width="80" height="80" rx="5" fill="url(#gpuGrad)" opacity="0.9"/>
+  
+  <!-- Grid pattern (GPU cores) -->
+  <g fill="#1a1a2e" opacity="0.6">
+    <rect x="68" y="68" width="12" height="12" rx="2"/>
+    <rect x="84" y="68" width="12" height="12" rx="2"/>
+    <rect x="100" y="68" width="12" height="12" rx="2"/>
+    <rect x="116" y="68" width="12" height="12" rx="2"/>
+    
+    <rect x="68" y="84" width="12" height="12" rx="2"/>
+    <rect x="84" y="84" width="12" height="12" rx="2"/>
+    <rect x="100" y="84" width="12" height="12" rx="2"/>
+    <rect x="116" y="84" width="12" height="12" rx="2"/>
+    
+    <rect x="68" y="100" width="12" height="12" rx="2"/>
+    <rect x="84" y="100" width="12" height="12" rx="2"/>
+    <rect x="100" y="100" width="12" height="12" rx="2"/>
+    <rect x="116" y="100" width="12" height="12" rx="2"/>
+    
+    <rect x="68" y="116" width="12" height="12" rx="2"/>
+    <rect x="84" y="116" width="12" height="12" rx="2"/>
+    <rect x="100" y="116" width="12" height="12" rx="2"/>
+    <rect x="116" y="116" width="12" height="12" rx="2"/>
+  </g>
+  
+  <!-- Claw marks -->
+  <g stroke="url(#clawGrad)" stroke-width="4" stroke-linecap="round" fill="none">
+    <path d="M30 50 L55 80"/>
+    <path d="M25 70 L50 95"/>
+    <path d="M30 90 L55 110"/>
+    
+    <path d="M170 50 L145 80"/>
+    <path d="M175 70 L150 95"/>
+    <path d="M170 90 L145 110"/>
+  </g>
+  
+  <!-- Connection dots (nodes) -->
+  <circle cx="40" cy="160" r="8" fill="url(#clawGrad)"/>
+  <circle cx="100" cy="170" r="8" fill="url(#clawGrad)"/>
+  <circle cx="160" cy="160" r="8" fill="url(#clawGrad)"/>
+  
+  <!-- Connection lines -->
+  <g stroke="url(#clawGrad)" stroke-width="2" opacity="0.5">
+    <line x1="48" y1="158" x2="92" y2="168"/>
+    <line x1="108" y1="168" x2="152" y2="158"/>
+    <line x1="100" y1="145" x2="100" y2="162"/>
+  </g>
+</svg>

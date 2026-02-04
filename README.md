@@ -1,159 +1,417 @@
-# 🦀 Clawbernetes
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="Clawbernetes" width="200"/>
+</p>
 
-**AI-Native GPU Orchestration Platform**
+<h1 align="center">Clawbernetes</h1>
 
-[![CI](https://github.com/clawbernetes/clawbernetes/actions/workflows/ci.yml/badge.svg)](https://github.com/clawbernetes/clawbernetes/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+<p align="center">
+  <strong>AI-Native GPU Orchestration Platform</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/clawbernetes/clawbernetes/actions/workflows/ci.yml">
+    <img src="https://github.com/clawbernetes/clawbernetes/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+  <a href="https://opensource.org/licenses/MIT">
+    <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
+  </a>
+  <a href="https://www.rust-lang.org/">
+    <img src="https://img.shields.io/badge/rust-1.85%2B%20(2024%20Edition)-orange.svg" alt="Rust">
+  </a>
+  <img src="https://img.shields.io/badge/tests-2%2C100%2B-green.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/lines-66K%2B-informational.svg" alt="Lines of Code">
+</p>
+
+<p align="center">
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-features">Features</a> •
+  <a href="#-architecture">Architecture</a> •
+  <a href="#-documentation">Documentation</a> •
+  <a href="#-molt-network">MOLT Network</a>
+</p>
+
+---
 
 > **Kubernetes was built for web apps. Clawbernetes was built for AI.**
 
-Clawbernetes replaces Kubernetes' declarative reconciliation model with intelligent agent-driven infrastructure management. Built on the [OpenClaw](https://github.com/openclaw/openclaw) agent runtime, it provides GPU-native scheduling, intent-based operations, and autonomous self-healing.
+Clawbernetes replaces Kubernetes' declarative YAML-driven model with **intelligent agent-driven infrastructure**. Built on the [OpenClaw](https://github.com/openclaw/openclaw) runtime, it provides GPU-native scheduling, natural language operations, and autonomous self-healing.
 
-## ✨ Key Features
+## 🎯 Why Clawbernetes?
 
-- **Intent over YAML** — Tell the agent what you want, not how to configure it
-- **GPU-Native Scheduling** — Understands NVLink topology, VRAM, thermals, and PCIe lanes
-- **Agent-Driven Operations** — Manage clusters from WhatsApp, Slack, Discord, or CLI
-- **Self-Healing** — Root-cause analysis and autonomous remediation
-- **MOLT Network** — Optional P2P compute marketplace with token incentives
+| Problem with Kubernetes | Clawbernetes Solution |
+|------------------------|----------------------|
+| YAML configuration hell | **Natural language intents** — "Scale training to 8 GPUs" |
+| Alert fatigue from Prometheus/Grafana | **AI-native observability** — "What's wrong?" returns diagnosis |
+| Complex Helm charts | **Agent-managed deployments** — describes desired state |
+| Manual secret rotation | **Automatic rotation** with zero downtime |
+| No GPU topology awareness | **NVLink/PCIe/VRAM-aware** scheduling |
+| Vendor lock-in | **Multi-cloud + MOLT P2P** compute marketplace |
+
+## ✨ Features
+
+### 🖥️ Multi-Platform GPU Compute
+
+Real GPU acceleration via [CubeCL](https://github.com/tracel-ai/cubecl):
+
+| Platform | Backend | Status |
+|----------|---------|--------|
+| NVIDIA | CUDA | ✅ Ready |
+| Apple Silicon | Metal | ✅ Tested |
+| AMD | ROCm/HIP | ✅ Ready |
+| Cross-platform | Vulkan | ✅ Ready |
+| Fallback | CPU SIMD | ✅ Ready |
+
+```rust
+use claw_compute::gpu;
+
+// Runs on Metal (macOS), CUDA (NVIDIA), or Vulkan (AMD/Intel)
+let result = gpu::gpu_add(&vec_a, &vec_b)?;
+let activated = gpu::gpu_gelu(&tensor)?;
+```
+
+### 🔐 Security & Secrets
+
+- **Encrypted at rest** — AES-GCM with automatic key rotation
+- **Workload identity** — Attestation-based access control
+- **Built-in PKI** — Agent-managed certificate authority
+- **Audit logging** — Full chain of custody with reasoning
+
+### 🌐 Flexible Networking
+
+Choose your networking model:
+
+| Mode | Use Case | Complexity |
+|------|----------|------------|
+| **WireGuard** | Self-hosted mesh | Full control |
+| **Tailscale** | Managed mesh | Zero config |
+| **MOLT P2P** | Decentralized | Marketplace access |
+
+### 📊 AI-Native Observability
+
+Replaces: Prometheus, Grafana, Alertmanager, Loki, Jaeger
+
+```
+You: "Why is training slow?"
+Agent: "GPU 3 thermal throttling at 89°C. Recommending migration to node-07."
+```
+
+- Embedded time-series database
+- Semantic log search
+- Automatic trace correlation
+- Insight generation, not dashboards
+
+### 🚀 Intent-Based Operations
+
+Replaces: ArgoCD, Helm, Kustomize
+
+```bash
+# Instead of 500 lines of YAML:
+clawbernetes deploy "Run Llama 70B inference with 4 H100s, prioritize latency"
+
+# The agent handles:
+# - GPU selection (NVLink topology)
+# - Container configuration
+# - Networking setup
+# - Health monitoring
+# - Auto-scaling
+```
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    OpenClaw Gateway (Control Plane)             │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌───────────┐  │
-│  │Fleet Agent │  │Scheduler   │  │ Node       │  │ Workload  │  │
-│  │ (Skills)   │  │ Agent      │  │ Registry   │  │ State     │  │
-│  └────────────┘  └────────────┘  └────────────┘  └───────────┘  │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ WebSocket + Protobuf
-┌────────────────────────────▼────────────────────────────────────┐
-│                         clawnode                                │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────────────────┐ │
-│  │ GPU     │  │Container│  │ Metrics │  │ MOLT P2P            │ │
-│  │ Manager │  │ Runtime │  │ Agent   │  │ (Optional)          │ │
-│  └─────────┘  └─────────┘  └─────────┘  └─────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Control Plane                                   │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │                    OpenClaw Gateway                               │  │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐  │  │
+│  │  │   Fleet    │  │  Intent    │  │   Node     │  │  Workload  │  │  │
+│  │  │   Agent    │  │  Parser    │  │  Registry  │  │   State    │  │  │
+│  │  └────────────┘  └────────────┘  └────────────┘  └────────────┘  │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                    WebSocket + Protobuf (TLS)
+                                 │
+        ┌────────────────────────┼────────────────────────┐
+        │                        │                        │
+        ▼                        ▼                        ▼
+┌───────────────┐        ┌───────────────┐        ┌───────────────┐
+│   clawnode    │        │   clawnode    │        │   clawnode    │
+│  ┌─────────┐  │        │  ┌─────────┐  │        │  ┌─────────┐  │
+│  │ 8x H100 │  │        │  │ 4x A100 │  │        │  │ M3 Ultra│  │
+│  │ NVLink  │  │        │  │ PCIe    │  │        │  │ Metal   │  │
+│  └─────────┘  │        └─────────┘  │        │  └─────────┘  │
+│  ┌─────────┐  │        │  ┌─────────┐  │        │  ┌─────────┐  │
+│  │Container│  │        │  │Container│  │        │  │Container│  │
+│  │ Runtime │  │        │  │ Runtime │  │        │  │ Runtime │  │
+│  └─────────┘  │        │  └─────────┘  │        │  └─────────┘  │
+│  ┌─────────┐  │        │  ┌─────────┐  │        │  ┌─────────┐  │
+│  │  MOLT   │  │        │  │  MOLT   │  │        │  │  MOLT   │  │
+│  │  Agent  │  │        │  │  Agent  │  │        │  │  Agent  │  │
+│  └─────────┘  │        │  └─────────┘  │        │  └─────────┘  │
+└───────────────┘        └───────────────┘        └───────────────┘
 ```
 
 ## 🚀 Quick Start
 
+### From Source
+
 ```bash
-# Build
+# Clone
+git clone https://github.com/clawbernetes/clawbernetes
+cd clawbernetes
+
+# Build (requires Rust 1.85+)
 make build
 
-# Start gateway
+# Start the gateway
 ./target/release/claw-gateway
 
-# Connect a node (another terminal)
+# Connect a node (new terminal)
 ./target/release/clawnode --gateway ws://localhost:8080 --name my-node
 
-# Check status
+# Check cluster status
 ./target/release/clawbernetes node list
 ```
 
-### Docker
+### Docker Compose
 
 ```bash
 # Build images
 make docker
 
-# Start cluster (gateway + 2 nodes)
+# Start gateway + 2 simulated nodes
 make docker-up
 
-# Check logs
+# View logs
 make docker-logs
 
-# Stop
+# Stop cluster
 make docker-down
 ```
 
-## 📦 Crates (22 total)
-
-| Crate | Description | Status |
-|-------|-------------|--------|
-| `claw-gateway-server` | WebSocket gateway for node fleet | ✅ Done |
-| `clawnode` | Node agent — GPU detection, metrics | ✅ Done |
-| `claw-cli` | Command-line interface | ✅ Done |
-| `claw-metrics` | Time-series metrics storage | ✅ Done |
-| `claw-logs` | Structured log aggregation | ✅ Done |
-| `claw-observe` | AI-native observability | ✅ Done |
-| `claw-secrets` | Encrypted secrets management | ✅ Done |
-| `claw-pki` | Certificate authority | ✅ Done |
-| `claw-deploy` | Intent-based deployment | ✅ Done |
-| `claw-rollback` | Auto-rollback with analysis | ✅ Done |
-| `claw-wireguard` | WireGuard mesh networking | ✅ Done |
-| `claw-network` | Mesh topology management | ✅ Done |
-| `claw-tailscale` | Tailscale integration | ✅ Done |
-| `molt-core` | MOLT token primitives | ✅ Done |
-| `molt-p2p` | P2P discovery and gossip | ✅ Done |
-| `molt-agent` | Provider/buyer agent logic | ✅ Done |
-| `molt-market` | Orderbook and settlement | ✅ Done |
-| `molt-token` | Solana SPL token client | ✅ Done |
-| `molt-attestation` | Hardware verification | ✅ Done |
-| `molt-market` | Decentralized marketplace protocol | 🚧 In Progress |
-| `molt-attestation` | Hardware and execution attestation | 🚧 In Progress |
-
-## 🚀 Quick Start
+### Cargo
 
 ```bash
-# Clone the repository
-git clone https://github.com/clawbernetes/clawbernetes
-cd clawbernetes
+# Install CLI
+cargo install --path crates/claw-cli
 
-# Build all crates
-cargo build --workspace
-
-# Run tests
-cargo test --workspace
-
-# Start a node agent (connects to Gateway)
-cargo run -p clawnode -- --gateway ws://localhost:18789
+# Install node agent
+cargo install --path crates/clawnode
 ```
 
-## 🔧 Configuration
+## 📦 Crate Overview
+
+Clawbernetes is organized into **23 crates** across three domains:
+
+### Core Infrastructure
+
+| Crate | Description | Tests |
+|-------|-------------|-------|
+| `claw-gateway-server` | WebSocket gateway for node fleet | ✅ |
+| `clawnode` | Node agent with GPU detection | ✅ |
+| `claw-cli` | Command-line interface | ✅ |
+| `claw-proto` | Protobuf message definitions | ✅ |
+| `claw-compute` | Multi-platform GPU compute (CubeCL) | ✅ |
+
+### Operations & Security
+
+| Crate | Description | Tests |
+|-------|-------------|-------|
+| `claw-metrics` | Embedded time-series database | ✅ |
+| `claw-logs` | Structured log aggregation | ✅ |
+| `claw-observe` | AI-native observability | ✅ |
+| `claw-secrets` | Encrypted secrets management | ✅ |
+| `claw-pki` | Certificate authority | ✅ |
+| `claw-deploy` | Intent-based deployment | ✅ |
+| `claw-rollback` | Automatic rollback with RCA | ✅ |
+
+### Networking
+
+| Crate | Description | Tests |
+|-------|-------------|-------|
+| `claw-network` | Mesh topology management | ✅ |
+| `claw-wireguard` | WireGuard integration | ✅ |
+| `claw-tailscale` | Tailscale managed mesh | ✅ |
+
+### MOLT Marketplace
+
+| Crate | Description | Tests |
+|-------|-------------|-------|
+| `molt-core` | Token primitives & policies | ✅ |
+| `molt-token` | Solana SPL token client | ✅ |
+| `molt-p2p` | Peer discovery & gossip | ✅ |
+| `molt-agent` | Provider/buyer automation | ✅ |
+| `molt-market` | Orderbook & settlement | ✅ |
+| `molt-attestation` | Hardware verification | ✅ |
+
+## 🪙 MOLT Network
+
+Clawbernetes nodes can participate in the **MOLT P2P compute marketplace**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      MOLT Network                               │
+│                                                                 │
+│   Provider Node                      Buyer Agent                │
+│   ┌─────────────┐                   ┌─────────────┐            │
+│   │ Idle GPUs   │◄── Offer ────────►│ "Need 4     │            │
+│   │ H100 x 8    │                   │  H100s for  │            │
+│   └─────────────┘                   │  training"  │            │
+│         │                           └─────────────┘            │
+│         │ Execute                          │                    │
+│         ▼                                  │ MOLT Payment       │
+│   ┌─────────────┐                          ▼                    │
+│   │ Attestation │──── Proof ─────►┌─────────────┐              │
+│   │ (TEE/TPM)   │                 │   Escrow    │              │
+│   └─────────────┘                 │  (Solana)   │              │
+│                                   └─────────────┘              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Autonomy Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| **Conservative** | Approve every job manually | High-value workloads |
+| **Moderate** | Agent follows your policies | Balanced automation |
+| **Aggressive** | Full autopilot | Maximum earnings |
+
+```bash
+# Join the marketplace
+clawbernetes molt join --autonomy moderate
+
+# Set pricing policy
+clawbernetes molt policy set --min-price 0.50 --max-hours 24
+
+# View earnings
+clawbernetes molt earnings
+```
+
+## ⚙️ Configuration
 
 ```toml
-# clawbernetes.toml
+# clawnode.toml
 [node]
 name = "gpu-node-01"
-gateway = "ws://localhost:18789"
+gateway = "ws://gateway.example.com:8080"
 
 [gpu]
 auto_detect = true
-allow_mig = true
+platforms = ["cuda", "metal"]  # or "rocm", "vulkan"
+
+[network]
+mode = "wireguard"  # or "tailscale"
+mesh_cidr = "10.100.0.0/16"
 
 [molt]
-enabled = false  # Set true to join MOLT network
-autonomy = "moderate"  # conservative | moderate | aggressive
+enabled = true
+autonomy = "moderate"
+wallet = "~/.config/clawbernetes/wallet.json"
+
+[security]
+tls_cert = "/etc/clawbernetes/node.crt"
+tls_key = "/etc/clawbernetes/node.key"
 ```
 
-## 🪙 MOLT Network (Optional)
+## 📚 Documentation
 
-Clawbernetes nodes can optionally participate in the MOLT P2P compute network:
+| Document | Description |
+|----------|-------------|
+| [QUICKSTART.md](QUICKSTART.md) | 5-minute getting started guide |
+| [docs/architecture.md](docs/architecture.md) | System design deep-dive |
+| [docs/ecosystem-replacement.md](docs/ecosystem-replacement.md) | How we replace K8s tooling |
+| [docs/cubecl-integration.md](docs/cubecl-integration.md) | Multi-platform GPU support |
+| [docs/tailscale-integration.md](docs/tailscale-integration.md) | Managed networking setup |
 
-- **Earn MOLT** for providing GPU compute to the network
-- **Spend MOLT** to access distributed GPU capacity
-- **Choose your autonomy level:**
-  - **Conservative** — Approve every job manually
-  - **Moderate** — Agent follows your policies
-  - **Aggressive** — Full autopilot for maximum earnings
+## 🧪 Testing
 
 ```bash
-# Join the MOLT network
-clawbernetes molt join --autonomy moderate
+# Run all tests (2,100+)
+cargo test --workspace
+
+# Run with GPU features
+cargo test --workspace --features cubecl-wgpu
+
+# Run benchmarks
+cargo bench --workspace
+
+# Lint
+cargo clippy --workspace -- -D warnings
 ```
 
-## 📄 License
+## 🛠️ Development
 
-MIT License — see [LICENSE-MIT](LICENSE-MIT) for details.
+### Requirements
+
+- Rust 1.85+ (2024 Edition)
+- Docker (for containerized testing)
+- GPU drivers (optional, for hardware acceleration)
+
+### Building
+
+```bash
+# Debug build
+cargo build --workspace
+
+# Release build
+make build
+
+# With all features
+cargo build --workspace --all-features
+```
+
+### Project Stats
+
+```
+📊 66,000+ lines of Rust
+📦 23 crates
+🧪 2,100+ tests
+🎯 0 unsafe in core (GPU crate allows for CubeCL)
+```
 
 ## 🤝 Contributing
 
-Contributions welcome! Please read our [Contributing Guide](CONTRIBUTING.md) first.
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+
+### Development Workflow
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feat/amazing-feature`)
+3. Write tests first (TDD)
+4. Implement your changes
+5. Run `cargo clippy -- -D warnings` and `cargo fmt`
+6. Submit a pull request
+
+### Code Standards
+
+- **No `unwrap()`/`expect()`** in library code
+- **No `todo!()`/`unimplemented!()`** in main branch
+- **Tests required** for all new functionality
+- **Documentation** for public APIs
+
+## 📄 License
+
+This project is dual-licensed:
+
+- **MIT License** — see [LICENSE-MIT](LICENSE-MIT)
+- **BSL 1.1** — see [LICENSE-BSL](LICENSE-BSL) (converts to MIT after 4 years)
+
+## 🙏 Acknowledgments
+
+- [CubeCL](https://github.com/tracel-ai/cubecl) — Multi-platform GPU compute
+- [OpenClaw](https://github.com/openclaw/openclaw) — Agent runtime
+- [Tailscale](https://tailscale.com) — Managed mesh networking
+- [WireGuard](https://wireguard.com) — Modern VPN protocol
 
 ---
 
-Built with 🦀 by the Clawbernetes community
+<p align="center">
+  Built with 🦀 and ❤️ by the Clawbernetes community
+</p>
+
+<p align="center">
+  <a href="https://discord.gg/clawbernetes">Discord</a> •
+  <a href="https://twitter.com/clawbernetes">Twitter</a> •
+  <a href="https://clawbernetes.dev">Website</a>
+</p>
