@@ -418,4 +418,255 @@ mod tests {
         let config = NodeConfig::from_toml(toml).expect("should accept ws:// scheme");
         assert_eq!(config.gateway_url, "ws://localhost:8080");
     }
+
+    // =========================================================================
+    // Additional Coverage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_gpu_config_equality() {
+        let config1 = GpuConfig {
+            enabled: true,
+            poll_interval_secs: 5,
+            max_temperature_celsius: Some(85),
+        };
+        let config2 = GpuConfig {
+            enabled: true,
+            poll_interval_secs: 5,
+            max_temperature_celsius: Some(85),
+        };
+        let config3 = GpuConfig {
+            enabled: false,
+            poll_interval_secs: 10,
+            max_temperature_celsius: None,
+        };
+
+        assert_eq!(config1, config2);
+        assert_ne!(config1, config3);
+    }
+
+    #[test]
+    fn test_gpu_config_clone() {
+        let config = GpuConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config, cloned);
+    }
+
+    #[test]
+    fn test_gpu_config_debug() {
+        let config = GpuConfig::default();
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("GpuConfig"));
+    }
+
+    #[test]
+    fn test_gpu_config_serialization() {
+        let config = GpuConfig {
+            enabled: true,
+            poll_interval_secs: 10,
+            max_temperature_celsius: Some(90),
+        };
+        let json = serde_json::to_string(&config).expect("serialize");
+        let parsed: GpuConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(config, parsed);
+    }
+
+    #[test]
+    fn test_molt_config_equality() {
+        let config1 = MoltConfig::default();
+        let config2 = MoltConfig::default();
+        assert_eq!(config1, config2);
+    }
+
+    #[test]
+    fn test_molt_config_clone() {
+        let config = MoltConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config, cloned);
+    }
+
+    #[test]
+    fn test_molt_config_debug() {
+        let config = MoltConfig::default();
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("MoltConfig"));
+    }
+
+    #[test]
+    fn test_molt_config_serialization() {
+        let config = MoltConfig {
+            enabled: true,
+            min_price_microdollars: 500_000,
+            max_concurrent_jobs: 16,
+        };
+        let json = serde_json::to_string(&config).expect("serialize");
+        let parsed: MoltConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(config, parsed);
+    }
+
+    #[test]
+    fn test_node_config_debug() {
+        let toml = r#"
+            name = "debug-node"
+            gateway_url = "wss://gateway.example.com"
+        "#;
+        let config = NodeConfig::from_toml(toml).expect("should parse");
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("NodeConfig"));
+        assert!(debug.contains("debug-node"));
+    }
+
+    #[test]
+    fn test_node_config_clone() {
+        let toml = r#"
+            name = "clone-node"
+            gateway_url = "wss://gateway.example.com"
+        "#;
+        let config = NodeConfig::from_toml(toml).expect("should parse");
+        let cloned = config.clone();
+        assert_eq!(config, cloned);
+    }
+
+    #[test]
+    fn test_max_name_length_exactly_64() {
+        let name = "a".repeat(64);
+        let toml = format!(
+            r#"
+            name = "{name}"
+            gateway_url = "wss://gateway.example.com"
+        "#
+        );
+
+        let config = NodeConfig::from_toml(&toml).expect("should accept 64 char name");
+        assert_eq!(config.name.len(), 64);
+    }
+
+    #[test]
+    fn test_name_with_numbers() {
+        let toml = r#"
+            name = "node123"
+            gateway_url = "wss://gateway.example.com"
+        "#;
+
+        let config = NodeConfig::from_toml(toml).expect("should accept numbers");
+        assert_eq!(config.name, "node123");
+    }
+
+    #[test]
+    fn test_name_all_numbers() {
+        let toml = r#"
+            name = "12345"
+            gateway_url = "wss://gateway.example.com"
+        "#;
+
+        let config = NodeConfig::from_toml(toml).expect("should accept all numbers");
+        assert_eq!(config.name, "12345");
+    }
+
+    #[test]
+    fn test_name_single_char() {
+        let toml = r#"
+            name = "a"
+            gateway_url = "wss://gateway.example.com"
+        "#;
+
+        let config = NodeConfig::from_toml(toml).expect("should accept single char");
+        assert_eq!(config.name, "a");
+    }
+
+    #[test]
+    fn test_gpu_disabled() {
+        let toml = r#"
+            name = "no-gpu-node"
+            gateway_url = "wss://gateway.example.com"
+
+            [gpu]
+            enabled = false
+            poll_interval_secs = 60
+        "#;
+
+        let config = NodeConfig::from_toml(toml).expect("should parse");
+        assert!(!config.gpu.enabled);
+        assert_eq!(config.gpu.poll_interval_secs, 60);
+    }
+
+    #[test]
+    fn test_gpu_explicit_temperature_threshold() {
+        let toml = r#"
+            name = "cool-node"
+            gateway_url = "wss://gateway.example.com"
+
+            [gpu]
+            enabled = true
+            poll_interval_secs = 5
+            max_temperature_celsius = 75
+        "#;
+
+        let config = NodeConfig::from_toml(toml).expect("should parse");
+        assert_eq!(config.gpu.max_temperature_celsius, Some(75));
+    }
+
+    #[test]
+    fn test_molt_high_price() {
+        let toml = r#"
+            name = "expensive-node"
+            gateway_url = "wss://gateway.example.com"
+
+            [molt]
+            enabled = true
+            min_price_microdollars = 10000000
+            max_concurrent_jobs = 1
+        "#;
+
+        let config = NodeConfig::from_toml(toml).expect("should parse");
+        assert_eq!(config.molt.min_price_microdollars, 10_000_000);
+    }
+
+    #[test]
+    fn test_wss_with_port() {
+        let toml = r#"
+            name = "port-node"
+            gateway_url = "wss://gateway.example.com:443"
+        "#;
+
+        let config = NodeConfig::from_toml(toml).expect("should parse");
+        assert!(config.gateway_url.contains(":443"));
+    }
+
+    #[test]
+    fn test_wss_with_path() {
+        let toml = r#"
+            name = "path-node"
+            gateway_url = "wss://gateway.example.com/api/v1/ws"
+        "#;
+
+        let config = NodeConfig::from_toml(toml).expect("should parse");
+        assert!(config.gateway_url.contains("/api/v1/ws"));
+    }
+
+    #[test]
+    fn test_validate_method_directly() {
+        let config = NodeConfig {
+            name: "valid-node".to_string(),
+            gateway_url: "wss://example.com".to_string(),
+            gpu: GpuConfig::default(),
+            network: NetworkConfig::default(),
+            molt: MoltConfig::default(),
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_empty_name_directly() {
+        let config = NodeConfig {
+            name: "".to_string(),
+            gateway_url: "wss://example.com".to_string(),
+            gpu: GpuConfig::default(),
+            network: NetworkConfig::default(),
+            molt: MoltConfig::default(),
+        };
+
+        assert!(config.validate().is_err());
+    }
 }
