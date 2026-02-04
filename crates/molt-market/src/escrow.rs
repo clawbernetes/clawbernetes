@@ -61,6 +61,9 @@ pub struct EscrowAccount {
     pub amount: u64,
     /// Current state of the escrow.
     pub state: EscrowState,
+    /// Who initiated the dispute (if any).
+    /// SECURITY: Tracks accountability for dispute resolution.
+    pub disputed_by: Option<String>,
 }
 
 impl EscrowAccount {
@@ -73,6 +76,7 @@ impl EscrowAccount {
             provider,
             amount,
             state: EscrowState::Created,
+            disputed_by: None,
         }
     }
 
@@ -90,22 +94,66 @@ impl EscrowAccount {
     }
 
     /// Funds the escrow account (buyer deposits tokens).
-    pub fn fund(&mut self) -> Result<(), MarketError> {
+    /// 
+    /// # Security
+    /// Only the buyer can fund the escrow.
+    pub fn fund(&mut self, caller: &str) -> Result<(), MarketError> {
+        if caller != self.buyer {
+            return Err(MarketError::Unauthorized {
+                action: "fund escrow".to_string(),
+                required_role: "buyer".to_string(),
+                caller_role: if caller == self.provider { "provider" } else { "unknown" }.to_string(),
+            });
+        }
         self.transition_to(EscrowState::Funded)
     }
 
     /// Releases funds to the provider (job completed successfully).
-    pub fn release(&mut self) -> Result<(), MarketError> {
+    /// 
+    /// # Security
+    /// Only the buyer can release funds (confirming job completion).
+    /// This prevents providers from unilaterally claiming payment.
+    pub fn release(&mut self, caller: &str) -> Result<(), MarketError> {
+        if caller != self.buyer {
+            return Err(MarketError::Unauthorized {
+                action: "release escrow".to_string(),
+                required_role: "buyer".to_string(),
+                caller_role: if caller == self.provider { "provider" } else { "unknown" }.to_string(),
+            });
+        }
         self.transition_to(EscrowState::Released)
     }
 
     /// Refunds the buyer (job cancelled or failed).
-    pub fn refund(&mut self) -> Result<(), MarketError> {
+    /// 
+    /// # Security
+    /// Only the provider can initiate a refund (acknowledging failure).
+    /// This prevents buyers from unilaterally reclaiming funds.
+    pub fn refund(&mut self, caller: &str) -> Result<(), MarketError> {
+        if caller != self.provider {
+            return Err(MarketError::Unauthorized {
+                action: "refund escrow".to_string(),
+                required_role: "provider".to_string(),
+                caller_role: if caller == self.buyer { "buyer" } else { "unknown" }.to_string(),
+            });
+        }
         self.transition_to(EscrowState::Refunded)
     }
 
     /// Puts the account into dispute resolution.
-    pub fn dispute(&mut self) -> Result<(), MarketError> {
+    /// 
+    /// # Security
+    /// Either buyer or provider can initiate a dispute.
+    /// The initiator is recorded for accountability.
+    pub fn dispute(&mut self, caller: &str) -> Result<(), MarketError> {
+        if caller != self.buyer && caller != self.provider {
+            return Err(MarketError::Unauthorized {
+                action: "dispute escrow".to_string(),
+                required_role: "buyer or provider".to_string(),
+                caller_role: "unknown".to_string(),
+            });
+        }
+        self.disputed_by = Some(caller.to_string());
         self.transition_to(EscrowState::Disputed)
     }
 
@@ -159,7 +207,7 @@ mod tests {
             1000,
         );
 
-        let result = account.fund();
+        let result = account.fund("buyer-1");
         assert!(result.is_ok());
         assert_eq!(account.state, EscrowState::Funded);
     }
@@ -173,8 +221,8 @@ mod tests {
             1000,
         );
 
-        account.fund().unwrap();
-        let result = account.release();
+        account.fund("buyer-1").unwrap();
+        let result = account.release("buyer-1");
         assert!(result.is_ok());
         assert_eq!(account.state, EscrowState::Released);
     }
@@ -188,7 +236,7 @@ mod tests {
             1000,
         );
 
-        let result = account.release();
+        let result = account.release("buyer-1");
         assert!(result.is_err());
     }
 
@@ -201,8 +249,8 @@ mod tests {
             1000,
         );
 
-        account.fund().unwrap();
-        let result = account.refund();
+        account.fund("buyer-1").unwrap();
+        let result = account.refund("provider-1");
         assert!(result.is_ok());
         assert_eq!(account.state, EscrowState::Refunded);
     }
@@ -216,8 +264,8 @@ mod tests {
             1000,
         );
 
-        account.fund().unwrap();
-        let result = account.dispute();
+        account.fund("buyer-1").unwrap();
+        let result = account.dispute("buyer-1");
         assert!(result.is_ok());
         assert_eq!(account.state, EscrowState::Disputed);
     }
@@ -232,9 +280,9 @@ mod tests {
         );
 
         assert!(!account.is_finalized());
-        account.fund().unwrap();
+        account.fund("buyer-1").unwrap();
         assert!(!account.is_finalized());
-        account.release().unwrap();
+        account.release("buyer-1").unwrap();
         assert!(account.is_finalized());
     }
 
@@ -275,8 +323,8 @@ mod tests {
             1000,
         );
 
-        account.fund().unwrap();
-        let result = account.fund();
+        account.fund("buyer-1").unwrap();
+        let result = account.fund("buyer-1");
         assert!(result.is_err());
     }
 
@@ -289,7 +337,7 @@ mod tests {
             1000,
         );
 
-        let result = account.refund();
+        let result = account.refund("provider-1");
         assert!(result.is_err());
     }
 
@@ -302,7 +350,7 @@ mod tests {
             1000,
         );
 
-        let result = account.dispute();
+        let result = account.dispute("buyer-1");
         assert!(result.is_err());
     }
 
@@ -315,11 +363,11 @@ mod tests {
             1000,
         );
 
-        account.fund().unwrap();
-        account.dispute().unwrap();
+        account.fund("buyer-1").unwrap();
+        account.dispute("buyer-1").unwrap();
         
         // Can release from disputed state
-        let result = account.release();
+        let result = account.release("buyer-1");
         assert!(result.is_ok());
         assert_eq!(account.state, EscrowState::Released);
     }
@@ -333,11 +381,11 @@ mod tests {
             1000,
         );
 
-        account.fund().unwrap();
-        account.dispute().unwrap();
+        account.fund("buyer-1").unwrap();
+        account.dispute("buyer-1").unwrap();
         
         // Can refund from disputed state
-        let result = account.refund();
+        let result = account.refund("provider-1");
         assert!(result.is_ok());
         assert_eq!(account.state, EscrowState::Refunded);
     }
@@ -351,8 +399,8 @@ mod tests {
             1000,
         );
 
-        account.fund().unwrap();
-        account.refund().unwrap();
+        account.fund("buyer-1").unwrap();
+        account.refund("provider-1").unwrap();
         assert!(account.is_finalized());
     }
 
@@ -365,13 +413,13 @@ mod tests {
             1000,
         );
 
-        account.fund().unwrap();
-        account.release().unwrap();
+        account.fund("buyer-1").unwrap();
+        account.release("buyer-1").unwrap();
         
         // Cannot do anything from released state
-        assert!(account.fund().is_err());
-        assert!(account.refund().is_err());
-        assert!(account.dispute().is_err());
+        assert!(account.fund("buyer-1").is_err());
+        assert!(account.refund("provider-1").is_err());
+        assert!(account.dispute("buyer-1").is_err());
     }
 
     #[test]
@@ -383,13 +431,13 @@ mod tests {
             1000,
         );
 
-        account.fund().unwrap();
-        account.refund().unwrap();
+        account.fund("buyer-1").unwrap();
+        account.refund("provider-1").unwrap();
         
         // Cannot do anything from refunded state
-        assert!(account.fund().is_err());
-        assert!(account.release().is_err());
-        assert!(account.dispute().is_err());
+        assert!(account.fund("buyer-1").is_err());
+        assert!(account.release("buyer-1").is_err());
+        assert!(account.dispute("buyer-1").is_err());
     }
 
     #[test]
@@ -501,5 +549,134 @@ mod tests {
         assert!(!EscrowState::Refunded.can_transition_to(&EscrowState::Released));
         assert!(!EscrowState::Refunded.can_transition_to(&EscrowState::Disputed));
         assert!(!EscrowState::Refunded.can_transition_to(&EscrowState::Refunded));
+    }
+
+    // =========================================================================
+    // Authorization Tests (CRIT-01 Security Fix)
+    // =========================================================================
+
+    #[test]
+    fn fund_requires_buyer_authorization() {
+        let mut account = EscrowAccount::new(
+            "job-123".to_string(),
+            "buyer-1".to_string(),
+            "provider-1".to_string(),
+            1000,
+        );
+
+        // Provider cannot fund
+        let result = account.fund("provider-1");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(MarketError::Unauthorized { .. })));
+
+        // Unknown party cannot fund
+        let result = account.fund("attacker");
+        assert!(result.is_err());
+
+        // Buyer can fund
+        let result = account.fund("buyer-1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn release_requires_buyer_authorization() {
+        let mut account = EscrowAccount::new(
+            "job-123".to_string(),
+            "buyer-1".to_string(),
+            "provider-1".to_string(),
+            1000,
+        );
+        account.fund("buyer-1").unwrap();
+
+        // Provider cannot release (would allow self-payment)
+        let result = account.release("provider-1");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(MarketError::Unauthorized { .. })));
+
+        // Unknown party cannot release
+        let result = account.release("attacker");
+        assert!(result.is_err());
+
+        // Buyer can release
+        let result = account.release("buyer-1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn refund_requires_provider_authorization() {
+        let mut account = EscrowAccount::new(
+            "job-123".to_string(),
+            "buyer-1".to_string(),
+            "provider-1".to_string(),
+            1000,
+        );
+        account.fund("buyer-1").unwrap();
+
+        // Buyer cannot refund (would allow taking money back without provider consent)
+        let result = account.refund("buyer-1");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(MarketError::Unauthorized { .. })));
+
+        // Unknown party cannot refund
+        let result = account.refund("attacker");
+        assert!(result.is_err());
+
+        // Provider can refund
+        let result = account.refund("provider-1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn dispute_allows_buyer_or_provider() {
+        let mut account1 = EscrowAccount::new(
+            "job-1".to_string(),
+            "buyer-1".to_string(),
+            "provider-1".to_string(),
+            1000,
+        );
+        account1.fund("buyer-1").unwrap();
+
+        // Unknown party cannot dispute
+        let result = account1.dispute("attacker");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(MarketError::Unauthorized { .. })));
+
+        // Buyer can dispute
+        let result = account1.dispute("buyer-1");
+        assert!(result.is_ok());
+        assert_eq!(account1.disputed_by, Some("buyer-1".to_string()));
+
+        // Provider can also dispute (separate account)
+        let mut account2 = EscrowAccount::new(
+            "job-2".to_string(),
+            "buyer-1".to_string(),
+            "provider-1".to_string(),
+            1000,
+        );
+        account2.fund("buyer-1").unwrap();
+        let result = account2.dispute("provider-1");
+        assert!(result.is_ok());
+        assert_eq!(account2.disputed_by, Some("provider-1".to_string()));
+    }
+
+    #[test]
+    fn authorization_error_contains_details() {
+        let mut account = EscrowAccount::new(
+            "job-123".to_string(),
+            "buyer-1".to_string(),
+            "provider-1".to_string(),
+            1000,
+        );
+        account.fund("buyer-1").unwrap();
+
+        let result = account.release("provider-1");
+        match result {
+            Err(MarketError::Unauthorized { action, required_role, caller_role }) => {
+                assert_eq!(action, "release escrow");
+                assert_eq!(required_role, "buyer");
+                assert_eq!(caller_role, "provider");
+            }
+            _ => panic!("Expected Unauthorized error"),
+        }
     }
 }

@@ -14,8 +14,10 @@ mod announcement;
 mod broadcast;
 mod message;
 mod node;
+mod rate_limit;
 
 pub use announcement::{CapacityAnnouncement, GpuInfo, Pricing};
-pub use broadcast::{BroadcastConfig, GossipBroadcaster, BroadcastResult};
-pub use message::{GossipMessage, MessageId, GossipQuery, QueryFilter};
-pub use node::{GossipNode, GossipEvent, LocalGossipNode, NodeState};
+pub use broadcast::{BroadcastConfig, BroadcastResult, GossipBroadcaster};
+pub use message::{GossipMessage, GossipQuery, MessageId, QueryFilter};
+pub use node::{GossipEvent, GossipNode, LocalGossipNode, NodeState};
+pub use rate_limit::{RateLimitConfig, RateLimitResult, RateLimiter, RateLimiterStats};

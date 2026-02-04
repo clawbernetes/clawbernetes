@@ -24,4 +24,30 @@ pub enum AttestationError {
     /// Attestation expired.
     #[error("attestation expired")]
     Expired,
+
+    /// Challenge has expired (too old).
+    #[error("challenge expired: age {age_secs}s exceeds max {max_age_secs}s")]
+    ChallengeExpired {
+        /// The age of the challenge in seconds.
+        age_secs: u64,
+        /// The maximum allowed age in seconds.
+        max_age_secs: u64,
+    },
+
+    /// Nonce has already been used (replay attack detected).
+    #[error("nonce replay detected: nonce has already been used")]
+    NonceReplay,
+
+    /// Challenge was issued for a different verifier.
+    #[error("challenge verifier mismatch: expected {expected}, got {actual}")]
+    VerifierMismatch {
+        /// The expected verifier ID.
+        expected: String,
+        /// The actual verifier ID in the challenge.
+        actual: String,
+    },
+
+    /// Challenge is missing when required.
+    #[error("challenge required but not provided")]
+    ChallengeMissing,
 }

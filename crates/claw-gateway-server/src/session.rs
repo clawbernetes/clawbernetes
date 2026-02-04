@@ -10,9 +10,48 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, error, info, warn};
 
-use crate::config::ServerConfig;
+use crate::config::{ServerConfig, WebSocketConfig};
 use crate::error::{ServerError, ServerResult};
 use crate::handlers::route_message;
+
+/// Tracks message size violations for a connection.
+#[derive(Debug, Default)]
+pub struct ViolationTracker {
+    /// Current count of violations.
+    count: u32,
+}
+
+impl ViolationTracker {
+    /// Create a new violation tracker.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { count: 0 }
+    }
+
+    /// Record a violation and return the current count.
+    pub fn record_violation(&mut self) -> u32 {
+        self.count = self.count.saturating_add(1);
+        self.count
+    }
+
+    /// Get the current violation count.
+    #[must_use]
+    pub const fn count(&self) -> u32 {
+        self.count
+    }
+
+    /// Check if the number of violations exceeds the threshold.
+    /// Returns true if connection should be terminated.
+    #[must_use]
+    pub const fn should_terminate(&self, max_violations: u32) -> bool {
+        self.count > max_violations
+    }
+
+    /// Reset the violation count.
+    pub fn reset(&mut self) {
+        self.count = 0;
+    }
+}
 
 /// State of a node session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,7 +173,38 @@ impl Default for NodeSession {
     }
 }
 
-/// Handle processing a raw WebSocket message.
+/// Get the size of a WebSocket message in bytes.
+#[must_use]
+pub fn ws_message_size(ws_msg: &WsMessage) -> usize {
+    match ws_msg {
+        WsMessage::Text(text) => text.len(),
+        WsMessage::Binary(data) => data.len(),
+        WsMessage::Ping(data) | WsMessage::Pong(data) => data.len(),
+        WsMessage::Close(frame) => {
+            frame.as_ref().map_or(0, |f| f.reason.len() + 2) // 2 bytes for close code
+        }
+        WsMessage::Frame(frame) => frame.len(),
+    }
+}
+
+/// Check if a WebSocket message size is within the allowed limits.
+///
+/// # Errors
+///
+/// Returns `ServerError::MessageTooLarge` if the message exceeds the configured limit.
+pub fn validate_message_size(ws_msg: &WsMessage, config: &WebSocketConfig) -> ServerResult<()> {
+    let size = ws_message_size(ws_msg);
+    if config.is_message_size_valid(size) {
+        Ok(())
+    } else {
+        Err(ServerError::MessageTooLarge {
+            size,
+            limit: config.max_message_size,
+        })
+    }
+}
+
+/// Handle processing a raw WebSocket message without size checks.
 ///
 /// # Errors
 ///
@@ -162,6 +232,20 @@ pub fn process_ws_message(ws_msg: &WsMessage) -> ServerResult<Option<NodeMessage
             Ok(None)
         }
     }
+}
+
+/// Handle processing a raw WebSocket message with size validation.
+///
+/// # Errors
+///
+/// Returns `ServerError::MessageTooLarge` if the message exceeds the configured limit.
+/// Returns other errors if the message cannot be processed.
+pub fn process_ws_message_with_limits(
+    ws_msg: &WsMessage,
+    config: &WebSocketConfig,
+) -> ServerResult<Option<NodeMessage>> {
+    validate_message_size(ws_msg, config)?;
+    process_ws_message(ws_msg)
 }
 
 /// Serialize a gateway message to a WebSocket message.
@@ -223,8 +307,11 @@ where
     let read_registry = registry.clone();
     let read_workload_mgr = workload_mgr.clone();
     let read_config = config.clone();
+    let ws_config = config.websocket;
 
     let read_task = async move {
+        let mut violations = ViolationTracker::new();
+
         while let Some(msg_result) = ws_stream.next().await {
             let ws_msg = match msg_result {
                 Ok(msg) => msg,
@@ -234,11 +321,32 @@ where
                 }
             };
 
-            // Process the WebSocket message
-            let node_msg = match process_ws_message(&ws_msg) {
+            // Process the WebSocket message with size limits
+            let node_msg = match process_ws_message_with_limits(&ws_msg, &ws_config) {
                 Ok(Some(msg)) => msg,
                 Ok(None) => continue,
                 Err(ServerError::ConnectionClosed) => break,
+                Err(ServerError::MessageTooLarge { size, limit }) => {
+                    let violation_count = violations.record_violation();
+                    warn!(
+                        session_id = %session_id,
+                        size = size,
+                        limit = limit,
+                        violations = violation_count,
+                        "Received oversized message"
+                    );
+
+                    // Check if we should terminate the connection
+                    if violations.should_terminate(ws_config.max_violations) {
+                        error!(
+                            session_id = %session_id,
+                            violations = violation_count,
+                            "Terminating connection due to repeated size violations"
+                        );
+                        break;
+                    }
+                    continue;
+                }
                 Err(e) => {
                     warn!(session_id = %session_id, error = %e, "Failed to process message");
                     continue;
@@ -348,6 +456,214 @@ where
 mod tests {
     use super::*;
     use claw_proto::NodeCapabilities;
+
+    // ==================== ViolationTracker Tests ====================
+
+    #[test]
+    fn test_violation_tracker_new() {
+        let tracker = ViolationTracker::new();
+        assert_eq!(tracker.count(), 0);
+    }
+
+    #[test]
+    fn test_violation_tracker_default() {
+        let tracker = ViolationTracker::default();
+        assert_eq!(tracker.count(), 0);
+    }
+
+    #[test]
+    fn test_violation_tracker_record() {
+        let mut tracker = ViolationTracker::new();
+
+        assert_eq!(tracker.record_violation(), 1);
+        assert_eq!(tracker.record_violation(), 2);
+        assert_eq!(tracker.record_violation(), 3);
+        assert_eq!(tracker.count(), 3);
+    }
+
+    #[test]
+    fn test_violation_tracker_should_terminate() {
+        let mut tracker = ViolationTracker::new();
+
+        // With max_violations = 3, should not terminate at 1, 2, 3 violations
+        tracker.record_violation();
+        assert!(!tracker.should_terminate(3));
+
+        tracker.record_violation();
+        assert!(!tracker.should_terminate(3));
+
+        tracker.record_violation();
+        assert!(!tracker.should_terminate(3));
+
+        // Should terminate at 4 violations (> 3)
+        tracker.record_violation();
+        assert!(tracker.should_terminate(3));
+    }
+
+    #[test]
+    fn test_violation_tracker_immediate_termination() {
+        let mut tracker = ViolationTracker::new();
+
+        // With max_violations = 0, should terminate after first violation
+        tracker.record_violation();
+        assert!(tracker.should_terminate(0));
+    }
+
+    #[test]
+    fn test_violation_tracker_reset() {
+        let mut tracker = ViolationTracker::new();
+        tracker.record_violation();
+        tracker.record_violation();
+        assert_eq!(tracker.count(), 2);
+
+        tracker.reset();
+        assert_eq!(tracker.count(), 0);
+    }
+
+    #[test]
+    fn test_violation_tracker_saturating_add() {
+        let mut tracker = ViolationTracker { count: u32::MAX - 1 };
+        tracker.record_violation();
+        assert_eq!(tracker.count(), u32::MAX);
+
+        // Should not overflow
+        tracker.record_violation();
+        assert_eq!(tracker.count(), u32::MAX);
+    }
+
+    // ==================== ws_message_size Tests ====================
+
+    #[test]
+    fn test_ws_message_size_text() {
+        let msg = WsMessage::Text("hello world".to_string());
+        assert_eq!(ws_message_size(&msg), 11);
+    }
+
+    #[test]
+    fn test_ws_message_size_binary() {
+        let msg = WsMessage::Binary(vec![1, 2, 3, 4, 5]);
+        assert_eq!(ws_message_size(&msg), 5);
+    }
+
+    #[test]
+    fn test_ws_message_size_ping() {
+        let msg = WsMessage::Ping(vec![1, 2, 3]);
+        assert_eq!(ws_message_size(&msg), 3);
+    }
+
+    #[test]
+    fn test_ws_message_size_pong() {
+        let msg = WsMessage::Pong(vec![1, 2]);
+        assert_eq!(ws_message_size(&msg), 2);
+    }
+
+    #[test]
+    fn test_ws_message_size_close_none() {
+        let msg = WsMessage::Close(None);
+        assert_eq!(ws_message_size(&msg), 0);
+    }
+
+    #[test]
+    fn test_ws_message_size_empty() {
+        let msg = WsMessage::Text(String::new());
+        assert_eq!(ws_message_size(&msg), 0);
+
+        let msg = WsMessage::Binary(vec![]);
+        assert_eq!(ws_message_size(&msg), 0);
+    }
+
+    // ==================== validate_message_size Tests ====================
+
+    #[test]
+    fn test_validate_message_size_valid() {
+        let config = WebSocketConfig::new().with_max_message_size(100);
+        let msg = WsMessage::Text("small".to_string());
+
+        assert!(validate_message_size(&msg, &config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_message_size_at_limit() {
+        let config = WebSocketConfig::new().with_max_message_size(5);
+        let msg = WsMessage::Text("12345".to_string());
+
+        assert!(validate_message_size(&msg, &config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_message_size_over_limit() {
+        let config = WebSocketConfig::new().with_max_message_size(5);
+        let msg = WsMessage::Text("123456".to_string());
+
+        let result = validate_message_size(&msg, &config);
+        assert!(result.is_err());
+
+        match result {
+            Err(ServerError::MessageTooLarge { size, limit }) => {
+                assert_eq!(size, 6);
+                assert_eq!(limit, 5);
+            }
+            _ => panic!("Expected MessageTooLarge error"),
+        }
+    }
+
+    #[test]
+    fn test_validate_message_size_binary() {
+        let config = WebSocketConfig::new().with_max_message_size(10);
+
+        let small = WsMessage::Binary(vec![1, 2, 3]);
+        assert!(validate_message_size(&small, &config).is_ok());
+
+        let large = WsMessage::Binary(vec![0; 20]);
+        assert!(validate_message_size(&large, &config).is_err());
+    }
+
+    // ==================== process_ws_message_with_limits Tests ====================
+
+    #[test]
+    fn test_process_ws_message_with_limits_valid() {
+        let config = WebSocketConfig::new().with_max_message_size(1024);
+        let node_id = NodeId::new();
+        let msg = NodeMessage::heartbeat(node_id);
+        let json = serde_json::to_string(&msg).unwrap();
+        let ws_msg = WsMessage::Text(json);
+
+        let result = process_ws_message_with_limits(&ws_msg, &config);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[test]
+    fn test_process_ws_message_with_limits_too_large() {
+        let config = WebSocketConfig::new().with_max_message_size(10);
+        let node_id = NodeId::new();
+        let msg = NodeMessage::heartbeat(node_id);
+        let json = serde_json::to_string(&msg).unwrap();
+        let ws_msg = WsMessage::Text(json);
+
+        let result = process_ws_message_with_limits(&ws_msg, &config);
+        assert!(matches!(result, Err(ServerError::MessageTooLarge { .. })));
+    }
+
+    #[test]
+    fn test_process_ws_message_with_limits_ping_pong() {
+        let config = WebSocketConfig::new().with_max_message_size(100);
+
+        let ping = WsMessage::Ping(vec![1, 2, 3]);
+        assert!(process_ws_message_with_limits(&ping, &config).unwrap().is_none());
+
+        let pong = WsMessage::Pong(vec![1, 2, 3]);
+        assert!(process_ws_message_with_limits(&pong, &config).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_process_ws_message_with_limits_close() {
+        let config = WebSocketConfig::new().with_max_message_size(100);
+        let ws_msg = WsMessage::Close(None);
+
+        let result = process_ws_message_with_limits(&ws_msg, &config);
+        assert!(matches!(result, Err(ServerError::ConnectionClosed)));
+    }
 
     // ==================== SessionState Tests ====================
 

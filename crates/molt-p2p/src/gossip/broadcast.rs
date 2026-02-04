@@ -1,5 +1,6 @@
 //! Fanout/epidemic broadcast implementation for gossip.
 
+use super::rate_limit::{RateLimitConfig, RateLimitResult, RateLimiter};
 use super::{CapacityAnnouncement, GossipMessage, GossipQuery, MessageId, QueryFilter};
 use crate::error::P2pError;
 use crate::protocol::PeerId;
@@ -23,6 +24,8 @@ pub struct BroadcastConfig {
     pub max_announcements_per_peer: usize,
     /// Interval between cleanup sweeps.
     pub cleanup_interval: Duration,
+    /// Rate limiting configuration.
+    pub rate_limit: RateLimitConfig,
 }
 
 impl Default for BroadcastConfig {
@@ -35,6 +38,7 @@ impl Default for BroadcastConfig {
             announcement_cache_ttl: Duration::from_secs(600),
             max_announcements_per_peer: 5,
             cleanup_interval: Duration::from_secs(60),
+            rate_limit: RateLimitConfig::default(),
         }
     }
 }

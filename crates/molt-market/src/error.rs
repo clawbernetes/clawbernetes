@@ -42,6 +42,21 @@ pub enum MarketError {
     /// Wallet generation error.
     #[error("wallet error: {0}")]
     WalletError(String),
+
+    /// Unauthorized operation attempt.
+    /// 
+    /// SECURITY: This error is returned when a caller attempts an operation
+    /// they are not authorized to perform (e.g., releasing escrow without
+    /// being the buyer).
+    #[error("unauthorized: {action} requires {required_role}, but caller is {caller_role}")]
+    Unauthorized {
+        /// The action that was attempted.
+        action: String,
+        /// The role required to perform this action.
+        required_role: String,
+        /// The actual role of the caller.
+        caller_role: String,
+    },
 }
 
 impl From<molt_token::MoltError> for MarketError {

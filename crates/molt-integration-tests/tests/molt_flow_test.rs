@@ -257,7 +257,7 @@ fn order_matches_compatible_capacity_offer() {
     let buyer_id = bs58::encode(buyer_wallet.public_key().as_bytes()).into_string();
 
     let order = JobOrder::new(
-        buyer_id,
+        buyer_id.clone(),
         JobRequirements {
             min_gpus: 4,
             gpu_model: Some("A100".to_string()),
@@ -287,7 +287,7 @@ fn order_does_not_match_insufficient_capacity() {
     let provider_id = bs58::encode(provider_wallet.public_key().as_bytes()).into_string();
 
     let offer = CapacityOffer::new(
-        provider_id,
+        provider_id.clone(),
         GpuCapacity {
             count: 2,
             model: "A100".to_string(),
@@ -303,7 +303,7 @@ fn order_does_not_match_insufficient_capacity() {
     let buyer_id = bs58::encode(buyer_wallet.public_key().as_bytes()).into_string();
 
     let order = JobOrder::new(
-        buyer_id,
+        buyer_id.clone(),
         JobRequirements {
             min_gpus: 8,
             gpu_model: Some("A100".to_string()),
@@ -329,7 +329,7 @@ fn order_does_not_match_wrong_gpu_model() {
     let provider_id = bs58::encode(provider_wallet.public_key().as_bytes()).into_string();
 
     let offer = CapacityOffer::new(
-        provider_id,
+        provider_id.clone(),
         GpuCapacity {
             count: 8,
             model: "RTX 4090".to_string(),
@@ -345,7 +345,7 @@ fn order_does_not_match_wrong_gpu_model() {
     let buyer_id = bs58::encode(buyer_wallet.public_key().as_bytes()).into_string();
 
     let order = JobOrder::new(
-        buyer_id,
+        buyer_id.clone(),
         JobRequirements {
             min_gpus: 4,
             gpu_model: Some("A100".to_string()),
@@ -376,8 +376,8 @@ fn escrow_lifecycle_fund_and_release() {
 
     let mut escrow = EscrowAccount::new(
         "job-001".to_string(),
-        buyer_id,
-        provider_id,
+        buyer_id.clone(),
+        provider_id.clone(),
         500,
     );
 
@@ -386,12 +386,12 @@ fn escrow_lifecycle_fund_and_release() {
     assert!(!escrow.is_finalized());
 
     // Fund the escrow
-    let fund_result = escrow.fund();
+    let fund_result = escrow.fund(&buyer_id);
     assert!(fund_result.is_ok());
     assert_eq!(escrow.state, EscrowState::Funded);
 
     // Release funds to provider
-    let release_result = escrow.release();
+    let release_result = escrow.release(&buyer_id);
     assert!(release_result.is_ok());
     assert_eq!(escrow.state, EscrowState::Released);
     assert!(escrow.is_finalized());
@@ -407,16 +407,16 @@ fn escrow_lifecycle_fund_and_refund() {
 
     let mut escrow = EscrowAccount::new(
         "job-002".to_string(),
-        buyer_id,
-        provider_id,
+        buyer_id.clone(),
+        provider_id.clone(),
         500,
     );
 
-    let fund_result = escrow.fund();
+    let fund_result = escrow.fund(&buyer_id);
     assert!(fund_result.is_ok());
 
     // Refund buyer (job cancelled)
-    let refund_result = escrow.refund();
+    let refund_result = escrow.refund(&provider_id);
     assert!(refund_result.is_ok());
     assert_eq!(escrow.state, EscrowState::Refunded);
     assert!(escrow.is_finalized());
@@ -432,13 +432,13 @@ fn escrow_cannot_release_before_funding() {
 
     let mut escrow = EscrowAccount::new(
         "job-003".to_string(),
-        buyer_id,
-        provider_id,
+        buyer_id.clone(),
+        provider_id.clone(),
         500,
     );
 
     // Cannot release without funding first
-    let release_result = escrow.release();
+    let release_result = escrow.release(&buyer_id);
     assert!(release_result.is_err());
 }
 
@@ -452,21 +452,21 @@ fn escrow_dispute_and_resolution() {
 
     let mut escrow = EscrowAccount::new(
         "job-004".to_string(),
-        buyer_id,
-        provider_id,
+        buyer_id.clone(),
+        provider_id.clone(),
         500,
     );
 
-    let fund_result = escrow.fund();
+    let fund_result = escrow.fund(&buyer_id);
     assert!(fund_result.is_ok());
 
     // Enter dispute
-    let dispute_result = escrow.dispute();
+    let dispute_result = escrow.dispute(&buyer_id);
     assert!(dispute_result.is_ok());
     assert_eq!(escrow.state, EscrowState::Disputed);
 
     // Resolve dispute in favor of provider
-    let resolve_result = escrow.release();
+    let resolve_result = escrow.release(&buyer_id);
     assert!(resolve_result.is_ok());
     assert_eq!(escrow.state, EscrowState::Released);
 }
@@ -773,7 +773,7 @@ fn full_molt_flow_end_to_end() {
         provider_id.clone(),
         200,
     );
-    assert!(escrow.fund().is_ok());
+    assert!(escrow.fund(&buyer_id).is_ok());
 
     // Step 6: Provider evaluates job with autonomy mode
     let provider_state = ProviderState::new(1000, 10);
@@ -817,7 +817,7 @@ fn full_molt_flow_end_to_end() {
     let settlement = settle_job(&settlement_input);
     assert!(settlement.is_ok());
 
-    assert!(escrow.release().is_ok());
+    assert!(escrow.release(&buyer_id).is_ok());
     assert!(escrow.is_finalized());
 
     // Step 9: Update reputation

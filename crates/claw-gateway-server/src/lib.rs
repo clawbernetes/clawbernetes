@@ -74,13 +74,17 @@ pub mod server;
 pub mod session;
 
 // Re-export main types
-pub use config::ServerConfig;
+pub use config::{
+    ServerConfig, WebSocketConfig, DEFAULT_MAX_FRAME_SIZE, DEFAULT_MAX_MESSAGE_SIZE,
+    DEFAULT_MAX_VIOLATIONS,
+};
 pub use error::{ServerError, ServerResult};
 pub use handlers::{
     handle_heartbeat, handle_metrics, handle_register, handle_workload_update, route_message,
 };
 pub use server::GatewayServer;
 pub use session::{
-    gateway_msg_to_ws, process_ws_message, run_session, session_channel, NodeSession,
-    SessionReceiver, SessionSender, SessionState,
+    gateway_msg_to_ws, process_ws_message, process_ws_message_with_limits, run_session,
+    session_channel, validate_message_size, ws_message_size, NodeSession, SessionReceiver,
+    SessionSender, SessionState, ViolationTracker,
 };

@@ -39,6 +39,22 @@ pub enum ServerError {
     /// Channel send error.
     #[error("channel send error: {0}")]
     ChannelSend(String),
+
+    /// Message exceeds maximum allowed size.
+    #[error("message size {size} exceeds limit {limit}")]
+    MessageTooLarge {
+        /// Actual message size in bytes.
+        size: usize,
+        /// Maximum allowed size in bytes.
+        limit: usize,
+    },
+
+    /// Connection closed due to repeated size violations.
+    #[error("connection terminated: too many oversized messages ({count} violations)")]
+    TooManyViolations {
+        /// Number of violations before termination.
+        count: u32,
+    },
 }
 
 impl From<serde_json::Error> for ServerError {
@@ -102,5 +118,25 @@ mod tests {
     fn test_connection_closed_display() {
         let err = ServerError::ConnectionClosed;
         assert_eq!(err.to_string(), "connection closed");
+    }
+
+    #[test]
+    fn test_message_too_large_display() {
+        let err = ServerError::MessageTooLarge {
+            size: 2_000_000,
+            limit: 1_000_000,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("2000000"));
+        assert!(msg.contains("1000000"));
+        assert!(msg.contains("exceeds limit"));
+    }
+
+    #[test]
+    fn test_too_many_violations_display() {
+        let err = ServerError::TooManyViolations { count: 5 };
+        let msg = err.to_string();
+        assert!(msg.contains("5"));
+        assert!(msg.contains("violations"));
     }
 }
