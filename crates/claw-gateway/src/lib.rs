@@ -13,11 +13,16 @@
 #![warn(missing_docs)]
 
 pub mod dispatch;
+pub mod logs;
 pub mod registry;
 pub mod scheduler;
 pub mod workload;
 
 pub use dispatch::{DispatchError, WorkloadDispatcher};
-pub use registry::{NodeRegistry, RegisteredNode, RegistryError};
+pub use logs::{WorkloadLogStore, WorkloadLogs, DEFAULT_MAX_LINES};
+pub use registry::{
+    HealthSummary, NodeHealthStatus, NodeRegistry, RegisteredNode, RegistryError,
+    HEARTBEAT_INTERVAL_SECS, OFFLINE_THRESHOLD_MISSED, UNHEALTHY_THRESHOLD_MISSED,
+};
 pub use scheduler::{Scheduler, SchedulerError};
 pub use workload::{TrackedWorkload, WorkloadManager, WorkloadManagerError};

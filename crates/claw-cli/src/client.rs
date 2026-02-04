@@ -364,6 +364,31 @@ impl GatewayClient {
         }
     }
 
+    // ========================================================================
+    // Node Operations
+    // ========================================================================
+
+    /// Drain or undrain a node.
+    ///
+    /// When a node is draining, it won't receive new workloads but existing
+    /// workloads will continue to run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the node is not found or the request fails.
+    pub async fn drain_node(&mut self, node_id: NodeId, drain: bool) -> Result<bool, CliError> {
+        let response = self
+            .send_request(CliMessage::DrainNode { node_id, drain })
+            .await?;
+
+        match response {
+            CliResponse::NodeDrained { draining, .. } => Ok(draining),
+            other => Err(CliError::Protocol(format!(
+                "unexpected response: {other:?}"
+            ))),
+        }
+    }
+
     /// Get workload logs.
     ///
     /// # Errors

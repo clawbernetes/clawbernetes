@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use claw_gateway::{NodeRegistry, WorkloadManager};
+use claw_gateway::{NodeHealthStatus, NodeRegistry, WorkloadLogStore, WorkloadManager};
 use claw_proto::cli::{
     self, CliMessage, CliResponse, NodeInfo, NodeState, WorkloadInfo, CLI_PROTOCOL_VERSION,
 };
@@ -28,6 +28,7 @@ pub async fn handle_cli_connection<S>(
     mut ws: S,
     registry: Arc<Mutex<NodeRegistry>>,
     workload_manager: Arc<Mutex<WorkloadManager>>,
+    log_store: Arc<Mutex<WorkloadLogStore>>,
     config: Arc<ServerConfig>,
     start_time: Instant,
 ) -> ServerResult<()>
@@ -89,6 +90,7 @@ where
             request,
             &registry,
             &workload_manager,
+            &log_store,
             &config,
             start_time,
         )
@@ -105,6 +107,7 @@ async fn handle_request(
     request: CliMessage,
     registry: &Arc<Mutex<NodeRegistry>>,
     workload_manager: &Arc<Mutex<WorkloadManager>>,
+    log_store: &Arc<Mutex<WorkloadLogStore>>,
     _config: &Arc<ServerConfig>,
     start_time: Instant,
 ) -> CliResponse {
@@ -155,7 +158,11 @@ async fn handle_request(
             workload_id,
             tail,
             include_stderr,
-        } => handle_get_logs(workload_manager, workload_id, tail, include_stderr).await,
+        } => handle_get_logs(log_store, workload_id, tail, include_stderr).await,
+
+        CliMessage::DrainNode { node_id, drain } => {
+            handle_drain_node(registry, node_id, drain).await
+        }
 
         CliMessage::GetMoltStatus => handle_get_molt_status().await,
 
@@ -197,11 +204,10 @@ async fn handle_get_status(
     let workload_mgr = workload_manager.lock().await;
 
     let nodes = registry.list_nodes();
-    let node_count = nodes.len() as u32;
+    let health_summary = registry.health_summary();
 
-    // For now, consider all registered nodes as healthy
-    // In a real implementation, we'd track heartbeat timeouts
-    let healthy_nodes = node_count;
+    let node_count = nodes.len() as u32;
+    let healthy_nodes = health_summary.healthy as u32;
 
     let mut gpu_count = 0u32;
     let mut total_vram_mib = 0u64;
@@ -225,6 +231,16 @@ async fn handle_get_status(
     }
 }
 
+/// Map internal health status to CLI NodeState.
+fn health_to_node_state(health: NodeHealthStatus) -> NodeState {
+    match health {
+        NodeHealthStatus::Healthy => NodeState::Healthy,
+        NodeHealthStatus::Unhealthy => NodeState::Unhealthy,
+        NodeHealthStatus::Draining => NodeState::Draining,
+        NodeHealthStatus::Offline => NodeState::Offline,
+    }
+}
+
 async fn handle_list_nodes(
     registry: &Arc<Mutex<NodeRegistry>>,
     state_filter: Option<NodeState>,
@@ -235,18 +251,17 @@ async fn handle_list_nodes(
 
     let node_infos: Vec<NodeInfo> = nodes
         .into_iter()
-        .filter(|_n| {
-            // For now, all registered nodes are considered healthy
-            if let Some(filter) = &state_filter {
-                matches!(filter, NodeState::Healthy)
+        .filter(|n| {
+            if let Some(ref filter) = state_filter {
+                health_to_node_state(n.health_status()) == *filter
             } else {
                 true
             }
         })
         .map(|n| NodeInfo {
             node_id: n.id,
-            name: format!("node-{}", &n.id.to_string()[..8]),
-            state: NodeState::Healthy, // Simplified: all registered = healthy
+            name: n.name.clone(),
+            state: health_to_node_state(n.health_status()),
             gpu_count: n.capabilities.gpus.len() as u32,
             total_vram_mib: n.capabilities.total_vram_mib(),
             running_workloads: 0, // Would need cross-reference with workload manager
@@ -270,8 +285,8 @@ async fn handle_get_node(registry: &Arc<Mutex<NodeRegistry>>, node_id: NodeId) -
         Some(node) => CliResponse::Node {
             node: NodeInfo {
                 node_id: node.id,
-                name: format!("node-{}", &node.id.to_string()[..8]),
-                state: NodeState::Healthy,
+                name: node.name.clone(),
+                state: health_to_node_state(node.health_status()),
                 gpu_count: node.capabilities.gpus.len() as u32,
                 total_vram_mib: node.capabilities.total_vram_mib(),
                 running_workloads: 0,
@@ -366,18 +381,28 @@ async fn handle_start_workload(
 
     // Find a node to run the workload
     let node_id = if let Some(id) = target_node {
-        // Verify the node exists
-        if registry.get_node(id).is_none() {
-            return CliResponse::error(
-                cli::error_codes::NODE_NOT_FOUND,
-                format!("target node not found: {id}"),
-            );
+        // Verify the node exists and is available
+        match registry.get_node(id) {
+            Some(node) => {
+                if !node.is_available() {
+                    return CliResponse::error(
+                        cli::error_codes::NO_CAPACITY,
+                        format!("node {id} is not available (status: {})", node.health_status()),
+                    );
+                }
+                id
+            }
+            None => {
+                return CliResponse::error(
+                    cli::error_codes::NODE_NOT_FOUND,
+                    format!("target node not found: {id}"),
+                );
+            }
         }
-        id
     } else {
-        // Auto-select a node with capacity
+        // Auto-select an available node with capacity
         let candidates: Vec<_> = registry
-            .list_nodes()
+            .available_nodes()
             .into_iter()
             .filter(|n| n.capabilities.gpus.len() as u32 >= spec.gpu_count)
             .collect();
@@ -385,7 +410,7 @@ async fn handle_start_workload(
         if candidates.is_empty() {
             return CliResponse::error(
                 cli::error_codes::NO_CAPACITY,
-                "no nodes with sufficient capacity",
+                "no available nodes with sufficient capacity",
             );
         }
 
@@ -443,26 +468,57 @@ async fn handle_stop_workload(
 }
 
 async fn handle_get_logs(
-    workload_manager: &Arc<Mutex<WorkloadManager>>,
+    log_store: &Arc<Mutex<WorkloadLogStore>>,
     workload_id: WorkloadId,
-    _tail: Option<u32>,
-    _include_stderr: bool,
+    tail: Option<u32>,
+    include_stderr: bool,
 ) -> CliResponse {
-    let mgr = workload_manager.lock().await;
+    let store = log_store.lock().await;
 
-    match mgr.get_workload(workload_id) {
-        Some(_w) => {
-            // Logs are not stored in the gateway currently
-            // They would need to be fetched from the node
+    // Convert tail from u32 to usize
+    let tail_usize = tail.map(|t| t as usize);
+
+    match store.get_logs_with_tail(workload_id, tail_usize) {
+        Some((stdout_lines, stderr_lines)) => CliResponse::Logs {
+            workload_id,
+            stdout_lines,
+            stderr_lines: if include_stderr {
+                stderr_lines
+            } else {
+                Vec::new()
+            },
+        },
+        None => {
+            // If no logs exist for this workload, return empty logs
+            // (workload might not have produced output yet)
             CliResponse::Logs {
                 workload_id,
                 stdout_lines: Vec::new(),
                 stderr_lines: Vec::new(),
             }
         }
-        None => CliResponse::error(
-            cli::error_codes::WORKLOAD_NOT_FOUND,
-            format!("workload not found: {workload_id}"),
+    }
+}
+
+// ============================================================================
+// Node Drain Operations
+// ============================================================================
+
+async fn handle_drain_node(
+    registry: &Arc<Mutex<NodeRegistry>>,
+    node_id: NodeId,
+    drain: bool,
+) -> CliResponse {
+    let mut reg = registry.lock().await;
+
+    match reg.set_draining(node_id, drain) {
+        Ok(()) => CliResponse::NodeDrained {
+            node_id,
+            draining: drain,
+        },
+        Err(_) => CliResponse::error(
+            cli::error_codes::NODE_NOT_FOUND,
+            format!("node not found: {node_id}"),
         ),
     }
 }

@@ -117,6 +117,17 @@ pub enum CliMessage {
         include_stderr: bool,
     },
 
+    /// Drain or undrain a node.
+    ///
+    /// Draining a node prevents new workloads from being scheduled on it,
+    /// but allows existing workloads to continue running.
+    DrainNode {
+        /// Node ID.
+        node_id: NodeId,
+        /// Whether to drain (true) or undrain (false).
+        drain: bool,
+    },
+
     /// Get MOLT network status.
     GetMoltStatus,
 
@@ -224,6 +235,14 @@ pub enum CliResponse {
     WorkloadStopped {
         /// Workload ID.
         workload_id: WorkloadId,
+    },
+
+    /// Node drain status changed.
+    NodeDrained {
+        /// Node ID.
+        node_id: NodeId,
+        /// Whether the node is now draining.
+        draining: bool,
     },
 
     /// Workload logs.
@@ -416,6 +435,7 @@ impl CliMessage {
             Self::StartWorkload { .. } => "start_workload",
             Self::StopWorkload { .. } => "stop_workload",
             Self::GetLogs { .. } => "get_logs",
+            Self::DrainNode { .. } => "drain_node",
             Self::GetMoltStatus => "get_molt_status",
             Self::ListMoltPeers => "list_molt_peers",
             Self::GetMoltBalance => "get_molt_balance",

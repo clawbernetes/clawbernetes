@@ -56,6 +56,11 @@ impl NodeCommand {
                 let msg = Message::success(format!("Node {id} marked for draining"));
                 format.write(writer, &msg)?;
             }
+            NodeCommands::Undrain { id } => {
+                self.undrain_node(id).await?;
+                let msg = Message::success(format!("Node {id} is now accepting workloads"));
+                format.write(writer, &msg)?;
+            }
         }
         Ok(())
     }
@@ -127,6 +132,9 @@ impl NodeCommand {
 
     /// Mark a node for draining.
     ///
+    /// When `drain` is true, the node will stop accepting new workloads but
+    /// existing workloads will continue to run until completion.
+    ///
     /// # Errors
     ///
     /// Returns an error if the node is not found or the operation fails.
@@ -136,9 +144,37 @@ impl NodeCommand {
             return Err(CliError::InvalidArgument("node ID cannot be empty".into()));
         }
 
-        // Note: Drain is not yet implemented in the CLI protocol
-        // For now, return a not-implemented error
-        Err(CliError::Command("drain not yet implemented".into()))
+        let mut client = GatewayClient::connect(&self.gateway_url).await?;
+
+        // Parse node ID
+        let id = claw_proto::NodeId::parse(node_id)
+            .map_err(|_| CliError::InvalidArgument(format!("invalid node ID: {node_id}")))?;
+
+        // Drain the node (drain = true)
+        let _ = client.drain_node(id, true).await?;
+        Ok(())
+    }
+
+    /// Undrain a node, allowing it to accept new workloads again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the node is not found or the operation fails.
+    pub async fn undrain_node(&self, node_id: &str) -> Result<(), CliError> {
+        // Validate node ID
+        if node_id.is_empty() {
+            return Err(CliError::InvalidArgument("node ID cannot be empty".into()));
+        }
+
+        let mut client = GatewayClient::connect(&self.gateway_url).await?;
+
+        // Parse node ID
+        let id = claw_proto::NodeId::parse(node_id)
+            .map_err(|_| CliError::InvalidArgument(format!("invalid node ID: {node_id}")))?;
+
+        // Undrain the node (drain = false)
+        let _ = client.drain_node(id, false).await?;
+        Ok(())
     }
 }
 
@@ -322,12 +358,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_command_drain_not_implemented() {
+    async fn node_command_drain_invalid_id() {
         let cmd = NodeCommand::new("ws://127.0.0.1:59999");
-        let result = cmd.drain_node("some-id", false).await;
+        let result = cmd.drain_node("not-a-valid-uuid", false).await;
         assert!(result.is_err());
-        // Drain is not yet implemented
-        assert!(matches!(result, Err(CliError::Command(_))));
+        // Should fail with invalid argument or connection error
+    }
+
+    #[tokio::test]
+    async fn node_command_drain_connection_refused() {
+        // With valid UUID but no gateway running
+        let cmd = NodeCommand::new("ws://127.0.0.1:59999");
+        let result = cmd.drain_node("00000000-0000-0000-0000-000000000001", false).await;
+        // Should fail with connection error since no gateway is running
+        assert!(result.is_err());
     }
 
     #[tokio::test]

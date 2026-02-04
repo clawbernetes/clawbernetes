@@ -69,13 +69,24 @@ pub enum NodeCommands {
     },
     
     /// Mark a node for draining.
+    ///
+    /// Draining prevents new workloads from being scheduled on the node,
+    /// but allows existing workloads to continue running.
     Drain {
         /// Node ID to drain.
         id: String,
-        
+
         /// Force drain even with running workloads.
         #[arg(short, long)]
         force: bool,
+    },
+
+    /// Remove drain status from a node.
+    ///
+    /// Allows the node to accept new workloads again.
+    Undrain {
+        /// Node ID to undrain.
+        id: String,
     },
 }
 
