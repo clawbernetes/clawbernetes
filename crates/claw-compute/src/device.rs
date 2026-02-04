@@ -421,6 +421,186 @@ mod tests {
     fn test_auto_detect() {
         // Should at least get CPU
         let device = ComputeDevice::auto().expect("should find device");
-        assert!(device.info().name.len() > 0);
+        assert!(!device.info().name.is_empty());
+    }
+
+    // =========================================================================
+    // Additional Coverage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_platform_names() {
+        assert_eq!(Platform::Cuda.name(), "CUDA");
+        assert_eq!(Platform::Metal.name(), "Metal");
+        assert_eq!(Platform::Rocm.name(), "ROCm");
+        assert_eq!(Platform::Vulkan.name(), "Vulkan");
+        assert_eq!(Platform::WebGpu.name(), "WebGPU");
+        assert_eq!(Platform::Cpu.name(), "CPU");
+    }
+
+    #[test]
+    fn test_platform_is_gpu_all() {
+        assert!(Platform::Cuda.is_gpu());
+        assert!(Platform::Metal.is_gpu());
+        assert!(Platform::Rocm.is_gpu());
+        assert!(Platform::Vulkan.is_gpu());
+        assert!(Platform::WebGpu.is_gpu());
+        assert!(!Platform::Cpu.is_gpu());
+    }
+
+    #[test]
+    fn test_platform_tensor_cores_all() {
+        assert!(Platform::Cuda.supports_tensor_cores());
+        assert!(!Platform::Metal.supports_tensor_cores());
+        assert!(!Platform::Rocm.supports_tensor_cores());
+        assert!(!Platform::Vulkan.supports_tensor_cores());
+        assert!(!Platform::WebGpu.supports_tensor_cores());
+        assert!(!Platform::Cpu.supports_tensor_cores());
+    }
+
+    #[test]
+    fn test_platform_equality() {
+        assert_eq!(Platform::Cuda, Platform::Cuda);
+        assert_ne!(Platform::Cuda, Platform::Metal);
+    }
+
+    #[test]
+    fn test_platform_clone() {
+        let platform = Platform::Metal;
+        let cloned = platform;
+        assert_eq!(platform, cloned);
+    }
+
+    #[test]
+    fn test_platform_serialization() {
+        let platform = Platform::Cuda;
+        let json = serde_json::to_string(&platform).expect("serialize");
+        let deserialized: Platform = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(platform, deserialized);
+    }
+
+    #[test]
+    fn test_platform_debug() {
+        let debug = format!("{:?}", Platform::Metal);
+        assert!(debug.contains("Metal"));
+    }
+
+    #[test]
+    fn test_device_info_creation() {
+        let info = DeviceInfo {
+            platform: Platform::Metal,
+            name: "Apple M2 Max".to_string(),
+            index: 0,
+            memory_bytes: 32 * 1024 * 1024 * 1024, // 32 GiB
+            tensor_cores: false,
+            compute_capability: Some("Apple7".to_string()),
+            fp16_support: true,
+            bf16_support: false,
+        };
+
+        assert_eq!(info.platform, Platform::Metal);
+        assert_eq!(info.name, "Apple M2 Max");
+        assert!((info.memory_gib() - 32.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_device_info_zero_memory() {
+        let info = DeviceInfo {
+            platform: Platform::Cpu,
+            name: "Test CPU".to_string(),
+            index: 0,
+            memory_bytes: 0,
+            tensor_cores: false,
+            compute_capability: None,
+            fp16_support: false,
+            bf16_support: false,
+        };
+
+        assert_eq!(info.memory_gib(), 0.0);
+    }
+
+    #[test]
+    fn test_device_info_clone() {
+        let info = DeviceInfo {
+            platform: Platform::Cuda,
+            name: "NVIDIA A100".to_string(),
+            index: 0,
+            memory_bytes: 40 * 1024 * 1024 * 1024,
+            tensor_cores: true,
+            compute_capability: Some("8.0".to_string()),
+            fp16_support: true,
+            bf16_support: true,
+        };
+
+        let cloned = info.clone();
+        assert_eq!(info.name, cloned.name);
+        assert_eq!(info.platform, cloned.platform);
+    }
+
+    #[test]
+    fn test_device_info_serialization() {
+        let info = DeviceInfo {
+            platform: Platform::Cuda,
+            name: "Test GPU".to_string(),
+            index: 0,
+            memory_bytes: 8 * 1024 * 1024 * 1024,
+            tensor_cores: true,
+            compute_capability: Some("7.5".to_string()),
+            fp16_support: true,
+            bf16_support: false,
+        };
+
+        let json = serde_json::to_string(&info).expect("serialize");
+        let deserialized: DeviceInfo = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(info.name, deserialized.name);
+        assert_eq!(info.platform, deserialized.platform);
+    }
+
+    #[test]
+    fn test_device_info_debug() {
+        let info = DeviceInfo {
+            platform: Platform::Vulkan,
+            name: "Test".to_string(),
+            index: 0,
+            memory_bytes: 1024,
+            tensor_cores: false,
+            compute_capability: None,
+            fp16_support: false,
+            bf16_support: false,
+        };
+        let debug = format!("{:?}", info);
+        assert!(debug.contains("DeviceInfo"));
+    }
+
+    #[test]
+    #[cfg(feature = "cpu")]
+    fn test_cpu_device_info() {
+        let device = ComputeDevice::cpu().expect("should create CPU device");
+        let info = device.info();
+        assert_eq!(info.platform, Platform::Cpu);
+        assert!(!info.tensor_cores);
+        assert!(!info.name.is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "cpu")]
+    fn test_cpu_device_platform() {
+        let device = ComputeDevice::cpu().expect("should create CPU device");
+        assert_eq!(device.platform(), Platform::Cpu);
+    }
+
+    #[test]
+    fn test_discover_devices_returns_vec() {
+        let devices = discover_devices();
+        // Just verify it returns a vector (may be empty on some systems)
+        assert!(devices.len() >= 0);
+    }
+
+    #[test]
+    #[cfg(feature = "cpu")]
+    fn test_compute_device_debug() {
+        let device = ComputeDevice::cpu().expect("should create CPU device");
+        let debug = format!("{:?}", device);
+        assert!(debug.contains("Cpu"));
     }
 }

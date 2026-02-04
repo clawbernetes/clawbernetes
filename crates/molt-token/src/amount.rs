@@ -238,4 +238,155 @@ mod tests {
         let parsed: Amount = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(amount, parsed);
     }
+
+    // =========================================================================
+    // Additional Coverage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_default() {
+        let amount = Amount::default();
+        assert!(amount.is_zero());
+        assert_eq!(amount, Amount::ZERO);
+    }
+
+    #[test]
+    fn test_from_u64() {
+        let amount: Amount = 1_000_000_000u64.into();
+        assert_eq!(amount.lamports(), 1_000_000_000);
+    }
+
+    #[test]
+    fn test_clone() {
+        let amount = Amount::molt(5.0);
+        let cloned = amount;
+        assert_eq!(amount, cloned);
+    }
+
+    #[test]
+    fn test_equality() {
+        let a = Amount::molt(1.0);
+        let b = Amount::from_lamports(LAMPORTS_PER_MOLT);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(Amount::molt(1.0));
+        set.insert(Amount::molt(2.0));
+        set.insert(Amount::molt(1.0)); // Duplicate
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_checked_add_success() {
+        let a = Amount::molt(1.0);
+        let b = Amount::molt(2.0);
+        let result = a.checked_add(b);
+        assert!(result.is_some());
+        assert!((result.unwrap().as_molt() - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_checked_add_overflow() {
+        let a = Amount::MAX;
+        let b = Amount::molt(1.0);
+        let result = a.checked_add(b);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_checked_sub_success() {
+        let a = Amount::molt(3.0);
+        let b = Amount::molt(1.0);
+        let result = a.checked_sub(b);
+        assert!(result.is_some());
+        assert!((result.unwrap().as_molt() - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_checked_sub_underflow() {
+        let a = Amount::molt(1.0);
+        let b = Amount::molt(2.0);
+        let result = a.checked_sub(b);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_try_molt_success() {
+        let result = Amount::try_molt(1.5);
+        assert!(result.is_ok());
+        let amount = result.unwrap();
+        assert!((amount.as_molt() - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_try_molt_zero() {
+        let result = Amount::try_molt(0.0);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_zero());
+    }
+
+    #[test]
+    fn test_very_small_amount() {
+        // 1 lamport
+        let amount = Amount::from_lamports(1);
+        assert!(!amount.is_zero());
+        assert!(amount.as_molt() < 1e-8);
+    }
+
+    #[test]
+    fn test_large_amount() {
+        let amount = Amount::molt(1_000_000.0);
+        assert!((amount.as_molt() - 1_000_000.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_max_amount() {
+        let amount = Amount::MAX;
+        assert!(!amount.is_zero());
+        assert_eq!(amount.lamports(), u64::MAX);
+    }
+
+    #[test]
+    fn test_ord() {
+        let amounts = vec![
+            Amount::molt(3.0),
+            Amount::molt(1.0),
+            Amount::molt(2.0),
+        ];
+        let mut sorted = amounts.clone();
+        sorted.sort();
+        assert_eq!(sorted[0], Amount::molt(1.0));
+        assert_eq!(sorted[1], Amount::molt(2.0));
+        assert_eq!(sorted[2], Amount::molt(3.0));
+    }
+
+    #[test]
+    fn test_debug() {
+        let amount = Amount::molt(1.0);
+        let debug = format!("{:?}", amount);
+        assert!(debug.contains("Amount"));
+    }
+
+    #[test]
+    fn test_display_zero() {
+        let amount = Amount::ZERO;
+        let s = format!("{amount}");
+        assert!(s.contains("0"));
+        assert!(s.contains("MOLT"));
+    }
+
+    #[test]
+    fn test_saturating_operations_at_bounds() {
+        // Saturating add at max
+        let result = Amount::MAX.saturating_add(Amount::MAX);
+        assert_eq!(result, Amount::MAX);
+
+        // Saturating sub at zero
+        let result = Amount::ZERO.saturating_sub(Amount::molt(1.0));
+        assert_eq!(result, Amount::ZERO);
+    }
 }

@@ -375,4 +375,265 @@ mod tests {
         let meta = TensorMeta::new([1024, 1024], DType::F32);
         assert_eq!(meta.size_bytes(), 1024 * 1024 * 4);
     }
+
+    // =========================================================================
+    // Additional Coverage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_dtype_names() {
+        assert_eq!(DType::F32.name(), "f32");
+        assert_eq!(DType::F16.name(), "f16");
+        assert_eq!(DType::Bf16.name(), "bf16");
+        assert_eq!(DType::F64.name(), "f64");
+        assert_eq!(DType::I32.name(), "i32");
+        assert_eq!(DType::I64.name(), "i64");
+    }
+
+    #[test]
+    fn test_dtype_display() {
+        assert_eq!(DType::F32.to_string(), "f32");
+        assert_eq!(DType::F16.to_string(), "f16");
+        assert_eq!(DType::Bf16.to_string(), "bf16");
+    }
+
+    #[test]
+    fn test_dtype_size_all_types() {
+        assert_eq!(DType::F32.size_bytes(), 4);
+        assert_eq!(DType::F16.size_bytes(), 2);
+        assert_eq!(DType::Bf16.size_bytes(), 2);
+        assert_eq!(DType::F64.size_bytes(), 8);
+        assert_eq!(DType::I32.size_bytes(), 4);
+        assert_eq!(DType::I64.size_bytes(), 8);
+    }
+
+    #[test]
+    fn test_dtype_equality() {
+        assert_eq!(DType::F32, DType::F32);
+        assert_ne!(DType::F32, DType::F64);
+    }
+
+    #[test]
+    fn test_dtype_clone() {
+        let dtype = DType::F32;
+        let cloned = dtype;
+        assert_eq!(dtype, cloned);
+    }
+
+    #[test]
+    fn test_dtype_serialization() {
+        let dtype = DType::F32;
+        let json = serde_json::to_string(&dtype).expect("serialize");
+        let deserialized: DType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(dtype, deserialized);
+    }
+
+    #[test]
+    fn test_shape_d4() {
+        let shape = Shape::d4(2, 3, 224, 224);
+        assert_eq!(shape.ndim(), 4);
+        assert_eq!(shape.numel(), 2 * 3 * 224 * 224);
+        assert_eq!(shape.dim(0), Some(2));
+        assert_eq!(shape.dim(1), Some(3));
+        assert_eq!(shape.dim(2), Some(224));
+        assert_eq!(shape.dim(3), Some(224));
+    }
+
+    #[test]
+    fn test_shape_dims() {
+        let shape = Shape::d3(2, 3, 4);
+        assert_eq!(shape.dims(), &[2, 3, 4]);
+    }
+
+    #[test]
+    fn test_shape_dim_out_of_bounds() {
+        let shape = Shape::d2(3, 4);
+        assert_eq!(shape.dim(0), Some(3));
+        assert_eq!(shape.dim(1), Some(4));
+        assert_eq!(shape.dim(2), None);
+        assert_eq!(shape.dim(100), None);
+    }
+
+    #[test]
+    fn test_shape_equality() {
+        let a = Shape::d2(3, 4);
+        let b = Shape::d2(3, 4);
+        let c = Shape::d2(4, 3);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_shape_clone() {
+        let shape = Shape::d3(2, 3, 4);
+        let cloned = shape.clone();
+        assert_eq!(shape, cloned);
+    }
+
+    #[test]
+    fn test_shape_from_array() {
+        let shape: Shape = [2, 3, 4].into();
+        assert_eq!(shape, Shape::d3(2, 3, 4));
+    }
+
+    #[test]
+    fn test_shape_from_vec() {
+        let shape: Shape = vec![2, 3, 4, 5].into();
+        assert_eq!(shape.ndim(), 4);
+        assert_eq!(shape.numel(), 120);
+    }
+
+    #[test]
+    fn test_shape_serialization() {
+        let shape = Shape::d2(3, 4);
+        let json = serde_json::to_string(&shape).expect("serialize");
+        let deserialized: Shape = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(shape, deserialized);
+    }
+
+    #[test]
+    fn test_shape_broadcastable_different_ndim() {
+        // Scalar broadcasts with anything (already tested but confirm)
+        let a = Shape::d2(3, 4);
+        let scalar = Shape::scalar();
+        assert!(a.is_broadcastable_with(&scalar));
+
+        // Same shape broadcasts
+        let same = Shape::d2(3, 4);
+        assert!(a.is_broadcastable_with(&same));
+
+        // [3,4] and [1,4] - broadcastable (1 broadcasts to 3)
+        let b = Shape::d2(1, 4);
+        assert!(a.is_broadcastable_with(&b));
+
+        // [3,4] and [3,1] - broadcastable (1 broadcasts to 4)
+        let c = Shape::d2(3, 1);
+        assert!(a.is_broadcastable_with(&c));
+    }
+
+    #[test]
+    fn test_shape_broadcastable_with_ones() {
+        // [5,3,4] and [1,1,4] - broadcastable
+        let a = Shape::d3(5, 3, 4);
+        let b = Shape::d3(1, 1, 4);
+        assert!(a.is_broadcastable_with(&b));
+    }
+
+    #[test]
+    fn test_tensor_meta_new() {
+        let meta = TensorMeta::new([2, 3, 4], DType::F16);
+        assert_eq!(meta.shape.numel(), 24);
+        assert_eq!(meta.dtype, DType::F16);
+    }
+
+    #[test]
+    fn test_tensor_meta_size_various_dtypes() {
+        let f32_meta = TensorMeta::new([100], DType::F32);
+        assert_eq!(f32_meta.size_bytes(), 400);
+
+        let f16_meta = TensorMeta::new([100], DType::F16);
+        assert_eq!(f16_meta.size_bytes(), 200);
+
+        let f64_meta = TensorMeta::new([100], DType::F64);
+        assert_eq!(f64_meta.size_bytes(), 800);
+    }
+
+    #[test]
+    fn test_tensor_meta_equality() {
+        let a = TensorMeta::new([3, 4], DType::F32);
+        let b = TensorMeta::new([3, 4], DType::F32);
+        let c = TensorMeta::new([4, 3], DType::F32);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_tensor_meta_serialization() {
+        let meta = TensorMeta::new([2, 3], DType::F32);
+        let json = serde_json::to_string(&meta).expect("serialize");
+        let deserialized: TensorMeta = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(meta, deserialized);
+    }
+
+    #[test]
+    fn test_cpu_tensor_from_f32_1d() {
+        let data = vec![1.0, 2.0, 3.0];
+        let tensor = CpuTensor::from_f32([3], &data);
+        assert_eq!(tensor.shape(), &Shape::d1(3));
+        assert_eq!(tensor.shape().numel(), 3);
+    }
+
+    #[test]
+    fn test_cpu_tensor_from_f32_4d() {
+        let data: Vec<f32> = (0..24).map(|x| x as f32).collect();
+        let tensor = CpuTensor::from_f32([2, 3, 2, 2], &data);
+        assert_eq!(tensor.shape().ndim(), 4);
+        assert_eq!(tensor.shape().numel(), 24);
+    }
+
+    #[test]
+    fn test_cpu_tensor_zeros_various_dtypes() {
+        let f32_tensor = CpuTensor::zeros([10], DType::F32);
+        assert_eq!(f32_tensor.meta.size_bytes(), 40);
+
+        let f16_tensor = CpuTensor::zeros([10], DType::F16);
+        assert_eq!(f16_tensor.meta.size_bytes(), 20);
+
+        let i32_tensor = CpuTensor::zeros([10], DType::I32);
+        assert_eq!(i32_tensor.meta.size_bytes(), 40);
+    }
+
+    #[test]
+    fn test_cpu_tensor_ones_values() {
+        let tensor = CpuTensor::ones([5]);
+        let data = tensor.as_f32().unwrap();
+        assert_eq!(data.len(), 5);
+        for val in data {
+            assert!((val - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_cpu_tensor_as_f32_wrong_dtype() {
+        let tensor = CpuTensor::zeros([10], DType::F64);
+        let result = tensor.as_f32();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cpu_tensor_data_access() {
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        let tensor = CpuTensor::from_f32([4], &data);
+        assert_eq!(tensor.data.len(), 16); // 4 elements * 4 bytes
+    }
+
+    #[test]
+    fn test_cpu_tensor_clone() {
+        let data = vec![1.0, 2.0, 3.0];
+        let tensor = CpuTensor::from_f32([3], &data);
+        let cloned = tensor.clone();
+        assert_eq!(tensor.shape(), cloned.shape());
+        assert_eq!(tensor.as_f32().unwrap(), cloned.as_f32().unwrap());
+    }
+
+    #[test]
+    fn test_cpu_tensor_debug() {
+        let tensor = CpuTensor::ones([2, 2]);
+        let debug = format!("{:?}", tensor);
+        assert!(debug.contains("CpuTensor"));
+    }
+
+    #[test]
+    fn test_shape_large_tensor() {
+        // Test with large dimensions
+        let shape = Shape::d4(16, 512, 512, 512);
+        assert_eq!(shape.numel(), 16 * 512 * 512 * 512);
+    }
+
+    #[test]
+    fn test_shape_empty_like() {
+        // Shape with zero dimension
+        let shape = Shape::d2(0, 4);
+        assert_eq!(shape.numel(), 0);
+    }
 }

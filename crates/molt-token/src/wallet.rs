@@ -297,4 +297,157 @@ mod tests {
         assert!(debug.contains("REDACTED"));
         assert!(!debug.contains(&wallet.secret_key_base58()));
     }
+
+    // =========================================================================
+    // Additional Coverage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_multiple_wallet_generation() {
+        let wallet1 = Wallet::generate().expect("should generate");
+        let wallet2 = Wallet::generate().expect("should generate");
+        // Two randomly generated wallets should have different addresses
+        assert_ne!(wallet1.address(), wallet2.address());
+    }
+
+    #[test]
+    fn test_address_display() {
+        let wallet = Wallet::generate().expect("should generate");
+        let display = format!("{}", wallet.address());
+        // Base58 addresses are typically 32-44 characters
+        assert!(display.len() >= 32);
+        assert!(display.len() <= 50);
+    }
+
+    #[test]
+    fn test_address_debug() {
+        let wallet = Wallet::generate().expect("should generate");
+        let debug = format!("{:?}", wallet.address());
+        assert!(debug.contains("Address"));
+    }
+
+    #[test]
+    fn test_address_clone() {
+        let wallet = Wallet::generate().expect("should generate");
+        let addr1 = wallet.address().clone();
+        let addr2 = wallet.address().clone();
+        assert_eq!(addr1, addr2);
+    }
+
+    #[test]
+    fn test_address_hash() {
+        use std::collections::HashSet;
+        let wallet1 = Wallet::generate().expect("should generate");
+        let wallet2 = Wallet::generate().expect("should generate");
+        
+        let mut set = HashSet::new();
+        set.insert(wallet1.address().clone());
+        set.insert(wallet2.address().clone());
+        set.insert(wallet1.address().clone()); // Duplicate
+        
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_sign_different_messages() {
+        let wallet = Wallet::generate().expect("should generate");
+        let sig1 = wallet.sign(b"message1");
+        let sig2 = wallet.sign(b"message2");
+        // Different messages should produce different signatures
+        assert_ne!(sig1.to_bytes(), sig2.to_bytes());
+    }
+
+    #[test]
+    fn test_sign_empty_message() {
+        let wallet = Wallet::generate().expect("should generate");
+        let message = b"";
+        let signature = wallet.sign(message);
+        let public_key = wallet.public_key();
+        assert!(public_key.verify_strict(message, &signature).is_ok());
+    }
+
+    #[test]
+    fn test_sign_large_message() {
+        let wallet = Wallet::generate().expect("should generate");
+        let message = vec![0xABu8; 10000];
+        let signature = wallet.sign(&message);
+        let public_key = wallet.public_key();
+        assert!(public_key.verify_strict(&message, &signature).is_ok());
+    }
+
+    #[test]
+    fn test_wrong_signature_verification() {
+        let wallet1 = Wallet::generate().expect("should generate");
+        let wallet2 = Wallet::generate().expect("should generate");
+        
+        let message = b"test message";
+        let signature = wallet1.sign(message);
+        
+        // Verify with wrong public key should fail
+        let wrong_public_key = wallet2.public_key();
+        assert!(wrong_public_key.verify_strict(message, &signature).is_err());
+    }
+
+    #[test]
+    fn test_secret_key_length() {
+        let wallet = Wallet::generate().expect("should generate");
+        let secret = wallet.secret_key();
+        // Ed25519 seed/secret is 32 bytes
+        assert_eq!(secret.len(), 32);
+    }
+
+    #[test]
+    fn test_from_file_not_found() {
+        let result = Wallet::from_file("/nonexistent/path/wallet.json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_secret_key_wrong_length() {
+        // Wrong length (too short)
+        let invalid = vec![0u8; 16];
+        let result = Wallet::from_secret_key(&invalid);
+        assert!(result.is_err());
+
+        // Wrong length (too long)
+        let invalid = vec![0u8; 64];
+        let result = Wallet::from_secret_key(&invalid);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_base58_secret() {
+        let result = Wallet::from_base58_secret("not-valid-base58!!!");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_address_serialization() {
+        let wallet = Wallet::generate().expect("should generate");
+        let addr = wallet.address();
+        let json = serde_json::to_string(addr).expect("serialize");
+        let parsed: Address = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(addr, &parsed);
+    }
+
+    #[test]
+    fn test_public_key() {
+        let wallet = Wallet::generate().expect("should generate");
+        let pk = wallet.public_key();
+        // Public key should be 32 bytes
+        assert_eq!(pk.as_bytes().len(), 32);
+    }
+
+    #[test]
+    fn test_wallet_recreation() {
+        // Test that a wallet can be recreated from its secret key
+        let wallet1 = Wallet::generate().expect("should generate");
+        let secret = wallet1.secret_key_base58();
+        let wallet2 = Wallet::from_base58_secret(&secret).expect("should create");
+        
+        // Both should have same address and sign identically
+        assert_eq!(wallet1.address(), wallet2.address());
+        let msg = b"test";
+        assert_eq!(wallet1.sign(msg).to_bytes(), wallet2.sign(msg).to_bytes());
+    }
 }
