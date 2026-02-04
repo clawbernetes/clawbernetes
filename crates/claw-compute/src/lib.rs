@@ -55,7 +55,8 @@
 //!   CUDA     Metal    ROCm   Vulkan     CPU
 //! ```
 
-#![forbid(unsafe_code)]
+// GPU module requires unsafe for CubeCL raw buffer access
+#![allow(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod device;
