@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use crate::protocol::PeerId;
+
 /// Errors that can occur in P2P operations.
 #[derive(Debug, Error)]
 pub enum P2pError {
@@ -28,4 +30,18 @@ pub enum P2pError {
     /// IO error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Peer is sending messages too quickly.
+    #[error("peer {peer_id} is rate limited")]
+    RateLimited {
+        /// The peer that exceeded the rate limit.
+        peer_id: PeerId,
+    },
+
+    /// Peer has been temporarily banned due to repeated violations.
+    #[error("peer {peer_id} is temporarily banned")]
+    PeerBanned {
+        /// The peer that was banned.
+        peer_id: PeerId,
+    },
 }

@@ -126,12 +126,15 @@ pub struct GossipBroadcaster {
     announcement_cache: HashMap<PeerId, Vec<CachedAnnouncement>>,
     /// Last cleanup time.
     last_cleanup: Instant,
+    /// Per-peer rate limiter to prevent DoS attacks.
+    rate_limiter: RateLimiter,
 }
 
 impl GossipBroadcaster {
     /// Creates a new gossip broadcaster.
     #[must_use]
     pub fn new(local_peer_id: PeerId, config: BroadcastConfig) -> Self {
+        let rate_limiter = RateLimiter::new(config.rate_limit.clone());
         Self {
             local_peer_id,
             config,
@@ -140,6 +143,7 @@ impl GossipBroadcaster {
             seen_order: VecDeque::new(),
             announcement_cache: HashMap::new(),
             last_cleanup: Instant::now(),
+            rate_limiter,
         }
     }
 
@@ -227,12 +231,23 @@ impl GossipBroadcaster {
     ///
     /// # Errors
     ///
-    /// Returns an error if the message is malformed.
+    /// Returns an error if the message is malformed or the peer is rate-limited.
     pub fn handle_message(
         &mut self,
         message: &GossipMessage,
         from_peer: PeerId,
     ) -> Result<BroadcastResult, P2pError> {
+        // Check rate limit for this peer
+        match self.rate_limiter.check_and_record(from_peer) {
+            RateLimitResult::Allowed => {}
+            RateLimitResult::RateLimited => {
+                return Err(P2pError::RateLimited { peer_id: from_peer });
+            }
+            RateLimitResult::Banned { .. } => {
+                return Err(P2pError::PeerBanned { peer_id: from_peer });
+            }
+        }
+
         // Run periodic cleanup
         self.maybe_cleanup();
 

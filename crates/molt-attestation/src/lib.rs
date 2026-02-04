@@ -83,6 +83,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod challenge;
 pub mod error;
 pub mod execution;
 pub mod hardware;
