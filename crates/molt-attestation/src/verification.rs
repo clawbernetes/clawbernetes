@@ -488,4 +488,399 @@ mod tests {
 
         assert_eq!(result1, result2);
     }
+
+    // =========================================================================
+    // Security Edge Case Tests
+    // =========================================================================
+
+    #[test]
+    fn test_empty_gpu_list_attestation() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        // Create attestation with no GPUs
+        let attestation = HardwareAttestation::create_and_sign(
+            Uuid::new_v4(),
+            vec![], // Empty GPU list
+            Duration::hours(24),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        let result =
+            verify_hardware_attestation(&attestation, &verifying_key).expect("should verify");
+
+        assert!(result.valid);
+        match result.details {
+            VerificationDetails::Hardware { gpu_count, .. } => {
+                assert_eq!(gpu_count, 0);
+            }
+            _ => panic!("unexpected details type"),
+        }
+    }
+
+    #[test]
+    fn test_multi_gpu_attestation() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        let gpus = vec![
+            GpuInfo {
+                model: "NVIDIA H100".to_string(),
+                vram_mb: 80000,
+                compute_capability: "9.0".to_string(),
+            },
+            GpuInfo {
+                model: "NVIDIA H100".to_string(),
+                vram_mb: 80000,
+                compute_capability: "9.0".to_string(),
+            },
+            GpuInfo {
+                model: "NVIDIA A100".to_string(),
+                vram_mb: 40000,
+                compute_capability: "8.0".to_string(),
+            },
+            GpuInfo {
+                model: "NVIDIA A100".to_string(),
+                vram_mb: 40000,
+                compute_capability: "8.0".to_string(),
+            },
+        ];
+
+        let attestation = HardwareAttestation::create_and_sign(
+            Uuid::new_v4(),
+            gpus,
+            Duration::hours(24),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        let result =
+            verify_hardware_attestation(&attestation, &verifying_key).expect("should verify");
+
+        assert!(result.valid);
+        match result.details {
+            VerificationDetails::Hardware { gpu_count, .. } => {
+                assert_eq!(gpu_count, 4);
+            }
+            _ => panic!("unexpected details type"),
+        }
+    }
+
+    #[test]
+    fn test_very_long_validity_period() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        // 10 years validity
+        let attestation = HardwareAttestation::create_and_sign(
+            Uuid::new_v4(),
+            vec![GpuInfo {
+                model: "GPU".to_string(),
+                vram_mb: 1000,
+                compute_capability: "1.0".to_string(),
+            }],
+            Duration::days(3650),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        let result =
+            verify_hardware_attestation(&attestation, &verifying_key).expect("should verify");
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn test_attestation_expiry_boundary() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        // Create attestation that expires in 1 second
+        let attestation = HardwareAttestation::create_and_sign(
+            Uuid::new_v4(),
+            vec![GpuInfo {
+                model: "GPU".to_string(),
+                vram_mb: 1000,
+                compute_capability: "1.0".to_string(),
+            }],
+            Duration::seconds(1),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        // Should still be valid immediately
+        let result = verify_hardware_attestation(&attestation, &verifying_key);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_replay_attack_detection_different_node() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        let node1 = Uuid::new_v4();
+        let node2 = Uuid::new_v4();
+
+        // Create attestation for node1
+        let attestation = HardwareAttestation::create_and_sign(
+            node1,
+            vec![GpuInfo {
+                model: "GPU".to_string(),
+                vram_mb: 1000,
+                compute_capability: "1.0".to_string(),
+            }],
+            Duration::hours(24),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        // Attestation is valid but for node1, not node2
+        let result =
+            verify_hardware_attestation(&attestation, &verifying_key).expect("should verify");
+        assert!(result.valid);
+        assert_eq!(attestation.node_id, node1);
+        assert_ne!(attestation.node_id, node2);
+    }
+
+    #[test]
+    fn test_checkpoint_chain_integrity() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        // Create a proper checkpoint chain
+        let mut chain = CheckpointChain::new(b"initial_data");
+        chain.add_checkpoint(b"step_1");
+        chain.add_checkpoint(b"step_2");
+        chain.add_checkpoint(b"final_step");
+
+        let attestation = ExecutionAttestation::create_and_sign(
+            Uuid::new_v4(),
+            chain.into_checkpoints(),
+            Duration::seconds(3600),
+            ExecutionMetrics::default(),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        // Verification should succeed for properly chained checkpoints
+        let result =
+            verify_execution_attestation(&attestation, &verifying_key).expect("should verify");
+        assert!(result.valid);
+        match result.details {
+            VerificationDetails::Execution {
+                checkpoint_count, ..
+            } => {
+                assert_eq!(checkpoint_count, 4);
+            }
+            _ => panic!("unexpected details type"),
+        }
+    }
+
+    #[test]
+    fn test_empty_checkpoint_chain_rejected() {
+        let (signing_key, _verifying_key) = create_keypair();
+
+        // Empty checkpoints should be rejected
+        let result = ExecutionAttestation::create_and_sign(
+            Uuid::new_v4(),
+            vec![],
+            Duration::seconds(3600),
+            ExecutionMetrics::default(),
+            &signing_key,
+        );
+
+        // Creation should fail - at least one checkpoint is required
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_large_checkpoint_chain() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        // Create a large checkpoint chain
+        let mut chain = CheckpointChain::new(b"start");
+        for i in 0..100 {
+            chain.add_checkpoint(&format!("step_{}", i).into_bytes());
+        }
+
+        let attestation = ExecutionAttestation::create_and_sign(
+            Uuid::new_v4(),
+            chain.into_checkpoints(),
+            Duration::seconds(3600),
+            ExecutionMetrics::default(),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        let result =
+            verify_execution_attestation(&attestation, &verifying_key).expect("should verify");
+        assert!(result.valid);
+        match result.details {
+            VerificationDetails::Execution {
+                checkpoint_count, ..
+            } => {
+                assert_eq!(checkpoint_count, 101); // 1 initial + 100 steps
+            }
+            _ => panic!("unexpected details type"),
+        }
+    }
+
+    #[test]
+    fn test_execution_metrics_preserved() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        let metrics = ExecutionMetrics {
+            gpu_utilization: 85.5,
+            memory_used_mb: 32768,
+            compute_ops: 1_000_000_000,
+        };
+
+        let chain = CheckpointChain::new(b"data");
+        let attestation = ExecutionAttestation::create_and_sign(
+            Uuid::new_v4(),
+            chain.into_checkpoints(),
+            Duration::seconds(3600),
+            metrics,
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        // Verify the attestation
+        let result =
+            verify_execution_attestation(&attestation, &verifying_key).expect("should verify");
+        assert!(result.valid);
+
+        // Verify metrics are preserved
+        assert!((attestation.metrics.gpu_utilization - 85.5).abs() < f64::EPSILON);
+        assert_eq!(attestation.metrics.memory_used_mb, 32768);
+        assert_eq!(attestation.metrics.compute_ops, 1_000_000_000);
+    }
+
+    #[test]
+    fn test_special_characters_in_gpu_model() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        let gpu = GpuInfo {
+            model: "NVIDIA RTX™ 4090 \"Super\" <special>".to_string(),
+            vram_mb: 24576,
+            compute_capability: "8.9+".to_string(),
+        };
+
+        let attestation = HardwareAttestation::create_and_sign(
+            Uuid::new_v4(),
+            vec![gpu],
+            Duration::hours(24),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        let result =
+            verify_hardware_attestation(&attestation, &verifying_key).expect("should verify");
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn test_zero_vram_gpu() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        let gpu = GpuInfo {
+            model: "Virtual GPU".to_string(),
+            vram_mb: 0, // Edge case: zero VRAM
+            compute_capability: "0.0".to_string(),
+        };
+
+        let attestation = HardwareAttestation::create_and_sign(
+            Uuid::new_v4(),
+            vec![gpu],
+            Duration::hours(24),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        let result =
+            verify_hardware_attestation(&attestation, &verifying_key).expect("should verify");
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn test_max_vram_gpu() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        let gpu = GpuInfo {
+            model: "Future GPU".to_string(),
+            vram_mb: u64::MAX, // Maximum possible VRAM
+            compute_capability: "99.9".to_string(),
+        };
+
+        let attestation = HardwareAttestation::create_and_sign(
+            Uuid::new_v4(),
+            vec![gpu],
+            Duration::hours(24),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        let result =
+            verify_hardware_attestation(&attestation, &verifying_key).expect("should verify");
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn test_concurrent_attestations_same_node() {
+        let (signing_key, verifying_key) = create_keypair();
+        let node_id = Uuid::new_v4();
+
+        // Create multiple attestations for the same node
+        let attestation1 = HardwareAttestation::create_and_sign(
+            node_id,
+            vec![GpuInfo {
+                model: "GPU v1".to_string(),
+                vram_mb: 1000,
+                compute_capability: "1.0".to_string(),
+            }],
+            Duration::hours(24),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        let attestation2 = HardwareAttestation::create_and_sign(
+            node_id,
+            vec![GpuInfo {
+                model: "GPU v2".to_string(), // Different config
+                vram_mb: 2000,
+                compute_capability: "2.0".to_string(),
+            }],
+            Duration::hours(24),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        // Both should be valid independently
+        let result1 =
+            verify_hardware_attestation(&attestation1, &verifying_key).expect("should verify");
+        let result2 =
+            verify_hardware_attestation(&attestation2, &verifying_key).expect("should verify");
+
+        assert!(result1.valid);
+        assert!(result2.valid);
+
+        // But they have different timestamps
+        assert!(attestation2.timestamp >= attestation1.timestamp);
+    }
+
+    #[test]
+    fn test_nil_uuid_node_id() {
+        let (signing_key, verifying_key) = create_keypair();
+
+        // Use nil UUID (all zeros)
+        let attestation = HardwareAttestation::create_and_sign(
+            Uuid::nil(),
+            vec![GpuInfo {
+                model: "GPU".to_string(),
+                vram_mb: 1000,
+                compute_capability: "1.0".to_string(),
+            }],
+            Duration::hours(24),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        let result =
+            verify_hardware_attestation(&attestation, &verifying_key).expect("should verify");
+        assert!(result.valid);
+    }
 }

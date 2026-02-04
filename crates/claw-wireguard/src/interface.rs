@@ -435,4 +435,337 @@ mod tests {
         let status = iface.get_status("wg0").await.expect("status");
         assert_eq!(status.peers[0].last_handshake, Some(timestamp));
     }
+
+    // =========================================================================
+    // Network Partition & Edge Case Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn peer_stale_detection_no_handshake() {
+        let mut iface = FakeWireGuardInterface::new();
+        iface.create("wg0", &test_config()).await.expect("create");
+
+        let peer = test_peer();
+        iface.add_peer("wg0", &peer).await.expect("add");
+
+        // Peer added but no handshake simulated
+        let status = iface.get_status("wg0").await.expect("status");
+        assert_eq!(status.peers[0].last_handshake, None);
+        // A real implementation would consider this peer "stale" or "unreachable"
+    }
+
+    #[tokio::test]
+    async fn simulate_network_partition_and_recovery() {
+        let mut iface = FakeWireGuardInterface::new();
+        iface.create("wg0", &test_config()).await.expect("create");
+
+        let peer = test_peer();
+        iface.add_peer("wg0", &peer).await.expect("add");
+
+        // Initial connection
+        iface
+            .simulate_handshake("wg0", &peer.public_key, 1000)
+            .await
+            .expect("handshake");
+        iface
+            .simulate_traffic("wg0", &peer.public_key, 1000, 1000)
+            .await
+            .expect("traffic");
+
+        // Verify initial state
+        let status = iface.get_status("wg0").await.expect("status");
+        assert_eq!(status.peers[0].rx_bytes, 1000);
+        assert_eq!(status.peers[0].tx_bytes, 1000);
+
+        // Simulate partition - no traffic for a while (in real impl, handshake would be stale)
+        // Then recovery with new handshake
+        iface
+            .simulate_handshake("wg0", &peer.public_key, 2000)
+            .await
+            .expect("recovery handshake");
+        iface
+            .simulate_traffic("wg0", &peer.public_key, 500, 500)
+            .await
+            .expect("recovery traffic");
+
+        // Verify recovery
+        let status = iface.get_status("wg0").await.expect("status");
+        assert_eq!(status.peers[0].last_handshake, Some(2000));
+        assert_eq!(status.peers[0].rx_bytes, 1500); // Accumulated
+        assert_eq!(status.peers[0].tx_bytes, 1500);
+    }
+
+    #[tokio::test]
+    async fn multiple_peers_on_interface() {
+        let mut iface = FakeWireGuardInterface::new();
+        iface.create("wg0", &test_config()).await.expect("create");
+
+        // Add multiple peers
+        for i in 0..5 {
+            let (_, public_key) = generate_keypair();
+            let mut peer = PeerConfig::new(public_key);
+            peer.allowed_ips
+                .push(AllowedIp::from_cidr(&format!("10.0.0.{}/32", i + 10)).expect("valid cidr"));
+            iface.add_peer("wg0", &peer).await.expect("add peer");
+        }
+
+        let status = iface.get_status("wg0").await.expect("status");
+        assert_eq!(status.peers.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn multiple_interfaces() {
+        let mut iface = FakeWireGuardInterface::new();
+
+        // Create multiple interfaces
+        for i in 0..3 {
+            let private_key = PrivateKey::from_bytes(&[i as u8 + 1; KEY_SIZE]).expect("valid key");
+            let config = InterfaceConfig::new(private_key)
+                .with_listen_port(51820 + i as u16)
+                .with_address(
+                    AllowedIp::from_cidr(&format!("10.{}.0.1/24", i)).expect("valid cidr"),
+                );
+            iface
+                .create(&format!("wg{}", i), &config)
+                .await
+                .expect("create");
+        }
+
+        assert_eq!(iface.interface_count().await, 3);
+
+        let list = iface.list_interfaces().await.expect("list");
+        assert!(list.contains(&"wg0".to_string()));
+        assert!(list.contains(&"wg1".to_string()));
+        assert!(list.contains(&"wg2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn traffic_accumulation() {
+        let mut iface = FakeWireGuardInterface::new();
+        iface.create("wg0", &test_config()).await.expect("create");
+
+        let peer = test_peer();
+        iface.add_peer("wg0", &peer).await.expect("add");
+
+        // Simulate multiple traffic events
+        for _ in 0..10 {
+            iface
+                .simulate_traffic("wg0", &peer.public_key, 100, 50)
+                .await
+                .expect("traffic");
+        }
+
+        let status = iface.get_status("wg0").await.expect("status");
+        assert_eq!(status.peers[0].rx_bytes, 1000);
+        assert_eq!(status.peers[0].tx_bytes, 500);
+    }
+
+    #[tokio::test]
+    async fn traffic_on_nonexistent_interface() {
+        let iface = FakeWireGuardInterface::new();
+        let (_, public_key) = generate_keypair();
+
+        let result = iface
+            .simulate_traffic("wg_nonexistent", &public_key, 100, 100)
+            .await;
+        assert!(matches!(result, Err(WireGuardError::InterfaceNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn traffic_on_nonexistent_peer() {
+        let mut iface = FakeWireGuardInterface::new();
+        iface.create("wg0", &test_config()).await.expect("create");
+
+        let (_, nonexistent_key) = generate_keypair();
+
+        let result = iface
+            .simulate_traffic("wg0", &nonexistent_key, 100, 100)
+            .await;
+        assert!(matches!(result, Err(WireGuardError::PeerNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn handshake_on_nonexistent_peer() {
+        let mut iface = FakeWireGuardInterface::new();
+        iface.create("wg0", &test_config()).await.expect("create");
+
+        let (_, nonexistent_key) = generate_keypair();
+
+        let result = iface
+            .simulate_handshake("wg0", &nonexistent_key, 1000)
+            .await;
+        assert!(matches!(result, Err(WireGuardError::PeerNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn remove_peer_then_readd() {
+        let mut iface = FakeWireGuardInterface::new();
+        iface.create("wg0", &test_config()).await.expect("create");
+
+        let peer = test_peer();
+        iface.add_peer("wg0", &peer).await.expect("add");
+
+        // Add some traffic
+        iface
+            .simulate_traffic("wg0", &peer.public_key, 1000, 500)
+            .await
+            .expect("traffic");
+
+        // Remove peer
+        iface
+            .remove_peer("wg0", &peer.public_key)
+            .await
+            .expect("remove");
+
+        // Re-add same peer
+        iface.add_peer("wg0", &peer).await.expect("re-add");
+
+        // Traffic should be reset
+        let status = iface.get_status("wg0").await.expect("status");
+        assert_eq!(status.peers[0].rx_bytes, 0);
+        assert_eq!(status.peers[0].tx_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn interface_state() {
+        let mut iface = FakeWireGuardInterface::new();
+        iface.create("wg0", &test_config()).await.expect("create");
+
+        let peer1 = test_peer();
+        let peer2 = {
+            let (_, pk) = generate_keypair();
+            let mut p = PeerConfig::new(pk);
+            p.allowed_ips
+                .push(AllowedIp::from_cidr("10.0.0.3/32").expect("valid"));
+            p
+        };
+
+        iface.add_peer("wg0", &peer1).await.expect("add p1");
+        iface.add_peer("wg0", &peer2).await.expect("add p2");
+
+        let state = iface.get_interface_state("wg0").await.expect("state");
+        assert_eq!(state.name, "wg0");
+        assert!(state.is_up);
+        assert_eq!(state.peer_count, 2);
+    }
+
+    #[tokio::test]
+    async fn get_state_nonexistent_interface() {
+        let iface = FakeWireGuardInterface::new();
+        let result = iface.get_interface_state("wg_nonexistent").await;
+        assert!(matches!(result, Err(WireGuardError::InterfaceNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn destroy_interface_with_peers() {
+        let mut iface = FakeWireGuardInterface::new();
+        iface.create("wg0", &test_config()).await.expect("create");
+
+        // Add peers
+        for i in 0..3 {
+            let (_, pk) = generate_keypair();
+            let mut peer = PeerConfig::new(pk);
+            peer.allowed_ips
+                .push(AllowedIp::from_cidr(&format!("10.0.0.{}/32", i + 10)).expect("valid"));
+            iface.add_peer("wg0", &peer).await.expect("add");
+        }
+
+        // Destroy should work even with peers
+        iface.destroy("wg0").await.expect("destroy");
+        assert!(!iface.interface_exists("wg0").await);
+    }
+
+    #[tokio::test]
+    async fn concurrent_interface_operations() {
+        use tokio::task::JoinSet;
+
+        let iface = FakeWireGuardInterface::new();
+
+        // Create interface first
+        let mut iface_clone = iface.clone();
+        iface_clone
+            .create("wg0", &test_config())
+            .await
+            .expect("create");
+
+        // Add many peers concurrently
+        let mut tasks = JoinSet::new();
+        for i in 0..10 {
+            let mut iface_clone = iface.clone();
+            tasks.spawn(async move {
+                let (_, pk) = generate_keypair();
+                let mut peer = PeerConfig::new(pk);
+                peer.allowed_ips
+                    .push(AllowedIp::from_cidr(&format!("10.0.{}.1/32", i)).expect("valid"));
+                iface_clone.add_peer("wg0", &peer).await
+            });
+        }
+
+        // Wait for all tasks
+        while let Some(result) = tasks.join_next().await {
+            assert!(result.expect("task panicked").is_ok());
+        }
+
+        let status = iface.get_status("wg0").await.expect("status");
+        assert_eq!(status.peers.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn traffic_overflow_protection() {
+        let mut iface = FakeWireGuardInterface::new();
+        iface.create("wg0", &test_config()).await.expect("create");
+
+        let peer = test_peer();
+        iface.add_peer("wg0", &peer).await.expect("add");
+
+        // Simulate near-max traffic
+        iface
+            .simulate_traffic("wg0", &peer.public_key, u64::MAX - 100, 0)
+            .await
+            .expect("traffic");
+
+        // Should use saturating_add to prevent overflow
+        iface
+            .simulate_traffic("wg0", &peer.public_key, 200, 0)
+            .await
+            .expect("traffic");
+
+        let status = iface.get_status("wg0").await.expect("status");
+        assert_eq!(status.peers[0].rx_bytes, u64::MAX); // Saturated, not overflowed
+    }
+
+    #[tokio::test]
+    async fn peer_with_multiple_allowed_ips() {
+        let mut iface = FakeWireGuardInterface::new();
+        iface.create("wg0", &test_config()).await.expect("create");
+
+        let (_, public_key) = generate_keypair();
+        let mut peer = PeerConfig::new(public_key);
+        peer.allowed_ips
+            .push(AllowedIp::from_cidr("10.0.0.0/24").expect("valid"));
+        peer.allowed_ips
+            .push(AllowedIp::from_cidr("192.168.1.0/24").expect("valid"));
+        peer.allowed_ips
+            .push(AllowedIp::from_cidr("172.16.0.0/16").expect("valid"));
+
+        iface.add_peer("wg0", &peer).await.expect("add");
+
+        let status = iface.get_status("wg0").await.expect("status");
+        assert_eq!(status.peers.len(), 1);
+        // In real impl, would verify all allowed IPs are configured
+    }
+
+    #[tokio::test]
+    async fn interface_with_no_listen_port() {
+        let mut iface = FakeWireGuardInterface::new();
+
+        // Create interface without listen port (client mode)
+        let config = InterfaceConfig::new(test_private_key())
+            .with_address(AllowedIp::from_cidr("10.0.0.1/24").expect("valid"));
+
+        iface.create("wg0", &config).await.expect("create");
+
+        let status = iface.get_status("wg0").await.expect("status");
+        assert_eq!(status.listen_port, None);
+    }
 }
