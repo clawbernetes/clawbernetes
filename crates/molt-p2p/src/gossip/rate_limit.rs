@@ -244,6 +244,8 @@ impl RateLimiter {
         if let Some(state) = self.peer_states.get_mut(peer_id) {
             state.banned_until = None;
             state.violation_count = 0;
+            // Clear message history to give the peer a fresh start
+            state.message_times.clear();
         }
     }
 

@@ -63,6 +63,19 @@ impl PeerId {
     pub fn to_wireguard_key(&self) -> WireGuardPublicKey {
         WireGuardPublicKey::from_bytes_array(self.bytes)
     }
+
+    /// Attempts to convert the PeerId to an Ed25519 verifying key.
+    ///
+    /// This is only valid for PeerIds created from Ed25519 keys via `from_public_key`.
+    /// WireGuard keys (Curve25519) cannot be converted to Ed25519 keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if the bytes do not represent a valid Ed25519 public key.
+    #[must_use]
+    pub fn to_verifying_key(&self) -> Option<VerifyingKey> {
+        VerifyingKey::from_bytes(&self.bytes).ok()
+    }
 }
 
 impl fmt::Display for PeerId {

@@ -139,6 +139,10 @@ impl HardwareAttestation {
 
     /// Verify the signature of this attestation.
     ///
+    /// Uses strict verification to prevent signature malleability attacks.
+    /// Standard Ed25519 verification allows multiple valid signatures for the same
+    /// message, which can be exploited in replay attacks or double-spend scenarios.
+    ///
     /// # Errors
     ///
     /// Returns `AttestationError::SignatureVerification` if the signature is invalid.
@@ -148,7 +152,7 @@ impl HardwareAttestation {
         let message =
             Self::create_signing_message(self.node_id, &self.gpus, self.timestamp, self.expires_at);
         public_key
-            .verify(&message, &self.signature)
+            .verify_strict(&message, &self.signature)
             .map_err(|_| AttestationError::SignatureVerification)
     }
 

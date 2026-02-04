@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use crate::types::{GpuMetricsProto, NodeCapabilities, NodeId, WorkloadId, WorkloadState};
 use crate::workload::WorkloadSpec;
 
+/// Maximum number of log lines allowed in a single `WorkloadLogs` message.
+/// Prevents memory exhaustion attacks from unbounded log submissions.
+pub const MAX_WORKLOAD_LOG_LINES: usize = 10_000;
+
 /// Messages sent from node to gateway.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -205,6 +209,48 @@ impl NodeMessage {
         }
     }
 
+    /// Create workload logs message.
+    ///
+    /// Truncates lines to [`MAX_WORKLOAD_LOG_LINES`] if exceeded.
+    #[must_use]
+    pub fn workload_logs(workload_id: WorkloadId, lines: Vec<String>, is_stderr: bool) -> Self {
+        let truncated_lines = if lines.len() > MAX_WORKLOAD_LOG_LINES {
+            lines.into_iter().take(MAX_WORKLOAD_LOG_LINES).collect()
+        } else {
+            lines
+        };
+        Self::WorkloadLogs {
+            workload_id,
+            lines: truncated_lines,
+            is_stderr,
+        }
+    }
+
+    /// Validates the message, returning an error if it violates size limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `WorkloadLogs` contains more than [`MAX_WORKLOAD_LOG_LINES`] lines
+    pub fn validate(&self) -> Result<(), crate::ProtoError> {
+        if let Self::WorkloadLogs { lines, .. } = self {
+            if lines.len() > MAX_WORKLOAD_LOG_LINES {
+                return Err(crate::ProtoError::Validation(format!(
+                    "WorkloadLogs exceeds maximum line count: {} > {}",
+                    lines.len(),
+                    MAX_WORKLOAD_LOG_LINES
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns whether the message is valid according to size limits.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.validate().is_ok()
+    }
+
     /// Serialize to JSON.
     ///
     /// # Errors
@@ -342,5 +388,109 @@ mod tests {
         let json = msg.to_json().unwrap();
         let parsed = GatewayMessage::from_json(&json).unwrap();
         assert_eq!(msg, parsed);
+    }
+
+    // ========== WorkloadLogs Limit Tests ==========
+
+    #[test]
+    fn test_workload_logs_within_limit() {
+        let lines: Vec<String> = (0..100).map(|i| format!("log line {i}")).collect();
+        let msg = NodeMessage::workload_logs(WorkloadId::new(), lines.clone(), false);
+
+        if let NodeMessage::WorkloadLogs { lines: result_lines, .. } = msg {
+            assert_eq!(result_lines.len(), 100);
+        } else {
+            panic!("Expected WorkloadLogs");
+        }
+    }
+
+    #[test]
+    fn test_workload_logs_truncates_when_exceeding_limit() {
+        let lines: Vec<String> = (0..MAX_WORKLOAD_LOG_LINES + 500)
+            .map(|i| format!("log line {i}"))
+            .collect();
+
+        let msg = NodeMessage::workload_logs(WorkloadId::new(), lines, false);
+
+        if let NodeMessage::WorkloadLogs { lines: result_lines, .. } = msg {
+            assert_eq!(result_lines.len(), MAX_WORKLOAD_LOG_LINES);
+            // Verify it kept the first lines (truncated from end)
+            assert_eq!(result_lines[0], "log line 0");
+            assert_eq!(result_lines[MAX_WORKLOAD_LOG_LINES - 1], format!("log line {}", MAX_WORKLOAD_LOG_LINES - 1));
+        } else {
+            panic!("Expected WorkloadLogs");
+        }
+    }
+
+    #[test]
+    fn test_workload_logs_validation_passes_within_limit() {
+        let lines: Vec<String> = (0..100).map(|i| format!("log line {i}")).collect();
+        let msg = NodeMessage::WorkloadLogs {
+            workload_id: WorkloadId::new(),
+            lines,
+            is_stderr: false,
+        };
+
+        assert!(msg.validate().is_ok());
+        assert!(msg.is_valid());
+    }
+
+    #[test]
+    fn test_workload_logs_validation_fails_exceeding_limit() {
+        // Directly construct a message that exceeds the limit (bypassing constructor)
+        let lines: Vec<String> = (0..MAX_WORKLOAD_LOG_LINES + 1)
+            .map(|i| format!("log line {i}"))
+            .collect();
+        let msg = NodeMessage::WorkloadLogs {
+            workload_id: WorkloadId::new(),
+            lines,
+            is_stderr: false,
+        };
+
+        assert!(msg.validate().is_err());
+        assert!(!msg.is_valid());
+    }
+
+    #[test]
+    fn test_workload_logs_validation_error_message() {
+        let lines: Vec<String> = (0..MAX_WORKLOAD_LOG_LINES + 100)
+            .map(|i| format!("log line {i}"))
+            .collect();
+        let msg = NodeMessage::WorkloadLogs {
+            workload_id: WorkloadId::new(),
+            lines,
+            is_stderr: false,
+        };
+
+        let err = msg.validate().unwrap_err();
+        let err_msg = err.to_string();
+        assert!(err_msg.contains("WorkloadLogs exceeds maximum"));
+        assert!(err_msg.contains(&MAX_WORKLOAD_LOG_LINES.to_string()));
+    }
+
+    #[test]
+    fn test_workload_logs_exactly_at_limit() {
+        let lines: Vec<String> = (0..MAX_WORKLOAD_LOG_LINES)
+            .map(|i| format!("log line {i}"))
+            .collect();
+        let msg = NodeMessage::workload_logs(WorkloadId::new(), lines.clone(), false);
+
+        if let NodeMessage::WorkloadLogs { lines: result_lines, .. } = &msg {
+            assert_eq!(result_lines.len(), MAX_WORKLOAD_LOG_LINES);
+        } else {
+            panic!("Expected WorkloadLogs");
+        }
+
+        assert!(msg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_other_messages_always_valid() {
+        let msg = NodeMessage::heartbeat(NodeId::new());
+        assert!(msg.validate().is_ok());
+        assert!(msg.is_valid());
+
+        let msg = NodeMessage::register(NodeId::new(), "test", NodeCapabilities::default());
+        assert!(msg.validate().is_ok());
     }
 }

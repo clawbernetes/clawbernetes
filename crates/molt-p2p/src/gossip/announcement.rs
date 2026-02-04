@@ -3,7 +3,7 @@
 use crate::error::P2pError;
 use crate::protocol::PeerId;
 use chrono::{DateTime, Utc};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -161,6 +161,10 @@ impl CapacityAnnouncement {
 
     /// Verifies the announcement's signature against the given public key.
     ///
+    /// Uses strict verification to prevent signature malleability attacks.
+    /// Standard Ed25519 verification allows multiple valid signatures for the same
+    /// message, which can be exploited in replay attacks or double-spend scenarios.
+    ///
     /// # Errors
     ///
     /// Returns an error if the signature is missing or invalid.
@@ -171,7 +175,7 @@ impl CapacityAnnouncement {
 
         let message = self.signing_message();
         verifying_key
-            .verify(&message, &signature)
+            .verify_strict(&message, &signature)
             .map_err(|e| P2pError::Protocol(format!("Invalid signature: {e}")))
     }
 
@@ -311,6 +315,78 @@ mod tests {
 
         // Verification with wrong key should fail
         assert!(announcement.verify(&wrong_key.verifying_key()).is_err());
+    }
+
+    #[test]
+    fn capacity_announcement_verify_fails_with_missing_signature() {
+        let signing_key = make_signing_key();
+        let peer_id = PeerId::from_public_key(&signing_key.verifying_key());
+
+        // Create unsigned announcement
+        let announcement = CapacityAnnouncement::new(
+            peer_id,
+            vec![],
+            Pricing {
+                gpu_hour_cents: 50,
+                cpu_hour_cents: 5,
+            },
+            vec![],
+            Duration::from_secs(60),
+        );
+
+        // Verification should fail due to missing signature
+        let result = announcement.verify(&signing_key.verifying_key());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Missing signature"));
+    }
+
+    #[test]
+    fn capacity_announcement_verify_fails_with_tampered_data() {
+        let signing_key = make_signing_key();
+        let peer_id = PeerId::from_public_key(&signing_key.verifying_key());
+
+        let mut announcement = CapacityAnnouncement::new(
+            peer_id,
+            vec![GpuInfo {
+                model: "RTX 4090".to_string(),
+                vram_gb: 24,
+                count: 2,
+            }],
+            Pricing {
+                gpu_hour_cents: 100,
+                cpu_hour_cents: 10,
+            },
+            vec!["inference".to_string()],
+            Duration::from_secs(300),
+        );
+
+        // Sign the announcement
+        announcement.sign(&signing_key);
+
+        // Verification should succeed with original data
+        assert!(announcement.verify(&signing_key.verifying_key()).is_ok());
+
+        // Tamper with the announcement by serializing, modifying, and deserializing
+        let mut json = serde_json::to_value(&announcement).ok();
+        if let Some(ref mut val) = json {
+            // Tamper with the pricing
+            if let Some(pricing) = val.get_mut("pricing") {
+                pricing["gpu_hour_cents"] = serde_json::json!(999);
+            }
+        }
+
+        // Deserialize the tampered announcement
+        let tampered: Result<CapacityAnnouncement, _> =
+            serde_json::from_value(json.unwrap_or_default());
+
+        if let Ok(tampered_announcement) = tampered {
+            // Verification should fail due to tampered data
+            let result = tampered_announcement.verify(&signing_key.verifying_key());
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains("Invalid signature"));
+        }
     }
 
     #[test]

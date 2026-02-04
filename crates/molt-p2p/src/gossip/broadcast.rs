@@ -22,6 +22,8 @@ pub struct BroadcastConfig {
     pub announcement_cache_ttl: Duration,
     /// Maximum announcements to cache per peer.
     pub max_announcements_per_peer: usize,
+    /// Maximum total announcements across all peers (prevents DoS via memory exhaustion).
+    pub max_total_announcements: usize,
     /// Interval between cleanup sweeps.
     pub cleanup_interval: Duration,
     /// Rate limiting configuration.
@@ -37,6 +39,7 @@ impl Default for BroadcastConfig {
             max_seen_cache: 10_000,
             announcement_cache_ttl: Duration::from_secs(600),
             max_announcements_per_peer: 5,
+            max_total_announcements: 10_000,
             cleanup_interval: Duration::from_secs(60),
             rate_limit: RateLimitConfig::default(),
         }
@@ -78,6 +81,13 @@ impl BroadcastConfig {
         self.max_ttl_hops = ttl;
         self
     }
+
+    /// Sets the maximum total announcements across all peers.
+    #[must_use]
+    pub const fn with_max_total_announcements(mut self, max: usize) -> Self {
+        self.max_total_announcements = max;
+        self
+    }
 }
 
 /// Result of a broadcast operation.
@@ -100,6 +110,15 @@ struct SeenEntry {
     from_peer: PeerId,
 }
 
+/// Unique key for identifying cached announcements in LRU order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct AnnouncementKey {
+    /// Peer ID that owns this announcement.
+    peer_id: PeerId,
+    /// Sequence number for this peer's announcements (allows multiple per peer).
+    seq: u64,
+}
+
 /// Cached announcement with metadata.
 #[derive(Debug, Clone)]
 struct CachedAnnouncement {
@@ -107,6 +126,8 @@ struct CachedAnnouncement {
     announcement: CapacityAnnouncement,
     /// When this was cached.
     cached_at: Instant,
+    /// Unique key for LRU tracking.
+    key: AnnouncementKey,
 }
 
 /// Gossip broadcaster handling fanout/epidemic message propagation.
@@ -124,6 +145,10 @@ pub struct GossipBroadcaster {
     seen_order: VecDeque<MessageId>,
     /// Cached announcements by peer ID.
     announcement_cache: HashMap<PeerId, Vec<CachedAnnouncement>>,
+    /// LRU order of announcement keys for eviction when total limit is reached.
+    announcement_order: VecDeque<AnnouncementKey>,
+    /// Next sequence number for announcement keys.
+    next_announcement_seq: u64,
     /// Last cleanup time.
     last_cleanup: Instant,
     /// Per-peer rate limiter to prevent DoS attacks.
@@ -142,6 +167,8 @@ impl GossipBroadcaster {
             seen_messages: HashMap::new(),
             seen_order: VecDeque::new(),
             announcement_cache: HashMap::new(),
+            announcement_order: VecDeque::new(),
+            next_announcement_seq: 0,
             last_cleanup: Instant::now(),
             rate_limiter,
         }
@@ -176,6 +203,8 @@ impl GossipBroadcaster {
     pub fn remove_peer(&mut self, peer_id: &PeerId) {
         self.known_peers.remove(peer_id);
         self.announcement_cache.remove(peer_id);
+        // Clean up announcement order for this peer
+        self.announcement_order.retain(|k| k.peer_id != *peer_id);
     }
 
     /// Returns the number of known peers.
@@ -296,6 +325,16 @@ impl GossipBroadcaster {
                 was_duplicate: true,
             });
         }
+
+        // Verify the announcement signature to prevent spoofing
+        let verifying_key = announcement
+            .peer_id()
+            .to_verifying_key()
+            .ok_or_else(|| P2pError::Protocol("Invalid peer ID: cannot derive verifying key".to_string()))?;
+
+        announcement
+            .verify(&verifying_key)
+            .map_err(|e| P2pError::Gossip(format!("Announcement signature verification failed: {e}")))?;
 
         // Check TTL
         if ttl_hops == 0 {
@@ -454,22 +493,62 @@ impl GossipBroadcaster {
     /// Caches an announcement.
     fn cache_announcement(&mut self, announcement: CapacityAnnouncement) {
         let peer_id = announcement.peer_id();
+
+        // Generate unique key for this announcement
+        let key = AnnouncementKey {
+            peer_id,
+            seq: self.next_announcement_seq,
+        };
+        self.next_announcement_seq = self.next_announcement_seq.wrapping_add(1);
+
         let cached = CachedAnnouncement {
             announcement,
             cached_at: Instant::now(),
+            key,
         };
 
-        let entries = self.announcement_cache.entry(peer_id).or_default();
+        // Remove old announcement from same peer if exists (same created_at timestamp)
+        {
+            let entries = self.announcement_cache.entry(peer_id).or_default();
+            let removed_keys: Vec<_> = entries
+                .iter()
+                .filter(|c| c.announcement.created_at() == cached.announcement.created_at())
+                .map(|c| c.key)
+                .collect();
+            entries.retain(|c| c.announcement.created_at() != cached.announcement.created_at());
+            for removed_key in &removed_keys {
+                self.announcement_order.retain(|k| k != removed_key);
+            }
+        }
 
-        // Remove old announcement from same peer if exists
-        entries.retain(|c| c.announcement.created_at() != cached.announcement.created_at());
+        // Evict oldest announcements if we're at the total limit
+        while self.cached_announcement_count() >= self.config.max_total_announcements {
+            if let Some(oldest_key) = self.announcement_order.pop_front() {
+                if let Some(peer_entries) = self.announcement_cache.get_mut(&oldest_key.peer_id) {
+                    peer_entries.retain(|c| c.key != oldest_key);
+                    if peer_entries.is_empty() {
+                        self.announcement_cache.remove(&oldest_key.peer_id);
+                    }
+                }
+            } else {
+                // No entries in order queue but cache is full - shouldn't happen, but break to avoid infinite loop
+                break;
+            }
+        }
 
         // Add new announcement
+        let entries = self.announcement_cache.entry(peer_id).or_default();
         entries.push(cached);
+        self.announcement_order.push_back(key);
 
-        // Trim to max per peer
+        // Trim to max per peer (remove oldest for this peer)
         while entries.len() > self.config.max_announcements_per_peer {
-            entries.remove(0);
+            if let Some(removed) = entries.first().map(|e| e.key) {
+                entries.remove(0);
+                self.announcement_order.retain(|k| *k != removed);
+            } else {
+                break;
+            }
         }
     }
 
@@ -493,14 +572,24 @@ impl GossipBroadcaster {
         self.seen_order
             .retain(|id| self.seen_messages.contains_key(id));
 
-        // Clean announcement cache
+        // Clean announcement cache - collect keys to remove
         let cache_ttl = self.config.announcement_cache_ttl;
+        let mut removed_keys = Vec::new();
         for entries in self.announcement_cache.values_mut() {
+            for entry in entries.iter() {
+                if now.duration_since(entry.cached_at) >= cache_ttl || entry.announcement.is_expired() {
+                    removed_keys.push(entry.key);
+                }
+            }
             entries.retain(|c| {
                 now.duration_since(c.cached_at) < cache_ttl && !c.announcement.is_expired()
             });
         }
         self.announcement_cache.retain(|_, v| !v.is_empty());
+
+        // Clean announcement order
+        let removed_set: HashSet<_> = removed_keys.into_iter().collect();
+        self.announcement_order.retain(|k| !removed_set.contains(k));
     }
 
     /// Returns statistics about the broadcaster state.
@@ -813,7 +902,7 @@ mod tests {
         let peer_id = PeerId::from_public_key(&signing_key.verifying_key());
 
         // Create an already-expired announcement
-        let announcement = CapacityAnnouncement::new(
+        let mut announcement = CapacityAnnouncement::new(
             peer_id,
             vec![],
             Pricing {
@@ -823,6 +912,7 @@ mod tests {
             vec![],
             Duration::from_millis(1), // Very short TTL
         );
+        announcement.sign(&signing_key);
 
         std::thread::sleep(Duration::from_millis(10));
 
@@ -830,6 +920,129 @@ mod tests {
         let result = broadcaster.handle_message(&message, peer1);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn handle_announce_rejects_unsigned_announcement() {
+        let local = make_peer_id();
+        let mut broadcaster = GossipBroadcaster::with_defaults(local);
+
+        let peer1 = make_peer_id();
+        broadcaster.add_peer(peer1);
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let peer_id = PeerId::from_public_key(&signing_key.verifying_key());
+
+        // Create an unsigned announcement (no call to sign())
+        let announcement = CapacityAnnouncement::new(
+            peer_id,
+            vec![],
+            Pricing {
+                gpu_hour_cents: 100,
+                cpu_hour_cents: 10,
+            },
+            vec![],
+            Duration::from_secs(300),
+        );
+
+        let message = GossipMessage::announce(announcement, 3);
+        let result = broadcaster.handle_message(&message, peer1);
+
+        // Should be rejected due to missing signature
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("signature"));
+    }
+
+    #[test]
+    fn handle_announce_rejects_spoofed_announcement() {
+        let local = make_peer_id();
+        let mut broadcaster = GossipBroadcaster::with_defaults(local);
+
+        let peer1 = make_peer_id();
+        broadcaster.add_peer(peer1);
+
+        // Attacker's key
+        let attacker_key = SigningKey::generate(&mut OsRng);
+
+        // Victim's key (the peer being spoofed)
+        let victim_key = SigningKey::generate(&mut OsRng);
+        let victim_peer_id = PeerId::from_public_key(&victim_key.verifying_key());
+
+        // Attacker creates announcement claiming to be victim but signs with attacker's key
+        let mut spoofed_announcement = CapacityAnnouncement::new(
+            victim_peer_id, // Claims to be victim
+            vec![GpuInfo {
+                model: "Fake GPU".to_string(),
+                vram_gb: 999,
+                count: 100,
+            }],
+            Pricing {
+                gpu_hour_cents: 1, // Suspiciously cheap
+                cpu_hour_cents: 1,
+            },
+            vec!["malicious".to_string()],
+            Duration::from_secs(300),
+        );
+
+        // Attacker signs with their own key
+        spoofed_announcement.sign(&attacker_key);
+
+        let message = GossipMessage::announce(spoofed_announcement, 3);
+        let result = broadcaster.handle_message(&message, peer1);
+
+        // Should be rejected because signature doesn't match peer_id's key
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("signature"));
+    }
+
+    #[test]
+    fn handle_announce_rejects_tampered_announcement() {
+        let local = make_peer_id();
+        let mut broadcaster = GossipBroadcaster::with_defaults(local);
+
+        let peer1 = make_peer_id();
+        broadcaster.add_peer(peer1);
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let peer_id = PeerId::from_public_key(&signing_key.verifying_key());
+
+        // Create and sign a legitimate announcement
+        let mut announcement = CapacityAnnouncement::new(
+            peer_id,
+            vec![GpuInfo {
+                model: "RTX 4090".to_string(),
+                vram_gb: 24,
+                count: 2,
+            }],
+            Pricing {
+                gpu_hour_cents: 100,
+                cpu_hour_cents: 10,
+            },
+            vec!["inference".to_string()],
+            Duration::from_secs(300),
+        );
+        announcement.sign(&signing_key);
+
+        // Tamper with the announcement by serializing, modifying, deserializing
+        let json = serde_json::to_value(&announcement).ok();
+        let tampered: Option<CapacityAnnouncement> = json.and_then(|mut val| {
+            if let Some(pricing) = val.get_mut("pricing") {
+                pricing["gpu_hour_cents"] = serde_json::json!(1); // Tamper: make it super cheap
+            }
+            serde_json::from_value(val).ok()
+        });
+
+        if let Some(tampered_announcement) = tampered {
+            let message = GossipMessage::announce(tampered_announcement, 3);
+            let result = broadcaster.handle_message(&message, peer1);
+
+            // Should be rejected due to signature mismatch
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains("signature"));
+        }
     }
 
     #[test]
@@ -1093,6 +1306,86 @@ mod tests {
         assert!(broadcaster.has_seen(&id2));
         assert!(broadcaster.has_seen(&id3));
         assert!(broadcaster.has_seen(&id4));
+    }
+
+    #[test]
+    fn announcement_cache_evicts_oldest_when_total_limit_reached() {
+        let local = make_peer_id();
+        let config = BroadcastConfig {
+            max_total_announcements: 3,
+            max_announcements_per_peer: 10, // High per-peer to test total limit
+            ..BroadcastConfig::default()
+        };
+        let mut broadcaster = GossipBroadcaster::new(local, config);
+
+        // Create announcements from different peers
+        let mut signing_keys = Vec::new();
+        for _ in 0..4 {
+            signing_keys.push(SigningKey::generate(&mut OsRng));
+        }
+
+        // Add first 3 announcements
+        for key in &signing_keys[..3] {
+            let announcement = make_signed_announcement(key);
+            broadcaster.cache_announcement(announcement);
+        }
+
+        assert_eq!(broadcaster.cached_announcement_count(), 3);
+        let first_peer_id = PeerId::from_public_key(&signing_keys[0].verifying_key());
+        assert!(broadcaster.announcement_cache.contains_key(&first_peer_id));
+
+        // Add 4th announcement - should evict the oldest (first)
+        let announcement4 = make_signed_announcement(&signing_keys[3]);
+        broadcaster.cache_announcement(announcement4);
+
+        // Should still be at limit
+        assert_eq!(broadcaster.cached_announcement_count(), 3);
+        // First announcement should be evicted
+        assert!(!broadcaster.announcement_cache.contains_key(&first_peer_id));
+    }
+
+    #[test]
+    fn announcement_cache_eviction_across_many_peers() {
+        let local = make_peer_id();
+        let config = BroadcastConfig {
+            max_total_announcements: 5,
+            max_announcements_per_peer: 2,
+            ..BroadcastConfig::default()
+        };
+        let mut broadcaster = GossipBroadcaster::new(local, config);
+
+        // Add announcements from 10 different peers (only 5 should remain due to total limit)
+        for _ in 0..10 {
+            let signing_key = SigningKey::generate(&mut OsRng);
+            let announcement = make_signed_announcement(&signing_key);
+            broadcaster.cache_announcement(announcement);
+        }
+
+        // Should be capped at total limit
+        assert_eq!(broadcaster.cached_announcement_count(), 5);
+        // Should have exactly 5 unique providers
+        assert_eq!(broadcaster.announcement_cache.len(), 5);
+    }
+
+    #[test]
+    fn remove_peer_cleans_announcement_order() {
+        let local = make_peer_id();
+        let mut broadcaster = GossipBroadcaster::with_defaults(local);
+
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let peer_id = PeerId::from_public_key(&signing_key.verifying_key());
+        let announcement = make_signed_announcement(&signing_key);
+
+        broadcaster.add_peer(peer_id);
+        broadcaster.cache_announcement(announcement);
+
+        assert_eq!(broadcaster.cached_announcement_count(), 1);
+        assert!(!broadcaster.announcement_order.is_empty());
+
+        broadcaster.remove_peer(&peer_id);
+
+        assert_eq!(broadcaster.cached_announcement_count(), 0);
+        assert!(broadcaster.announcement_order.is_empty());
     }
 
     // ========== Stats Tests ==========

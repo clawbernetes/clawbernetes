@@ -585,7 +585,7 @@ impl PolicyEvaluator {
         }
     }
 
-    /// Evaluate an AcceptJob action.
+    /// Evaluate an `AcceptJob` action.
     fn evaluate_accept_job(
         &self,
         price: u64,
@@ -647,13 +647,61 @@ impl PolicyEvaluator {
 // SpendingTracker - Tracks spending for rate limiting
 // =============================================================================
 
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Persistable state for the spending tracker.
+///
+/// This struct is serialized to JSON for persistence across restarts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpendingTrackerState {
+    /// The hourly budget in base units.
+    pub hourly_budget: u64,
+    /// Amount spent in the current hour.
+    pub spent_this_hour: u64,
+    /// Unix timestamp (seconds) of when the current hour started.
+    pub hour_start_timestamp: u64,
+    /// Schema version for forward compatibility.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+}
+
+const fn default_schema_version() -> u32 {
+    1
+}
+
+impl SpendingTrackerState {
+    /// Current schema version for migrations.
+    pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+}
+
+/// Error types for spending tracker persistence operations.
+#[derive(Debug, thiserror::Error)]
+pub enum SpendingTrackerError {
+    /// I/O error during file operations.
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    /// JSON serialization/deserialization error.
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+    /// State file is corrupted or has invalid data.
+    #[error("corrupt state file: {reason}")]
+    CorruptState {
+        /// Description of the corruption.
+        reason: String,
+    },
+}
+
 /// Tracks spending over time for hourly budget enforcement.
 ///
 /// This is used to ensure the agent doesn't exceed its hourly spending limit.
+/// The tracker supports persistence to survive agent restarts.
 #[derive(Debug, Clone)]
 pub struct SpendingTracker {
     hourly_budget: u64,
     spent_this_hour: u64,
+    /// Unix timestamp (seconds) of when the current hour window started.
+    hour_start_timestamp: u64,
 }
 
 /// Error when spending would exceed budget.
@@ -669,33 +717,77 @@ pub struct BudgetExceededError {
 impl SpendingTracker {
     /// Create a new tracker with the given hourly budget.
     #[must_use]
-    pub const fn new(hourly_budget: u64) -> Self {
+    pub fn new(hourly_budget: u64) -> Self {
         Self {
             hourly_budget,
             spent_this_hour: 0,
+            hour_start_timestamp: Self::current_timestamp(),
+        }
+    }
+
+    /// Get the current Unix timestamp in seconds.
+    fn current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Check if the hour window has expired and reset if necessary.
+    ///
+    /// This should be called before any operation that checks or records spending.
+    fn maybe_reset_hour(&mut self) {
+        let now = Self::current_timestamp();
+        let elapsed = now.saturating_sub(self.hour_start_timestamp);
+        // Reset if more than 3600 seconds (1 hour) have passed
+        if elapsed >= 3600 {
+            self.spent_this_hour = 0;
+            self.hour_start_timestamp = now;
         }
     }
 
     /// Get the amount spent this hour.
     #[must_use]
-    pub const fn spent_this_hour(&self) -> u64 {
+    pub fn spent_this_hour(&self) -> u64 {
+        self.spent_this_hour
+    }
+
+    /// Get the amount spent this hour, checking for hour expiry first.
+    #[must_use]
+    pub fn spent_this_hour_checked(&mut self) -> u64 {
+        self.maybe_reset_hour();
         self.spent_this_hour
     }
 
     /// Get the remaining budget for this hour.
     #[must_use]
-    pub const fn remaining_budget(&self) -> u64 {
+    pub fn remaining_budget(&self) -> u64 {
+        self.hourly_budget.saturating_sub(self.spent_this_hour)
+    }
+
+    /// Get the remaining budget, checking for hour expiry first.
+    #[must_use]
+    pub fn remaining_budget_checked(&mut self) -> u64 {
+        self.maybe_reset_hour();
         self.hourly_budget.saturating_sub(self.spent_this_hour)
     }
 
     /// Check if we can afford to spend the given amount.
     #[must_use]
-    pub const fn can_afford(&self, amount: u64) -> bool {
+    pub fn can_afford(&self, amount: u64) -> bool {
+        amount <= self.remaining_budget()
+    }
+
+    /// Check if we can afford, after verifying the hour hasn't expired.
+    #[must_use]
+    pub fn can_afford_checked(&mut self, amount: u64) -> bool {
+        self.maybe_reset_hour();
         amount <= self.remaining_budget()
     }
 
     /// Record a spend, returning error if it would exceed budget.
     pub fn record_spend(&mut self, amount: u64) -> Result<(), BudgetExceededError> {
+        self.maybe_reset_hour();
         if !self.can_afford(amount) {
             return Err(BudgetExceededError {
                 amount,
@@ -709,10 +801,127 @@ impl SpendingTracker {
     /// Reset the hourly spending counter (call at the start of each hour).
     pub fn reset_hour(&mut self) {
         self.spent_this_hour = 0;
+        self.hour_start_timestamp = Self::current_timestamp();
     }
 
     /// Update the hourly budget.
     pub fn set_hourly_budget(&mut self, budget: u64) {
         self.hourly_budget = budget;
+    }
+
+    /// Get the current hourly budget.
+    #[must_use]
+    pub fn hourly_budget(&self) -> u64 {
+        self.hourly_budget
+    }
+
+    /// Get the timestamp when the current hour started.
+    #[must_use]
+    pub fn hour_start_timestamp(&self) -> u64 {
+        self.hour_start_timestamp
+    }
+
+    // =========================================================================
+    // Persistence Methods
+    // =========================================================================
+
+    /// Capture the current state for persistence.
+    #[must_use]
+    pub fn to_state(&self) -> SpendingTrackerState {
+        SpendingTrackerState {
+            hourly_budget: self.hourly_budget,
+            spent_this_hour: self.spent_this_hour,
+            hour_start_timestamp: self.hour_start_timestamp,
+            schema_version: SpendingTrackerState::CURRENT_SCHEMA_VERSION,
+        }
+    }
+
+    /// Restore tracker from persisted state.
+    ///
+    /// Validates the state and resets if the hour has expired since the state was saved.
+    #[must_use]
+    pub fn from_state(state: SpendingTrackerState) -> Self {
+        let mut tracker = Self {
+            hourly_budget: state.hourly_budget,
+            spent_this_hour: state.spent_this_hour,
+            hour_start_timestamp: state.hour_start_timestamp,
+        };
+        // Check if the persisted hour has expired
+        tracker.maybe_reset_hour();
+        tracker
+    }
+
+    /// Save the tracker state to a JSON file.
+    ///
+    /// Creates parent directories if they don't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file I/O or serialization fails.
+    pub fn save_state(&self, path: &Path) -> Result<(), SpendingTrackerError> {
+        let state = self.to_state();
+        let json = serde_json::to_string_pretty(&state)?;
+
+        // Create parent directories if needed
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        // Write atomically by writing to a temp file and renaming
+        let temp_path = path.with_extension("tmp");
+        std::fs::write(&temp_path, &json)?;
+        std::fs::rename(&temp_path, path)?;
+
+        Ok(())
+    }
+
+    /// Load tracker state from a JSON file.
+    ///
+    /// If the file doesn't exist or is corrupted, returns a fresh tracker
+    /// with the given default budget.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the state file.
+    /// * `default_budget` - Budget to use if state cannot be loaded.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(tracker, was_loaded)` where `was_loaded` is true if
+    /// state was successfully loaded from disk.
+    #[must_use]
+    pub fn load_state(path: &Path, default_budget: u64) -> (Self, bool) {
+        match Self::try_load_state(path) {
+            Ok(tracker) => (tracker, true),
+            Err(_) => (Self::new(default_budget), false),
+        }
+    }
+
+    /// Try to load tracker state from a JSON file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - File doesn't exist
+    /// - File cannot be read
+    /// - JSON is malformed
+    /// - State data is invalid
+    pub fn try_load_state(path: &Path) -> Result<Self, SpendingTrackerError> {
+        let contents = std::fs::read_to_string(path)?;
+        let state: SpendingTrackerState = serde_json::from_str(&contents)?;
+
+        // Validate state
+        if state.spent_this_hour > state.hourly_budget {
+            return Err(SpendingTrackerError::CorruptState {
+                reason: format!(
+                    "spent ({}) exceeds budget ({})",
+                    state.spent_this_hour, state.hourly_budget
+                ),
+            });
+        }
+
+        Ok(Self::from_state(state))
     }
 }

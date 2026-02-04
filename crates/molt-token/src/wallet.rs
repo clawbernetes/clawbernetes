@@ -4,6 +4,7 @@
 
 use crate::error::{MoltError, Result};
 use ed25519_dalek::{SigningKey, VerifyingKey, Signer, Signature};
+use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -83,12 +84,16 @@ pub struct Wallet {
 impl Wallet {
     /// Generate a new random wallet.
     ///
+    /// Uses `OsRng` directly instead of `thread_rng()` because cryptographic
+    /// key material should come directly from the operating system's CSPRNG
+    /// rather than a userspace PRNG that is merely seeded from system entropy.
+    ///
     /// # Errors
     ///
     /// Returns error if random generation fails.
     pub fn generate() -> Result<Self> {
         let mut secret_bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut secret_bytes);
+        OsRng.fill_bytes(&mut secret_bytes);
         let signing_key = SigningKey::from_bytes(&secret_bytes);
         let verifying_key = signing_key.verifying_key();
         let address = Address::from_bytes(verifying_key.as_bytes())?;

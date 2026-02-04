@@ -551,6 +551,271 @@ fn spending_tracker_can_afford() {
     assert!(!tracker.can_afford(4_001));
 }
 
+#[test]
+fn spending_tracker_reset_updates_timestamp() {
+    let mut tracker = SpendingTracker::new(10_000);
+    let _ = tracker.record_spend(5_000);
+
+    let ts_before = tracker.hour_start_timestamp();
+    tracker.reset_hour();
+    let ts_after = tracker.hour_start_timestamp();
+
+    assert_eq!(tracker.spent_this_hour(), 0);
+    // Timestamp should be updated (or same if fast enough)
+    assert!(ts_after >= ts_before);
+}
+
+#[test]
+fn spending_tracker_hourly_budget_getter() {
+    let tracker = SpendingTracker::new(50_000);
+    assert_eq!(tracker.hourly_budget(), 50_000);
+}
+
+// ==========================================================================
+// SpendingTrackerState tests
+// ==========================================================================
+
+#[test]
+fn spending_tracker_state_serialization_roundtrip() {
+    let state = SpendingTrackerState {
+        hourly_budget: 10_000,
+        spent_this_hour: 2_500,
+        hour_start_timestamp: 1700000000,
+        schema_version: 1,
+    };
+
+    let json = serde_json::to_string(&state).unwrap();
+    let parsed: SpendingTrackerState = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(state, parsed);
+}
+
+#[test]
+fn spending_tracker_state_default_schema_version() {
+    // JSON without schema_version should get default value
+    let json = r#"{"hourly_budget":5000,"spent_this_hour":1000,"hour_start_timestamp":1700000000}"#;
+    let state: SpendingTrackerState = serde_json::from_str(json).unwrap();
+    assert_eq!(state.schema_version, 1);
+}
+
+#[test]
+fn spending_tracker_to_state_captures_all_fields() {
+    let mut tracker = SpendingTracker::new(20_000);
+    let _ = tracker.record_spend(5_000);
+
+    let state = tracker.to_state();
+
+    assert_eq!(state.hourly_budget, 20_000);
+    assert_eq!(state.spent_this_hour, 5_000);
+    assert!(state.hour_start_timestamp > 0);
+    assert_eq!(state.schema_version, SpendingTrackerState::CURRENT_SCHEMA_VERSION);
+}
+
+#[test]
+fn spending_tracker_from_state_restores_values() {
+    let state = SpendingTrackerState {
+        hourly_budget: 15_000,
+        spent_this_hour: 3_000,
+        // Use current time so it doesn't expire
+        hour_start_timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        schema_version: 1,
+    };
+
+    let tracker = SpendingTracker::from_state(state);
+
+    assert_eq!(tracker.hourly_budget(), 15_000);
+    assert_eq!(tracker.spent_this_hour(), 3_000);
+    assert_eq!(tracker.remaining_budget(), 12_000);
+}
+
+#[test]
+fn spending_tracker_from_state_expired_resets_spending() {
+    let state = SpendingTrackerState {
+        hourly_budget: 10_000,
+        spent_this_hour: 5_000,
+        // Timestamp from 2 hours ago
+        hour_start_timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().saturating_sub(7200))
+            .unwrap_or(0),
+        schema_version: 1,
+    };
+
+    let tracker = SpendingTracker::from_state(state);
+
+    // Should have reset because hour expired
+    assert_eq!(tracker.spent_this_hour(), 0);
+    assert_eq!(tracker.remaining_budget(), 10_000);
+}
+
+// ==========================================================================
+// SpendingTracker persistence file tests
+// ==========================================================================
+
+#[test]
+fn spending_tracker_save_and_load_roundtrip() {
+    let temp_dir = std::env::temp_dir();
+    let state_path = temp_dir.join(format!("spending_test_{}.json", std::process::id()));
+
+    // Create and save tracker
+    let mut tracker = SpendingTracker::new(25_000);
+    let _ = tracker.record_spend(7_500);
+
+    let save_result = tracker.save_state(&state_path);
+    assert!(save_result.is_ok(), "save_state should succeed");
+
+    // Load and verify
+    let (loaded, was_loaded) = SpendingTracker::load_state(&state_path, 1000);
+
+    assert!(was_loaded, "should have loaded from file");
+    assert_eq!(loaded.hourly_budget(), 25_000);
+    // Spending should be preserved (hour hasn't expired)
+    assert_eq!(loaded.spent_this_hour(), 7_500);
+
+    // Cleanup
+    let _ = std::fs::remove_file(&state_path);
+}
+
+#[test]
+fn spending_tracker_load_missing_file_returns_fresh() {
+    let temp_dir = std::env::temp_dir();
+    let state_path = temp_dir.join("nonexistent_spending_state.json");
+
+    // Ensure file doesn't exist
+    let _ = std::fs::remove_file(&state_path);
+
+    let (tracker, was_loaded) = SpendingTracker::load_state(&state_path, 50_000);
+
+    assert!(!was_loaded, "should not have loaded from missing file");
+    assert_eq!(tracker.hourly_budget(), 50_000);
+    assert_eq!(tracker.spent_this_hour(), 0);
+}
+
+#[test]
+fn spending_tracker_load_corrupt_file_returns_fresh() {
+    let temp_dir = std::env::temp_dir();
+    let state_path = temp_dir.join(format!("corrupt_spending_{}.json", std::process::id()));
+
+    // Write corrupt JSON
+    std::fs::write(&state_path, "{ invalid json }").unwrap();
+
+    let (tracker, was_loaded) = SpendingTracker::load_state(&state_path, 30_000);
+
+    assert!(!was_loaded, "should not have loaded from corrupt file");
+    assert_eq!(tracker.hourly_budget(), 30_000);
+    assert_eq!(tracker.spent_this_hour(), 0);
+
+    // Cleanup
+    let _ = std::fs::remove_file(&state_path);
+}
+
+#[test]
+fn spending_tracker_load_invalid_state_returns_fresh() {
+    let temp_dir = std::env::temp_dir();
+    let state_path = temp_dir.join(format!("invalid_spending_{}.json", std::process::id()));
+
+    // Write state where spent > budget (invalid)
+    let invalid_state = SpendingTrackerState {
+        hourly_budget: 1000,
+        spent_this_hour: 5000, // More than budget!
+        hour_start_timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        schema_version: 1,
+    };
+    let json = serde_json::to_string(&invalid_state).unwrap();
+    std::fs::write(&state_path, json).unwrap();
+
+    let (tracker, was_loaded) = SpendingTracker::load_state(&state_path, 20_000);
+
+    assert!(!was_loaded, "should not have loaded invalid state");
+    assert_eq!(tracker.hourly_budget(), 20_000);
+    assert_eq!(tracker.spent_this_hour(), 0);
+
+    // Cleanup
+    let _ = std::fs::remove_file(&state_path);
+}
+
+#[test]
+fn spending_tracker_try_load_returns_error_for_missing() {
+    let state_path = std::path::Path::new("/nonexistent/path/state.json");
+    let result = SpendingTracker::try_load_state(state_path);
+    assert!(result.is_err());
+}
+
+#[test]
+fn spending_tracker_try_load_returns_error_for_corrupt() {
+    let temp_dir = std::env::temp_dir();
+    let state_path = temp_dir.join(format!("try_corrupt_{}.json", std::process::id()));
+
+    std::fs::write(&state_path, "not valid json at all").unwrap();
+
+    let result = SpendingTracker::try_load_state(&state_path);
+    assert!(result.is_err());
+
+    // Cleanup
+    let _ = std::fs::remove_file(&state_path);
+}
+
+#[test]
+fn spending_tracker_save_creates_parent_dirs() {
+    let temp_dir = std::env::temp_dir();
+    let nested_path = temp_dir.join(format!("nested_{}", std::process::id()))
+        .join("subdir")
+        .join("state.json");
+
+    let tracker = SpendingTracker::new(10_000);
+    let result = tracker.save_state(&nested_path);
+
+    assert!(result.is_ok(), "should create parent directories");
+    assert!(nested_path.exists(), "file should exist");
+
+    // Cleanup
+    if let Some(parent) = nested_path.parent() {
+        let _ = std::fs::remove_dir_all(parent.parent().unwrap_or(parent));
+    }
+}
+
+#[test]
+fn spending_tracker_limits_enforced_after_simulated_restart() {
+    let temp_dir = std::env::temp_dir();
+    let state_path = temp_dir.join(format!("restart_test_{}.json", std::process::id()));
+
+    // Simulate first run: spend most of budget
+    {
+        let mut tracker = SpendingTracker::new(10_000);
+        let _ = tracker.record_spend(8_000);
+        assert_eq!(tracker.remaining_budget(), 2_000);
+        tracker.save_state(&state_path).unwrap();
+    }
+
+    // Simulate restart: load state and verify limits
+    {
+        let (mut tracker, was_loaded) = SpendingTracker::load_state(&state_path, 10_000);
+        assert!(was_loaded);
+
+        // Should only be able to spend remaining 2_000
+        assert!(!tracker.can_afford(3_000));
+        assert!(tracker.can_afford(2_000));
+
+        // Try to exceed budget
+        let result = tracker.record_spend(5_000);
+        assert!(result.is_err());
+
+        // Should be able to spend within remaining
+        let result = tracker.record_spend(1_500);
+        assert!(result.is_ok());
+        assert_eq!(tracker.remaining_budget(), 500);
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_file(&state_path);
+}
+
 // ==========================================================================
 // Property-based tests with proptest
 // ==========================================================================

@@ -40,11 +40,17 @@ impl PresharedKey {
         Self::from_bytes(&bytes)
     }
 
+    /// Generates a new random preshared key using OS-level entropy.
+    ///
+    /// Uses `OsRng` directly instead of `thread_rng()` because cryptographic
+    /// key material should come directly from the operating system's CSPRNG
+    /// rather than a userspace PRNG that is merely seeded from system entropy.
     #[must_use]
     pub fn generate() -> Self {
+        use rand::rngs::OsRng;
         use rand::RngCore;
         let mut key = [0u8; KEY_SIZE];
-        rand::thread_rng().fill_bytes(&mut key);
+        OsRng.fill_bytes(&mut key);
         Self(key)
     }
 }

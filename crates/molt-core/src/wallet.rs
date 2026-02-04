@@ -88,12 +88,16 @@ impl PublicKey {
 
     /// Verifies a signature against a message using this public key.
     ///
+    /// Uses strict verification to prevent signature malleability attacks.
+    /// Standard Ed25519 verification allows multiple valid signatures for the same
+    /// message, which can be exploited in replay attacks or double-spend scenarios.
+    ///
     /// # Errors
     ///
     /// Returns `MoltError::InvalidSignature` if the signature is invalid.
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), MoltError> {
         self.0
-            .verify(message, &signature.0)
+            .verify_strict(message, &signature.0)
             .map_err(|_| MoltError::InvalidSignature)
     }
 }

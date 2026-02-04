@@ -2,7 +2,7 @@
 //! Execution attestation — job completion proofs, checkpoint verification.
 
 use chrono::{DateTime, Duration, Utc};
-use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -172,12 +172,14 @@ impl ExecutionAttestation {
 
     /// Verify the signature of this attestation.
     ///
+    /// Uses strict verification to prevent signature malleability attacks.
+    /// Standard Ed25519 verification allows multiple valid signatures for the same
+    /// message, which can be exploited in replay attacks or double-spend scenarios.
+    ///
     /// # Errors
     ///
     /// Returns `AttestationError::SignatureVerification` if the signature is invalid.
     pub fn verify_signature(&self, public_key: &VerifyingKey) -> Result<(), AttestationError> {
-        use ed25519_dalek::Verifier;
-
         let message = Self::create_signing_message(
             self.job_id,
             &self.checkpoints,
@@ -186,7 +188,7 @@ impl ExecutionAttestation {
             self.timestamp,
         );
         public_key
-            .verify(&message, &self.signature)
+            .verify_strict(&message, &self.signature)
             .map_err(|_| AttestationError::SignatureVerification)
     }
 

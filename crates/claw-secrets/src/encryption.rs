@@ -10,6 +10,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
+use rand::rngs::OsRng;
 use rand::RngCore;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -35,10 +36,14 @@ pub struct SecretKey {
 
 impl SecretKey {
     /// Generates a new random secret key.
+    ///
+    /// Uses `OsRng` directly instead of `thread_rng()` because cryptographic
+    /// key material should come directly from the operating system's CSPRNG
+    /// rather than a userspace PRNG that is merely seeded from system entropy.
     #[must_use]
     pub fn generate() -> Self {
         let mut bytes = [0u8; KEY_SIZE];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        OsRng.fill_bytes(&mut bytes);
         Self { bytes }
     }
 
@@ -96,9 +101,11 @@ pub fn encrypt(key: &SecretKey, plaintext: &[u8]) -> Result<Vec<u8>> {
         reason: format!("failed to create cipher: {e}"),
     })?;
 
-    // Generate a random nonce
+    // Generate a random nonce using OsRng for cryptographic security.
+    // OsRng provides entropy directly from the OS CSPRNG rather than
+    // a userspace PRNG seeded from system entropy.
     let mut nonce_bytes = [0u8; NONCE_SIZE];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Encrypt with AEAD
