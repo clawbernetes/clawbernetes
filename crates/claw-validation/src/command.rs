@@ -472,6 +472,111 @@ impl SafeCommand {
             exit_code: output.status.code().unwrap_or(-1),
         })
     }
+
+    /// Execute the command synchronously and return the output.
+    ///
+    /// This is the sync version for use in contexts where async is not available
+    /// (e.g., trait implementations that need to be dyn-compatible).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Validation errors were collected during building
+    /// - The command fails to execute
+    /// - The command returns a non-zero exit code
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use claw_validation::command::{SafeCommand, AllowedProgram};
+    ///
+    /// let output = SafeCommand::new(AllowedProgram::NvidiaSmi)
+    ///     .args(&["--query-gpu=index,name", "--format=csv"])
+    ///     .execute_sync()?;
+    /// # Ok::<(), claw_validation::command::CommandError>(())
+    /// ```
+    pub fn execute_sync(mut self) -> Result<CommandOutput, CommandError> {
+        use std::process::Command;
+
+        // Check for validation errors first
+        if !self.validation_errors.is_empty() {
+            let error = self.validation_errors.swap_remove(0);
+            return Err(CommandError::ValidationFailed(error));
+        }
+
+        let program = self.program_path.as_deref().unwrap_or(self.program.as_str());
+
+        let mut cmd = Command::new(program);
+        cmd.args(&self.args);
+
+        for (key, value) in &self.env_vars {
+            cmd.env(key, value);
+        }
+
+        if let Some(dir) = &self.current_dir {
+            cmd.current_dir(dir);
+        }
+
+        let output = cmd.output().map_err(|e| CommandError::ExecutionFailed {
+            message: e.to_string(),
+        })?;
+
+        let exit_code = output.status.code().unwrap_or(-1);
+
+        if !output.status.success() {
+            return Err(CommandError::non_zero_exit(
+                self.command_description(),
+                exit_code,
+                String::from_utf8_lossy(&output.stderr),
+            ));
+        }
+
+        Ok(CommandOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code,
+        })
+    }
+
+    /// Execute the command synchronously without checking the exit code.
+    ///
+    /// Use this when you want to handle non-zero exit codes yourself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation failed or the command couldn't be executed.
+    pub fn execute_sync_unchecked(mut self) -> Result<CommandOutput, CommandError> {
+        use std::process::Command;
+
+        // Check for validation errors first
+        if !self.validation_errors.is_empty() {
+            let error = self.validation_errors.swap_remove(0);
+            return Err(CommandError::ValidationFailed(error));
+        }
+
+        let program = self.program_path.as_deref().unwrap_or(self.program.as_str());
+
+        let mut cmd = Command::new(program);
+        cmd.args(&self.args);
+
+        for (key, value) in &self.env_vars {
+            cmd.env(key, value);
+        }
+
+        if let Some(dir) = &self.current_dir {
+            cmd.current_dir(dir);
+        }
+
+        let output = cmd.output().map_err(|e| CommandError::ExecutionFailed {
+            message: e.to_string(),
+        })?;
+
+        Ok(CommandOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code: output.status.code().unwrap_or(-1),
+        })
+    }
 }
 
 /// Registry of allowed programs for dynamic allowlisting.
