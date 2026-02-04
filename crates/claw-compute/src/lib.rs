@@ -60,6 +60,8 @@
 
 pub mod device;
 pub mod error;
+#[cfg(any(feature = "cubecl-wgpu", feature = "cubecl-cuda"))]
+pub mod gpu;
 pub mod kernels;
 pub mod tensor;
 

@@ -11,15 +11,13 @@ authors.workspace = true
 [features]
 default = ["cpu"]
 cpu = []
-# GPU backends (to be implemented with CubeCL)
-cuda = []
-wgpu = []
-hip = []
+# GPU backends via CubeCL
+cubecl-wgpu = ["dep:cubecl", "dep:cubecl-wgpu"]
+cubecl-cuda = ["dep:cubecl", "dep:cubecl-cuda"]
 # Convenience aliases
-metal = ["wgpu"]
-rocm = ["hip"]
+metal = ["cubecl-wgpu"]  # Metal via wgpu on macOS
 # All backends
-all = ["cpu", "cuda", "wgpu", "hip"]
+all = ["cpu", "cubecl-wgpu", "cubecl-cuda"]
 
 [dependencies]
 # Error handling
@@ -34,17 +32,17 @@ tracing = { workspace = true }
 # Math functions (for CPU kernels)
 libm = "0.2"
 
+# CubeCL for GPU compute
+cubecl = { version = "0.9", optional = true }
+cubecl-wgpu = { version = "0.9", optional = true }
+cubecl-cuda = { version = "0.9", optional = true }
+
+# Async for wgpu
+pollster = "0.4"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 test-case = { workspace = true }
 
 [lints]
 workspace = true
-
-# Note: CubeCL integration planned for GPU backends
-# When ready, add:
-# cubecl = "0.9"
-# cubecl-cuda = { version = "0.9", optional = true }
-# cubecl-wgpu = { version = "0.9", optional = true }
-# cubecl-hip = { version = "0.9", optional = true }
-# cubecl-cpu = { version = "0.9", optional = true }
