@@ -34,4 +34,18 @@ pub enum MarketError {
         /// The attempted target state.
         to: String,
     },
+
+    /// Payment/token operation failed.
+    #[error("payment error: {0}")]
+    PaymentError(String),
+
+    /// Wallet generation error.
+    #[error("wallet error: {0}")]
+    WalletError(String),
+}
+
+impl From<molt_token::MoltError> for MarketError {
+    fn from(e: molt_token::MoltError) -> Self {
+        Self::PaymentError(e.to_string())
+    }
 }
