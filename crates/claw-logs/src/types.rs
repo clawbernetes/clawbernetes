@@ -562,4 +562,239 @@ mod tests {
             }
         }
     }
+
+    // =========================================================================
+    // Additional Coverage Tests
+    // =========================================================================
+
+    #[test]
+    fn log_level_as_str_all() {
+        // All levels should have string representations
+        assert!(!LogLevel::Trace.as_str().is_empty());
+        assert!(!LogLevel::Debug.as_str().is_empty());
+        assert!(!LogLevel::Info.as_str().is_empty());
+        assert!(!LogLevel::Warn.as_str().is_empty());
+        assert!(!LogLevel::Error.as_str().is_empty());
+    }
+
+    #[test]
+    fn log_level_debug_format() {
+        let level = LogLevel::Info;
+        let debug = format!("{:?}", level);
+        assert!(debug.contains("Info"));
+    }
+
+    #[test]
+    fn log_level_clone() {
+        let level = LogLevel::Warn;
+        let cloned = level;
+        assert_eq!(level, cloned);
+    }
+
+    #[test]
+    fn log_level_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(LogLevel::Info);
+        set.insert(LogLevel::Warn);
+        set.insert(LogLevel::Info); // Duplicate
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn log_id_inner_value() {
+        let id = LogId(42);
+        assert_eq!(id.0, 42);
+    }
+
+    #[test]
+    fn log_id_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(LogId(1));
+        set.insert(LogId(2));
+        set.insert(LogId(1)); // Duplicate
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn log_id_clone() {
+        let id = LogId(42);
+        let cloned = id;
+        assert_eq!(id, cloned);
+    }
+
+    #[test]
+    fn log_id_debug() {
+        let id = LogId(123);
+        let debug = format!("{:?}", id);
+        assert!(debug.contains("LogId"));
+        assert!(debug.contains("123"));
+    }
+
+    #[test]
+    fn log_entry_with_fields() {
+        let entry = LogEntry::builder()
+            .id(LogId(1))
+            .timestamp(Utc::now())
+            .level(LogLevel::Info)
+            .message("test")
+            .workload_id(Uuid::new_v4())
+            .node_id(Uuid::new_v4())
+            .field("string_field", serde_json::json!("value"))
+            .field("number_field", serde_json::json!(42))
+            .field("bool_field", serde_json::json!(true))
+            .build()
+            .expect("should build");
+
+        assert_eq!(entry.fields.len(), 3);
+    }
+
+    #[test]
+    fn log_entry_clone() {
+        let entry = make_test_entry();
+        let cloned = entry.clone();
+        assert_eq!(entry.id, cloned.id);
+        assert_eq!(entry.message, cloned.message);
+    }
+
+    #[test]
+    fn log_entry_debug() {
+        let entry = make_test_entry();
+        let debug = format!("{:?}", entry);
+        assert!(debug.contains("LogEntry"));
+    }
+
+    #[test]
+    fn log_filter_clone() {
+        let filter = LogFilter::new()
+            .with_level(LogLevel::Info)
+            .with_contains("test");
+        let cloned = filter.clone();
+        assert_eq!(filter.levels, cloned.levels);
+        assert_eq!(filter.contains, cloned.contains);
+    }
+
+    #[test]
+    fn log_filter_debug() {
+        let filter = LogFilter::new();
+        let debug = format!("{:?}", filter);
+        assert!(debug.contains("LogFilter"));
+    }
+
+    #[test]
+    fn log_filter_multiple_criteria() {
+        let workload_id = Uuid::new_v4();
+        let node_id = Uuid::new_v4();
+
+        let entry = LogEntry {
+            id: LogId(1),
+            timestamp: Utc::now(),
+            level: LogLevel::Warn,
+            message: "Warning: disk space low".to_string(),
+            workload_id,
+            node_id,
+            fields: HashMap::new(),
+        };
+
+        // All criteria match
+        let filter = LogFilter::new()
+            .with_level(LogLevel::Warn)
+            .with_workload(workload_id)
+            .with_node(node_id)
+            .with_contains("disk");
+        assert!(entry.matches(&filter));
+
+        // One criterion doesn't match
+        let filter = LogFilter::new()
+            .with_level(LogLevel::Error); // Entry is Warn, not Error
+        assert!(!entry.matches(&filter));
+    }
+
+    #[test]
+    fn log_filter_serialization() {
+        let filter = LogFilter::new()
+            .with_level(LogLevel::Info)
+            .with_contains("test");
+        let json = serde_json::to_string(&filter).expect("serialize");
+        let parsed: LogFilter = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(filter.levels, parsed.levels);
+        assert_eq!(filter.contains, parsed.contains);
+    }
+
+    #[test]
+    fn time_range_unbounded() {
+        let range = TimeRange::new(None, None);
+        assert!(range.contains(Utc::now()));
+        assert!(range.contains(Utc::now() - chrono::Duration::days(365)));
+        assert!(range.contains(Utc::now() + chrono::Duration::days(365)));
+    }
+
+    #[test]
+    fn time_range_until() {
+        let end = Utc::now();
+        let range = TimeRange::new(None, Some(end));
+        assert!(range.contains(end - chrono::Duration::hours(1)));
+        assert!(!range.contains(end + chrono::Duration::hours(1)));
+    }
+
+    #[test]
+    fn time_range_clone() {
+        let now = Utc::now();
+        let range = TimeRange::new(Some(now), Some(now + chrono::Duration::hours(1)));
+        let cloned = range.clone();
+        assert_eq!(range.start, cloned.start);
+        assert_eq!(range.end, cloned.end);
+    }
+
+    #[test]
+    fn time_range_debug() {
+        let range = TimeRange::since(Utc::now());
+        let debug = format!("{:?}", range);
+        assert!(debug.contains("TimeRange"));
+    }
+
+    #[test]
+    fn time_range_serialization() {
+        let now = Utc::now();
+        let range = TimeRange::new(Some(now), Some(now + chrono::Duration::hours(1)));
+        let json = serde_json::to_string(&range).expect("serialize");
+        let parsed: TimeRange = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(range.start, parsed.start);
+    }
+
+    #[test]
+    fn log_entry_builder_defaults() {
+        // Builder with all required fields using defaults where possible
+        let entry = LogEntry::builder()
+            .id(LogId(0))
+            .timestamp(Utc::now())
+            .level(LogLevel::Trace)
+            .message("")
+            .workload_id(Uuid::nil())
+            .node_id(Uuid::nil())
+            .build()
+            .expect("should build with minimal values");
+
+        assert_eq!(entry.id, LogId(0));
+        assert!(entry.message.is_empty());
+        assert!(entry.fields.is_empty());
+    }
+
+    #[test]
+    fn filter_contains_case_insensitive() {
+        let entry = LogEntry {
+            id: LogId(1),
+            timestamp: Utc::now(),
+            level: LogLevel::Info,
+            message: "Hello World".to_string(),
+            workload_id: Uuid::new_v4(),
+            node_id: Uuid::new_v4(),
+            fields: HashMap::new(),
+        };
+
+        assert!(entry.matches(&LogFilter::new().with_contains("hello")));
+        assert!(entry.matches(&LogFilter::new().with_contains("HELLO")));
+        assert!(entry.matches(&LogFilter::new().with_contains("HeLLo WoRLD")));
+    }
 }
