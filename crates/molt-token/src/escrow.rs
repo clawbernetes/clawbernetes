@@ -4,6 +4,25 @@
 //! - Created when buyer requests compute
 //! - Released to provider on job completion
 //! - Refunded to buyer on job failure/cancellation
+//!
+//! ## Fee Calculation Precision
+//!
+//! Fee rates are stored as **basis points** (1 bp = 0.01%) for precision:
+//! - 500 bps = 5% fee
+//! - 100 bps = 1% fee
+//! - 1 bp = 0.01% fee
+//!
+//! All fee calculations use integer arithmetic to ensure:
+//! - No floating-point precision loss
+//! - Deterministic results across platforms
+//! - Overflow protection via checked arithmetic
+//!
+//! ### Precision Guarantees
+//!
+//! For any valid amount and fee rate:
+//! - `fee + payout <= amount` (never overpay)
+//! - `fee = floor(amount * fee_rate_bps / 10_000)` (fees round down)
+//! - No precision loss for amounts up to `u64::MAX`
 
 use crate::amount::Amount;
 use crate::error::{MoltError, Result};
@@ -12,6 +31,70 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use uuid::Uuid;
+
+/// Maximum fee rate in basis points (100% = 10,000 bps).
+/// Fees above this are rejected to prevent configuration errors.
+pub const MAX_FEE_RATE_BPS: u32 = 10_000;
+
+/// Basis points per percent (100 bps = 1%).
+pub const BPS_PER_PERCENT: u32 = 100;
+
+/// Calculate fee in lamports using integer arithmetic.
+///
+/// Formula: `fee = floor(amount_lamports * fee_rate_bps / 10_000)`
+///
+/// Uses 128-bit intermediate multiplication to prevent overflow,
+/// then safely converts back to u64 (guaranteed to fit since
+/// fee_rate_bps <= 10_000 means fee <= amount).
+///
+/// # Arguments
+///
+/// * `amount_lamports` - The base amount in lamports
+/// * `fee_rate_bps` - Fee rate in basis points (1 bp = 0.01%)
+///
+/// # Returns
+///
+/// The calculated fee in lamports, using floor division (rounds down).
+///
+/// # Precision Guarantees
+///
+/// - No precision loss: exact integer arithmetic
+/// - Overflow-safe: u128 intermediate handles u64::MAX * 10_000
+/// - Deterministic: same inputs always produce same output
+#[must_use]
+pub const fn calculate_fee_lamports(amount_lamports: u64, fee_rate_bps: u32) -> u64 {
+    // Use u128 to prevent overflow: u64::MAX * 10_000 fits in u128
+    let amount_wide = amount_lamports as u128;
+    let rate_wide = fee_rate_bps as u128;
+    
+    // fee = floor(amount * rate / 10_000)
+    // Since rate <= 10_000, result <= amount, so it fits in u64
+    let fee_wide = amount_wide * rate_wide / (MAX_FEE_RATE_BPS as u128);
+    
+    // Safe cast: fee <= amount (which is u64), so this can't overflow
+    fee_wide as u64
+}
+
+/// Calculate fee and payout together, ensuring they sum correctly.
+///
+/// Returns `(fee, payout)` where `fee + payout == amount` for valid rates,
+/// or `fee + payout <= amount` in edge cases.
+///
+/// # Arguments
+///
+/// * `amount_lamports` - The base amount in lamports
+/// * `fee_rate_bps` - Fee rate in basis points (1 bp = 0.01%)
+///
+/// # Returns
+///
+/// Tuple of `(fee_lamports, payout_lamports)`.
+#[must_use]
+pub const fn calculate_fee_and_payout(amount_lamports: u64, fee_rate_bps: u32) -> (u64, u64) {
+    let fee = calculate_fee_lamports(amount_lamports, fee_rate_bps);
+    // Saturating sub is defensive; shouldn't be needed since fee <= amount
+    let payout = amount_lamports.saturating_sub(fee);
+    (fee, payout)
+}
 
 /// Unique escrow identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -127,8 +210,13 @@ pub struct Escrow {
     /// Amount held in escrow.
     pub amount: Amount,
 
-    /// Network fee (percentage taken on release).
-    pub fee_rate: f64,
+    /// Network fee rate in basis points (1 bp = 0.01%).
+    /// 
+    /// Examples:
+    /// - 500 bps = 5% fee
+    /// - 100 bps = 1% fee
+    /// - 50 bps = 0.5% fee
+    pub fee_rate_bps: u32,
 
     /// Current state.
     pub state: EscrowState,
@@ -159,8 +247,8 @@ impl Escrow {
     /// Default escrow duration (24 hours).
     pub const DEFAULT_DURATION_HOURS: i64 = 24;
 
-    /// Default network fee rate (5%).
-    pub const DEFAULT_FEE_RATE: f64 = 0.05;
+    /// Default network fee rate in basis points (500 bps = 5%).
+    pub const DEFAULT_FEE_RATE_BPS: u32 = 500;
 
     /// Create a new escrow.
     #[must_use]
@@ -179,7 +267,7 @@ impl Escrow {
             buyer,
             provider,
             amount,
-            fee_rate: Self::DEFAULT_FEE_RATE,
+            fee_rate_bps: Self::DEFAULT_FEE_RATE_BPS,
             state: EscrowState::Creating,
             job_id,
             created_at: now,
@@ -191,18 +279,69 @@ impl Escrow {
         }
     }
 
+    /// Create a new escrow with a custom fee rate.
+    ///
+    /// # Arguments
+    ///
+    /// * `fee_rate_bps` - Fee rate in basis points (1 bp = 0.01%, max 10,000 = 100%)
+    ///
+    /// # Returns
+    ///
+    /// Returns `None` if fee rate exceeds `MAX_FEE_RATE_BPS` (10,000).
+    #[must_use]
+    pub fn with_fee_rate(
+        buyer: Address,
+        provider: Address,
+        amount: Amount,
+        job_id: String,
+        duration_hours: Option<i64>,
+        fee_rate_bps: u32,
+    ) -> Option<Self> {
+        if fee_rate_bps > MAX_FEE_RATE_BPS {
+            return None;
+        }
+        
+        let mut escrow = Self::new(buyer, provider, amount, job_id, duration_hours);
+        escrow.fee_rate_bps = fee_rate_bps;
+        Some(escrow)
+    }
+
+    /// Calculate the network fee using integer arithmetic.
+    ///
+    /// Formula: `fee = floor(amount * fee_rate_bps / 10_000)`
+    ///
+    /// Uses 128-bit intermediate to prevent overflow for large amounts.
+    ///
+    /// # Precision Guarantees
+    ///
+    /// - Fees always round down (floor division)
+    /// - No precision loss for any valid u64 amount
+    /// - Overflow-safe for all inputs
+    #[must_use]
+    pub fn network_fee(&self) -> Amount {
+        let fee_lamports = calculate_fee_lamports(self.amount.lamports(), self.fee_rate_bps);
+        Amount::from_lamports(fee_lamports)
+    }
+
     /// Calculate the provider payout (amount - fees).
+    ///
+    /// # Precision Guarantees
+    ///
+    /// - `payout = amount - fee`
+    /// - `payout + fee <= amount` (never overpay)
+    /// - Uses saturating subtraction (can't underflow)
     #[must_use]
     pub fn provider_payout(&self) -> Amount {
-        let fee_lamports = (self.amount.lamports() as f64 * self.fee_rate) as u64;
+        let fee_lamports = calculate_fee_lamports(self.amount.lamports(), self.fee_rate_bps);
         Amount::from_lamports(self.amount.lamports().saturating_sub(fee_lamports))
     }
 
-    /// Calculate the network fee.
+    /// Get the fee rate as a percentage (for display purposes only).
+    ///
+    /// Note: Internal calculations always use basis points to avoid precision loss.
     #[must_use]
-    pub fn network_fee(&self) -> Amount {
-        let fee_lamports = (self.amount.lamports() as f64 * self.fee_rate) as u64;
-        Amount::from_lamports(fee_lamports)
+    pub fn fee_rate_percent(&self) -> f64 {
+        f64::from(self.fee_rate_bps) / f64::from(BPS_PER_PERCENT)
     }
 
     /// Check if the escrow has expired.
@@ -323,6 +462,7 @@ impl Escrow {
 mod tests {
     use super::*;
     use crate::wallet::Wallet;
+    use crate::LAMPORTS_PER_MOLT;
 
     fn test_addresses() -> (Address, Address) {
         let buyer = Wallet::generate().expect("wallet 1").address().clone();
@@ -353,6 +493,7 @@ mod tests {
         assert_eq!(escrow.provider, provider);
         assert_eq!(escrow.amount, Amount::molt(10.0));
         assert_eq!(escrow.state, EscrowState::Creating);
+        assert_eq!(escrow.fee_rate_bps, Escrow::DEFAULT_FEE_RATE_BPS);
     }
 
     #[test]
@@ -369,9 +510,12 @@ mod tests {
         let payout = escrow.provider_payout();
         let fee = escrow.network_fee();
 
-        // 5% fee
+        // 5% fee (500 bps)
         assert!((fee.as_molt() - 5.0).abs() < 0.001);
         assert!((payout.as_molt() - 95.0).abs() < 0.001);
+        
+        // Verify fee + payout == amount (no loss)
+        assert_eq!(fee.lamports() + payout.lamports(), escrow.amount.lamports());
     }
 
     #[test]
@@ -451,9 +595,9 @@ mod tests {
             None,
         );
 
-        escrow.activate().unwrap();
-        escrow.start_refund().unwrap();
-        escrow.complete_refund("sig".to_string()).unwrap();
+        escrow.activate().expect("activate");
+        escrow.start_refund().expect("start refund");
+        escrow.complete_refund("sig".to_string()).expect("complete refund");
 
         // Cannot release after refund
         let result = escrow.start_release();
@@ -476,5 +620,262 @@ mod tests {
 
         assert_eq!(escrow.id, parsed.id);
         assert_eq!(escrow.amount, parsed.amount);
+        assert_eq!(escrow.fee_rate_bps, parsed.fee_rate_bps);
+    }
+
+    // =========================================================================
+    // Fee Calculation Precision Tests (MED-11 Fix)
+    // =========================================================================
+
+    #[test]
+    fn test_calculate_fee_lamports_basic() {
+        // 5% of 100 MOLT = 5 MOLT
+        let amount = 100 * LAMPORTS_PER_MOLT;
+        let fee = calculate_fee_lamports(amount, 500); // 500 bps = 5%
+        assert_eq!(fee, 5 * LAMPORTS_PER_MOLT);
+    }
+
+    #[test]
+    fn test_calculate_fee_lamports_zero_amount() {
+        let fee = calculate_fee_lamports(0, 500);
+        assert_eq!(fee, 0);
+    }
+
+    #[test]
+    fn test_calculate_fee_lamports_zero_rate() {
+        let fee = calculate_fee_lamports(1_000_000, 0);
+        assert_eq!(fee, 0);
+    }
+
+    #[test]
+    fn test_calculate_fee_lamports_full_rate() {
+        // 100% fee = 10,000 bps
+        let amount = 1_000_000u64;
+        let fee = calculate_fee_lamports(amount, MAX_FEE_RATE_BPS);
+        assert_eq!(fee, amount);
+    }
+
+    #[test]
+    fn test_calculate_fee_lamports_very_small_amount() {
+        // 1 lamport with 5% fee -> 0 (rounds down)
+        let fee = calculate_fee_lamports(1, 500);
+        assert_eq!(fee, 0);
+        
+        // 199 lamports with 5% fee -> 9 (floor(199 * 500 / 10000) = 9)
+        let fee = calculate_fee_lamports(199, 500);
+        assert_eq!(fee, 9);
+        
+        // 200 lamports with 5% fee -> 10 (exact)
+        let fee = calculate_fee_lamports(200, 500);
+        assert_eq!(fee, 10);
+    }
+
+    #[test]
+    fn test_calculate_fee_lamports_very_large_amount() {
+        // Test with u64::MAX - should not overflow
+        let fee = calculate_fee_lamports(u64::MAX, 500); // 5%
+        // 5% of u64::MAX should be approximately u64::MAX / 20
+        assert!(fee > 0);
+        assert!(fee <= u64::MAX / 20 + 1);
+        
+        // Verify it doesn't panic or overflow with max rate
+        let max_fee = calculate_fee_lamports(u64::MAX, MAX_FEE_RATE_BPS);
+        assert_eq!(max_fee, u64::MAX); // 100% fee = full amount
+    }
+
+    #[test]
+    fn test_calculate_fee_and_payout_invariant() {
+        // fee + payout should always equal amount for any inputs
+        let test_cases = [
+            (0u64, 0u32),
+            (0, 500),
+            (1, 500),
+            (100, 500),
+            (LAMPORTS_PER_MOLT, 500),
+            (100 * LAMPORTS_PER_MOLT, 500),
+            (u64::MAX, 500),
+            (1_000_000, 0),
+            (1_000_000, 1),
+            (1_000_000, 10_000),
+        ];
+        
+        for (amount, rate) in test_cases {
+            let (fee, payout) = calculate_fee_and_payout(amount, rate);
+            assert_eq!(
+                fee.saturating_add(payout), amount,
+                "fee + payout != amount for ({}, {}): {} + {} != {}",
+                amount, rate, fee, payout, amount
+            );
+        }
+    }
+
+    #[test]
+    fn test_fee_precision_no_floating_point_loss() {
+        // This test verifies that our integer arithmetic produces
+        // the same or better results than floating point would
+        
+        let (buyer, provider) = test_addresses();
+        
+        // Test edge case that would have precision issues with f64
+        // Amount that when multiplied by 0.05 gives a non-integer
+        let amount_lamports = 33u64; // 33 * 0.05 = 1.65
+        let escrow = Escrow::with_fee_rate(
+            buyer,
+            provider,
+            Amount::from_lamports(amount_lamports),
+            "job-1".to_string(),
+            None,
+            500, // 5%
+        ).expect("valid fee rate");
+        
+        let fee = escrow.network_fee();
+        let payout = escrow.provider_payout();
+        
+        // Integer math: floor(33 * 500 / 10000) = floor(1.65) = 1
+        assert_eq!(fee.lamports(), 1);
+        assert_eq!(payout.lamports(), 32);
+        
+        // Verify no loss: fee + payout == original amount
+        assert_eq!(fee.lamports() + payout.lamports(), amount_lamports);
+    }
+
+    #[test]
+    fn test_with_fee_rate_valid() {
+        let (buyer, provider) = test_addresses();
+        
+        let escrow = Escrow::with_fee_rate(
+            buyer.clone(),
+            provider.clone(),
+            Amount::molt(100.0),
+            "job-1".to_string(),
+            None,
+            100, // 1%
+        );
+        assert!(escrow.is_some());
+        let escrow = escrow.expect("valid");
+        assert_eq!(escrow.fee_rate_bps, 100);
+        
+        // Verify 1% fee
+        let fee = escrow.network_fee();
+        assert_eq!(fee.lamports(), LAMPORTS_PER_MOLT); // 1% of 100 = 1
+    }
+
+    #[test]
+    fn test_with_fee_rate_max() {
+        let (buyer, provider) = test_addresses();
+        
+        // 100% fee is valid (though unusual)
+        let escrow = Escrow::with_fee_rate(
+            buyer,
+            provider,
+            Amount::molt(100.0),
+            "job-1".to_string(),
+            None,
+            10_000, // 100%
+        );
+        assert!(escrow.is_some());
+        let escrow = escrow.expect("valid");
+        
+        // 100% fee means provider gets nothing
+        assert_eq!(escrow.network_fee().lamports(), escrow.amount.lamports());
+        assert_eq!(escrow.provider_payout().lamports(), 0);
+    }
+
+    #[test]
+    fn test_with_fee_rate_invalid() {
+        let (buyer, provider) = test_addresses();
+        
+        // Over 100% is invalid
+        let escrow = Escrow::with_fee_rate(
+            buyer,
+            provider,
+            Amount::molt(100.0),
+            "job-1".to_string(),
+            None,
+            10_001, // 100.01% - invalid
+        );
+        assert!(escrow.is_none());
+    }
+
+    #[test]
+    fn test_fee_rate_percent_conversion() {
+        let (buyer, provider) = test_addresses();
+        let escrow = Escrow::new(
+            buyer,
+            provider,
+            Amount::molt(100.0),
+            "job-1".to_string(),
+            None,
+        );
+        
+        // 500 bps = 5.0%
+        let percent = escrow.fee_rate_percent();
+        assert!((percent - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_fee_calculation_various_rates() {
+        let test_cases = [
+            (100 * LAMPORTS_PER_MOLT, 500, 5 * LAMPORTS_PER_MOLT),   // 5%
+            (100 * LAMPORTS_PER_MOLT, 100, LAMPORTS_PER_MOLT),       // 1%
+            (100 * LAMPORTS_PER_MOLT, 250, LAMPORTS_PER_MOLT * 5/2), // 2.5%
+            (100 * LAMPORTS_PER_MOLT, 1, LAMPORTS_PER_MOLT / 100),   // 0.01%
+            (1000, 500, 50),                                          // 5% of 1000
+            (999, 500, 49),                                           // 5% of 999 = 49.95 -> 49
+        ];
+        
+        for (amount, rate, expected_fee) in test_cases {
+            let fee = calculate_fee_lamports(amount, rate);
+            assert_eq!(
+                fee, expected_fee,
+                "Fee mismatch for amount={}, rate={}: got {}, expected {}",
+                amount, rate, fee, expected_fee
+            );
+        }
+    }
+
+    #[test]
+    fn test_basis_points_constants() {
+        assert_eq!(MAX_FEE_RATE_BPS, 10_000); // 100%
+        assert_eq!(BPS_PER_PERCENT, 100);     // 100 bps = 1%
+        assert_eq!(Escrow::DEFAULT_FEE_RATE_BPS, 500); // 5%
+    }
+
+    #[test]
+    fn test_fee_floor_division() {
+        // Verify that fees always round down (floor), favoring the user
+        // This is important for security - we never take more than calculated
+        
+        // 1 lamport at 1% should give 0 fee (not rounded up to 1)
+        assert_eq!(calculate_fee_lamports(1, 100), 0);
+        
+        // 99 lamports at 1% should give 0 fee (99 * 100 / 10000 = 0.99 -> 0)
+        assert_eq!(calculate_fee_lamports(99, 100), 0);
+        
+        // 100 lamports at 1% should give exactly 1 fee
+        assert_eq!(calculate_fee_lamports(100, 100), 1);
+        
+        // 101 lamports at 1% should still give 1 fee (1.01 -> 1)
+        assert_eq!(calculate_fee_lamports(101, 100), 1);
+    }
+
+    #[test]
+    fn test_escrow_default_fee_rate() {
+        let (buyer, provider) = test_addresses();
+        let escrow = Escrow::new(
+            buyer,
+            provider,
+            Amount::molt(100.0),
+            "job-1".to_string(),
+            None,
+        );
+        
+        // Default should be 5% (500 bps)
+        assert_eq!(escrow.fee_rate_bps, 500);
+        
+        // Verify calculation matches
+        let fee = escrow.network_fee();
+        let expected_fee = Amount::molt(5.0);
+        assert_eq!(fee.lamports(), expected_fee.lamports());
     }
 }

@@ -303,9 +303,6 @@ pub struct WireGossipMessage {
     pub version: u32,
 }
 
-/// Current wire protocol version.
-pub const WIRE_VERSION: u32 = 1;
-
 /// Message type constants for wire encoding.
 pub mod wire_types {
     /// Announce message type.
@@ -322,6 +319,128 @@ pub mod wire_types {
     pub const SYNC_RESPONSE: u32 = 6;
 }
 
+/// Protocol version for wire format compatibility.
+///
+/// This enum defines the supported protocol versions and provides
+/// compatibility checking between peers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ProtocolVersion {
+    /// Version 1: Initial protocol with basic message types.
+    /// Supports: `Announce`, `Query`, `Response`, `Heartbeat`, `SyncRequest`, `SyncResponse`
+    V1 = 1,
+}
+
+impl ProtocolVersion {
+    /// The current protocol version used for encoding.
+    pub const CURRENT: Self = Self::V1;
+
+    /// The minimum protocol version we can communicate with.
+    pub const MIN_COMPATIBLE: Self = Self::V1;
+
+    /// Creates a protocol version from a raw u32 value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the version is unknown or unsupported.
+    pub fn from_u32(value: u32) -> Result<Self, P2pError> {
+        match value {
+            0 => Err(P2pError::Protocol(
+                "Protocol version 0 is invalid".to_string(),
+            )),
+            1 => Ok(Self::V1),
+            v if v > Self::CURRENT as u32 => {
+                let max = Self::CURRENT as u32;
+                Err(P2pError::Protocol(format!(
+                    "Unsupported protocol version: {v} (max supported: {max})"
+                )))
+            }
+            v => Err(P2pError::Protocol(format!(
+                "Unknown protocol version: {v}"
+            ))),
+        }
+    }
+
+    /// Returns the raw u32 value of this version.
+    #[must_use]
+    pub const fn as_u32(self) -> u32 {
+        self as u32
+    }
+
+    /// Checks if this version is compatible with another version.
+    ///
+    /// Two versions are compatible if they can exchange messages.
+    /// Currently, all supported versions are backward compatible.
+    #[must_use]
+    pub fn is_compatible_with(self, other: Self) -> bool {
+        // Both versions must be at least MIN_COMPATIBLE
+        self >= Self::MIN_COMPATIBLE && other >= Self::MIN_COMPATIBLE
+    }
+
+    /// Checks if a message type is valid for this protocol version.
+    #[must_use]
+    pub fn is_valid_message_type(self, msg_type: u32) -> bool {
+        match self {
+            Self::V1 => {
+                matches!(
+                    msg_type,
+                    wire_types::ANNOUNCE
+                        | wire_types::QUERY
+                        | wire_types::RESPONSE
+                        | wire_types::HEARTBEAT
+                        | wire_types::SYNC_REQUEST
+                        | wire_types::SYNC_RESPONSE
+                )
+            }
+        }
+    }
+
+    /// Returns a human-readable description of message types supported by this version.
+    #[must_use]
+    pub const fn supported_message_types(self) -> &'static str {
+        match self {
+            Self::V1 => "Announce, Query, Response, Heartbeat, SyncRequest, SyncResponse",
+        }
+    }
+
+    /// Returns the maximum known message type value for this version.
+    #[must_use]
+    pub const fn max_message_type(self) -> u32 {
+        match self {
+            Self::V1 => wire_types::SYNC_RESPONSE,
+        }
+    }
+}
+
+impl Default for ProtocolVersion {
+    fn default() -> Self {
+        Self::CURRENT
+    }
+}
+
+impl std::fmt::Display for ProtocolVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "v{}", self.as_u32())
+    }
+}
+
+impl TryFrom<u32> for ProtocolVersion {
+    type Error = P2pError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Self::from_u32(value)
+    }
+}
+
+impl From<ProtocolVersion> for u32 {
+    fn from(version: ProtocolVersion) -> Self {
+        version.as_u32()
+    }
+}
+
+/// Current wire protocol version (for backward compatibility with existing code).
+#[allow(dead_code)]
+pub const WIRE_VERSION: u32 = ProtocolVersion::CURRENT.as_u32();
+
 impl GossipMessage {
     /// Encodes the message to prost wire format.
     ///
@@ -329,6 +448,16 @@ impl GossipMessage {
     ///
     /// Returns an error if JSON serialization fails.
     pub fn encode_wire(&self) -> Result<Vec<u8>, P2pError> {
+        self.encode_wire_with_version(ProtocolVersion::CURRENT)
+    }
+
+    /// Encodes the message to prost wire format with a specific protocol version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JSON serialization fails or the message type
+    /// is not supported by the specified protocol version.
+    pub fn encode_wire_with_version(&self, version: ProtocolVersion) -> Result<Vec<u8>, P2pError> {
         let msg_type = match self {
             Self::Announce { .. } => wire_types::ANNOUNCE,
             Self::Query(_) => wire_types::QUERY,
@@ -338,13 +467,22 @@ impl GossipMessage {
             Self::SyncResponse { .. } => wire_types::SYNC_RESPONSE,
         };
 
+        // Validate message type is supported by the target version
+        if !version.is_valid_message_type(msg_type) {
+            return Err(P2pError::Protocol(format!(
+                "Message type {} is not supported by protocol {}",
+                self.message_type(),
+                version
+            )));
+        }
+
         let payload = serde_json::to_vec(self)
             .map_err(|e| P2pError::Protocol(format!("Failed to serialize message: {e}")))?;
 
         let wire_msg = WireGossipMessage {
             msg_type,
             payload,
-            version: WIRE_VERSION,
+            version: version.as_u32(),
         };
 
         Ok(wire_msg.encode_to_vec())
@@ -354,20 +492,81 @@ impl GossipMessage {
     ///
     /// # Errors
     ///
-    /// Returns an error if the wire format is invalid or version is unsupported.
+    /// Returns an error if:
+    /// - The wire format is invalid
+    /// - The protocol version is unsupported or incompatible
+    /// - The message type is unknown for the protocol version
+    /// - The payload deserialization fails
     pub fn decode_wire(bytes: &[u8]) -> Result<Self, P2pError> {
         let wire_msg = WireGossipMessage::decode(bytes)
             .map_err(|e| P2pError::Protocol(format!("Failed to decode wire message: {e}")))?;
 
-        if wire_msg.version > WIRE_VERSION {
+        // Validate protocol version
+        let version = ProtocolVersion::from_u32(wire_msg.version)?;
+
+        // Ensure we're compatible with this version
+        if !ProtocolVersion::CURRENT.is_compatible_with(version) {
             return Err(P2pError::Protocol(format!(
-                "Unsupported wire version: {} (max supported: {})",
-                wire_msg.version, WIRE_VERSION
+                "Protocol version {} is not compatible with current version {}",
+                version,
+                ProtocolVersion::CURRENT
             )));
         }
 
+        // Validate message type for this protocol version
+        if !version.is_valid_message_type(wire_msg.msg_type) {
+            return Err(P2pError::Protocol(format!(
+                "Unknown message type {} for protocol version {} (supported: {})",
+                wire_msg.msg_type,
+                version,
+                version.supported_message_types()
+            )));
+        }
+
+        // Decode the payload
         serde_json::from_slice(&wire_msg.payload)
             .map_err(|e| P2pError::Protocol(format!("Failed to deserialize message: {e}")))
+    }
+
+    /// Decodes a message and returns both the message and the protocol version.
+    ///
+    /// This is useful when you need to know the sender's protocol version
+    /// for version negotiation or logging.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`decode_wire`].
+    pub fn decode_wire_with_version(bytes: &[u8]) -> Result<(Self, ProtocolVersion), P2pError> {
+        let wire_msg = WireGossipMessage::decode(bytes)
+            .map_err(|e| P2pError::Protocol(format!("Failed to decode wire message: {e}")))?;
+
+        // Validate protocol version
+        let version = ProtocolVersion::from_u32(wire_msg.version)?;
+
+        // Ensure we're compatible with this version
+        if !ProtocolVersion::CURRENT.is_compatible_with(version) {
+            return Err(P2pError::Protocol(format!(
+                "Protocol version {} is not compatible with current version {}",
+                version,
+                ProtocolVersion::CURRENT
+            )));
+        }
+
+        // Validate message type for this protocol version
+        if !version.is_valid_message_type(wire_msg.msg_type) {
+            return Err(P2pError::Protocol(format!(
+                "Unknown message type {} for protocol version {} (supported: {})",
+                wire_msg.msg_type,
+                version,
+                version.supported_message_types()
+            )));
+        }
+
+        // Decode the payload
+        let message: Self = serde_json::from_slice(&wire_msg.payload)
+            .map_err(|e| P2pError::Protocol(format!("Failed to deserialize message: {e}")))?;
+
+        Ok((message, version))
     }
 }
 
@@ -731,6 +930,254 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // ========== Protocol Version Tests ==========
+
+    #[test]
+    fn protocol_version_current_is_v1() {
+        assert_eq!(ProtocolVersion::CURRENT, ProtocolVersion::V1);
+        assert_eq!(ProtocolVersion::CURRENT.as_u32(), 1);
+    }
+
+    #[test]
+    fn protocol_version_from_u32_valid() {
+        let v1 = ProtocolVersion::from_u32(1);
+        assert!(v1.is_ok());
+        assert_eq!(v1.unwrap(), ProtocolVersion::V1);
+    }
+
+    #[test]
+    fn protocol_version_from_u32_zero_rejected() {
+        let result = ProtocolVersion::from_u32(0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("invalid"));
+    }
+
+    #[test]
+    fn protocol_version_from_u32_future_rejected() {
+        // Future version (beyond current)
+        let result = ProtocolVersion::from_u32(99);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Unsupported"));
+    }
+
+    #[test]
+    fn protocol_version_compatibility_same_version() {
+        assert!(ProtocolVersion::V1.is_compatible_with(ProtocolVersion::V1));
+    }
+
+    #[test]
+    fn protocol_version_try_from_trait() {
+        let result: Result<ProtocolVersion, _> = 1u32.try_into();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), ProtocolVersion::V1);
+
+        let result: Result<ProtocolVersion, _> = 99u32.try_into();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn protocol_version_into_u32() {
+        let v: u32 = ProtocolVersion::V1.into();
+        assert_eq!(v, 1);
+    }
+
+    #[test]
+    fn protocol_version_display() {
+        assert_eq!(format!("{}", ProtocolVersion::V1), "v1");
+    }
+
+    #[test]
+    fn protocol_version_default() {
+        assert_eq!(ProtocolVersion::default(), ProtocolVersion::CURRENT);
+    }
+
+    #[test]
+    fn protocol_version_valid_message_types_v1() {
+        // All V1 message types should be valid
+        assert!(ProtocolVersion::V1.is_valid_message_type(wire_types::ANNOUNCE));
+        assert!(ProtocolVersion::V1.is_valid_message_type(wire_types::QUERY));
+        assert!(ProtocolVersion::V1.is_valid_message_type(wire_types::RESPONSE));
+        assert!(ProtocolVersion::V1.is_valid_message_type(wire_types::HEARTBEAT));
+        assert!(ProtocolVersion::V1.is_valid_message_type(wire_types::SYNC_REQUEST));
+        assert!(ProtocolVersion::V1.is_valid_message_type(wire_types::SYNC_RESPONSE));
+    }
+
+    #[test]
+    fn protocol_version_invalid_message_types_v1() {
+        // Unknown message types should be invalid
+        assert!(!ProtocolVersion::V1.is_valid_message_type(0)); // Zero
+        assert!(!ProtocolVersion::V1.is_valid_message_type(7)); // Beyond known types
+        assert!(!ProtocolVersion::V1.is_valid_message_type(100)); // Far beyond
+        assert!(!ProtocolVersion::V1.is_valid_message_type(u32::MAX)); // Maximum
+    }
+
+    #[test]
+    fn protocol_version_supported_message_types_description() {
+        let desc = ProtocolVersion::V1.supported_message_types();
+        assert!(desc.contains("Announce"));
+        assert!(desc.contains("Query"));
+        assert!(desc.contains("Response"));
+        assert!(desc.contains("Heartbeat"));
+        assert!(desc.contains("SyncRequest"));
+        assert!(desc.contains("SyncResponse"));
+    }
+
+    #[test]
+    fn protocol_version_max_message_type() {
+        assert_eq!(ProtocolVersion::V1.max_message_type(), wire_types::SYNC_RESPONSE);
+    }
+
+    // ========== Wire Decode Version Validation Tests ==========
+
+    #[test]
+    fn wire_decode_rejects_version_zero() {
+        // Manually create a wire message with version 0
+        let msg = GossipMessage::heartbeat(make_peer_id());
+        let payload = serde_json::to_vec(&msg).expect("serialize");
+        let wire_msg = WireGossipMessage {
+            msg_type: wire_types::HEARTBEAT,
+            payload,
+            version: 0, // Invalid version
+        };
+        let encoded = wire_msg.encode_to_vec();
+
+        let result = GossipMessage::decode_wire(&encoded);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("invalid"));
+    }
+
+    #[test]
+    fn wire_decode_rejects_future_version() {
+        // Manually create a wire message with a future version
+        let msg = GossipMessage::heartbeat(make_peer_id());
+        let payload = serde_json::to_vec(&msg).expect("serialize");
+        let wire_msg = WireGossipMessage {
+            msg_type: wire_types::HEARTBEAT,
+            payload,
+            version: 99, // Future version
+        };
+        let encoded = wire_msg.encode_to_vec();
+
+        let result = GossipMessage::decode_wire(&encoded);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Unsupported"));
+    }
+
+    #[test]
+    fn wire_decode_rejects_unknown_message_type() {
+        // Manually create a wire message with an unknown message type
+        let msg = GossipMessage::heartbeat(make_peer_id());
+        let payload = serde_json::to_vec(&msg).expect("serialize");
+        let wire_msg = WireGossipMessage {
+            msg_type: 100, // Unknown message type
+            payload,
+            version: 1,
+        };
+        let encoded = wire_msg.encode_to_vec();
+
+        let result = GossipMessage::decode_wire(&encoded);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Unknown message type"));
+    }
+
+    #[test]
+    fn wire_decode_rejects_message_type_zero() {
+        // Message type 0 is not valid
+        let msg = GossipMessage::heartbeat(make_peer_id());
+        let payload = serde_json::to_vec(&msg).expect("serialize");
+        let wire_msg = WireGossipMessage {
+            msg_type: 0, // Invalid message type
+            payload,
+            version: 1,
+        };
+        let encoded = wire_msg.encode_to_vec();
+
+        let result = GossipMessage::decode_wire(&encoded);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Unknown message type"));
+    }
+
+    #[test]
+    fn wire_decode_with_version_returns_both() {
+        let peer_id = make_peer_id();
+        let msg = GossipMessage::heartbeat(peer_id);
+
+        let encoded = msg.encode_wire().expect("encoding should succeed");
+        let (decoded, version) = GossipMessage::decode_wire_with_version(&encoded)
+            .expect("decoding should succeed");
+
+        assert_eq!(version, ProtocolVersion::V1);
+        match decoded {
+            GossipMessage::Heartbeat { from_peer, .. } => {
+                assert_eq!(from_peer, peer_id);
+            }
+            _ => panic!("Expected Heartbeat message"),
+        }
+    }
+
+    #[test]
+    fn wire_encode_with_version() {
+        let msg = GossipMessage::heartbeat(make_peer_id());
+
+        let encoded = msg.encode_wire_with_version(ProtocolVersion::V1)
+            .expect("encoding should succeed");
+        let (decoded, version) = GossipMessage::decode_wire_with_version(&encoded)
+            .expect("decoding should succeed");
+
+        assert_eq!(version, ProtocolVersion::V1);
+        assert!(matches!(decoded, GossipMessage::Heartbeat { .. }));
+    }
+
+    #[test]
+    fn wire_decode_all_message_types_v1() {
+        // Verify all V1 message types can be encoded and decoded
+        let messages = vec![
+            GossipMessage::announce(make_announcement(), 3),
+            GossipMessage::query(make_peer_id(), QueryFilter::any(), 10, 5),
+            GossipMessage::response(MessageId::new(), make_peer_id(), vec![]),
+            GossipMessage::heartbeat(make_peer_id()),
+            GossipMessage::sync_request(make_peer_id(), 12345),
+            GossipMessage::sync_response(vec![]),
+        ];
+
+        for msg in messages {
+            let encoded = msg.encode_wire().expect("encoding should succeed");
+            let (decoded, version) = GossipMessage::decode_wire_with_version(&encoded)
+                .expect("decoding should succeed");
+
+            assert_eq!(version, ProtocolVersion::V1);
+            assert_eq!(decoded.message_type(), msg.message_type());
+        }
+    }
+
+    #[test]
+    fn wire_version_constant_matches_current() {
+        assert_eq!(WIRE_VERSION, ProtocolVersion::CURRENT.as_u32());
+    }
+
+    // ========== Version Negotiation Tests ==========
+
+    #[test]
+    fn version_negotiation_both_v1() {
+        // Simulate two peers both using V1
+        let sender_version = ProtocolVersion::V1;
+        let receiver_version = ProtocolVersion::V1;
+
+        assert!(sender_version.is_compatible_with(receiver_version));
+        assert!(receiver_version.is_compatible_with(sender_version));
+    }
+
+    #[test]
+    fn version_min_compatible_is_v1() {
+        assert_eq!(ProtocolVersion::MIN_COMPATIBLE, ProtocolVersion::V1);
+    }
+
     // ========== Proptest ==========
 
     mod proptest_tests {
@@ -778,6 +1225,51 @@ mod tests {
                     prop_assert!(decremented.is_some());
                     prop_assert_eq!(decremented.unwrap().ttl_hops, ttl - 1);
                 }
+            }
+
+            #[test]
+            fn protocol_version_from_u32_rejects_invalid(version in 2u32..1000) {
+                // All versions > 1 (current) should be rejected
+                let result = ProtocolVersion::from_u32(version);
+                prop_assert!(result.is_err());
+            }
+
+            #[test]
+            fn wire_decode_rejects_unknown_message_types(msg_type in 7u32..1000) {
+                // All message types > 6 should be rejected for V1
+                let msg = GossipMessage::heartbeat(make_peer_id());
+                let payload = serde_json::to_vec(&msg).ok();
+                if let Some(payload) = payload {
+                    let wire_msg = WireGossipMessage {
+                        msg_type,
+                        payload,
+                        version: 1,
+                    };
+                    let encoded = wire_msg.encode_to_vec();
+                    let result = GossipMessage::decode_wire(&encoded);
+                    prop_assert!(result.is_err());
+                }
+            }
+
+            #[test]
+            fn wire_encode_decode_roundtrip_all_versions(msg_type in 1u32..=6) {
+                // All valid message types for V1 should roundtrip successfully
+                let msg = match msg_type {
+                    1 => GossipMessage::announce(make_announcement(), 3),
+                    2 => GossipMessage::query(make_peer_id(), QueryFilter::any(), 10, 5),
+                    3 => GossipMessage::response(MessageId::new(), make_peer_id(), vec![]),
+                    4 => GossipMessage::heartbeat(make_peer_id()),
+                    5 => GossipMessage::sync_request(make_peer_id(), 12345),
+                    6 => GossipMessage::sync_response(vec![]),
+                    _ => unreachable!(),
+                };
+
+                let encoded = msg.encode_wire();
+                prop_assert!(encoded.is_ok());
+
+                let decoded = GossipMessage::decode_wire(&encoded.unwrap());
+                prop_assert!(decoded.is_ok());
+                prop_assert_eq!(decoded.unwrap().message_type(), msg.message_type());
             }
         }
     }

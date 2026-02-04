@@ -18,6 +18,6 @@ mod rate_limit;
 
 pub use announcement::{CapacityAnnouncement, GpuInfo, Pricing};
 pub use broadcast::{BroadcastConfig, BroadcastResult, GossipBroadcaster};
-pub use message::{GossipMessage, GossipQuery, MessageId, QueryFilter};
+pub use message::{GossipMessage, GossipQuery, MessageId, ProtocolVersion, QueryFilter};
 pub use node::{GossipEvent, GossipNode, LocalGossipNode, NodeState};
 pub use rate_limit::{RateLimitConfig, RateLimitResult, RateLimiter, RateLimiterStats};

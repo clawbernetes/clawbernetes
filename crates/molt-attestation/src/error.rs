@@ -50,4 +50,18 @@ pub enum AttestationError {
     /// Challenge is missing when required.
     #[error("challenge required but not provided")]
     ChallengeMissing,
+
+    /// Verification rate limit exceeded.
+    #[error("verification rate limit exceeded: must wait {remaining_secs}s before next verification")]
+    RateLimitExceeded {
+        /// Seconds remaining until next verification is allowed.
+        remaining_secs: u64,
+    },
+
+    /// Verification cooldown active after failed verification.
+    #[error("verification cooldown active: {remaining_secs}s remaining after failed verification")]
+    CooldownActive {
+        /// Seconds remaining in the cooldown period.
+        remaining_secs: u64,
+    },
 }

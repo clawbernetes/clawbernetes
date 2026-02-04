@@ -1,6 +1,7 @@
 //! Tests for P2P connection management.
 
 use super::*;
+use crate::diversity::PeerDiversityConfig;
 use crate::message::P2pMessage;
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
@@ -13,12 +14,35 @@ fn make_peer_id() -> PeerId {
     PeerId::from_public_key(&signing_key.verifying_key())
 }
 
+/// Creates a socket address with unique subnet for each port to avoid diversity limits.
+/// Uses different /24 subnets: 10.{port/256}.{port%256}.1
+/// This ensures each connection has a distinct /24 subnet.
 fn make_socket_addr(port: u16) -> SocketAddr {
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, port as u8)), port)
+    // Generate unique /24 subnet for each port
+    let octet2 = (port / 256) as u8;
+    let octet3 = (port % 256) as u8;
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, octet2, octet3, 1)), port)
+}
+
+/// Creates a socket address in a specific subnet for diversity testing.
+fn make_socket_addr_in_subnet(subnet: u8, host: u8, port: u16) -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, subnet, host)), port)
 }
 
 fn make_connection(port: u16) -> PeerConnection {
     PeerConnection::new(make_peer_id(), make_socket_addr(port))
+}
+
+/// Creates a connection pool with diversity disabled for tests that don't need it.
+fn make_pool_no_diversity() -> ConnectionPool {
+    let config = ConnectionPoolConfig::default().with_diversity(PeerDiversityConfig::disabled());
+    ConnectionPool::new(config)
+}
+
+/// Creates a connection pool with permissive diversity for most tests.
+fn make_pool_permissive() -> ConnectionPool {
+    let config = ConnectionPoolConfig::default().with_diversity(PeerDiversityConfig::permissive());
+    ConnectionPool::new(config)
 }
 
 // ========== ConnectionState Tests ==========
@@ -253,7 +277,7 @@ fn connection_pool_new() {
 
 #[test]
 fn connection_pool_add_connection() {
-    let mut pool = ConnectionPool::with_defaults();
+    let mut pool = make_pool_permissive();
     let conn = make_connection(8080);
     let peer_id = conn.peer_id();
 
@@ -265,7 +289,7 @@ fn connection_pool_add_connection() {
 
 #[test]
 fn connection_pool_add_duplicate_fails() {
-    let mut pool = ConnectionPool::with_defaults();
+    let mut pool = make_pool_permissive();
     let peer_id = make_peer_id();
     let addr = make_socket_addr(8080);
 
@@ -281,7 +305,7 @@ fn connection_pool_add_duplicate_fails() {
 
 #[test]
 fn connection_pool_max_connections() {
-    let config = ConnectionPoolConfig::new(2);
+    let config = ConnectionPoolConfig::new(2).with_diversity(PeerDiversityConfig::permissive());
     let mut pool = ConnectionPool::new(config);
 
     pool.add_connection(make_connection(8081))
@@ -297,7 +321,7 @@ fn connection_pool_max_connections() {
 
 #[test]
 fn connection_pool_get_and_get_mut() {
-    let mut pool = ConnectionPool::with_defaults();
+    let mut pool = make_pool_permissive();
     let conn = make_connection(8080);
     let peer_id = conn.peer_id();
 
@@ -322,7 +346,7 @@ fn connection_pool_get_and_get_mut() {
 
 #[test]
 fn connection_pool_remove() {
-    let mut pool = ConnectionPool::with_defaults();
+    let mut pool = make_pool_permissive();
     let conn = make_connection(8080);
     let peer_id = conn.peer_id();
 
@@ -337,7 +361,7 @@ fn connection_pool_remove() {
 
 #[test]
 fn connection_pool_active_count() {
-    let mut pool = ConnectionPool::with_defaults();
+    let mut pool = make_pool_permissive();
 
     let mut conn1 = make_connection(8081);
     let mut conn2 = make_connection(8082);
@@ -357,7 +381,7 @@ fn connection_pool_active_count() {
 
 #[test]
 fn connection_pool_peer_ids() {
-    let mut pool = ConnectionPool::with_defaults();
+    let mut pool = make_pool_permissive();
 
     let conn1 = make_connection(8081);
     let conn2 = make_connection(8082);
@@ -375,7 +399,7 @@ fn connection_pool_peer_ids() {
 
 #[test]
 fn connection_pool_active_connections() {
-    let mut pool = ConnectionPool::with_defaults();
+    let mut pool = make_pool_permissive();
 
     let mut conn1 = make_connection(8081);
     let mut conn2 = make_connection(8082);
@@ -395,7 +419,7 @@ fn connection_pool_active_connections() {
 
 #[test]
 fn connection_pool_connections_in_state() {
-    let mut pool = ConnectionPool::with_defaults();
+    let mut pool = make_pool_permissive();
 
     let mut conn1 = make_connection(8081);
     let mut conn2 = make_connection(8082);
@@ -418,7 +442,7 @@ fn connection_pool_connections_in_state() {
 
 #[test]
 fn connection_pool_cleanup_terminal() {
-    let mut pool = ConnectionPool::with_defaults();
+    let mut pool = make_pool_permissive();
 
     let mut conn1 = make_connection(8081);
     let mut conn2 = make_connection(8082);
@@ -443,7 +467,7 @@ fn connection_pool_cleanup_terminal() {
 
 #[test]
 fn connection_pool_iter() {
-    let mut pool = ConnectionPool::with_defaults();
+    let mut pool = make_pool_permissive();
 
     pool.add_connection(make_connection(8081)).expect("add");
     pool.add_connection(make_connection(8082)).expect("add");
@@ -454,7 +478,7 @@ fn connection_pool_iter() {
 
 #[test]
 fn connection_pool_iter_mut() {
-    let mut pool = ConnectionPool::with_defaults();
+    let mut pool = make_pool_permissive();
 
     pool.add_connection(make_connection(8081)).expect("add");
     pool.add_connection(make_connection(8082)).expect("add");
@@ -471,7 +495,8 @@ fn connection_pool_iter_mut() {
 
 #[tokio::test]
 async fn shared_connection_pool_basic_operations() {
-    let pool = SharedConnectionPool::with_defaults();
+    let config = ConnectionPoolConfig::default().with_diversity(PeerDiversityConfig::permissive());
+    let pool = SharedConnectionPool::new(config);
 
     assert!(pool.is_empty().await);
 
@@ -489,7 +514,8 @@ async fn shared_connection_pool_basic_operations() {
 
 #[tokio::test]
 async fn shared_connection_pool_concurrent_access() {
-    let pool = SharedConnectionPool::with_defaults();
+    let config = ConnectionPoolConfig::default().with_diversity(PeerDiversityConfig::permissive());
+    let pool = SharedConnectionPool::new(config);
 
     let pool1 = pool.clone();
     let pool2 = pool.clone();
@@ -517,7 +543,8 @@ async fn shared_connection_pool_concurrent_access() {
 
 #[tokio::test]
 async fn shared_connection_pool_cleanup_terminal() {
-    let pool = SharedConnectionPool::with_defaults();
+    let config = ConnectionPoolConfig::default().with_diversity(PeerDiversityConfig::permissive());
+    let pool = SharedConnectionPool::new(config);
 
     let mut conn1 = make_connection(8081);
     let mut conn2 = make_connection(8082);
@@ -851,6 +878,229 @@ async fn active_connection_concurrent_send() {
     assert_eq!(received, send_count);
 }
 
+// ========== Peer Diversity / Eclipse Attack Mitigation Tests ==========
+
+#[test]
+fn diversity_subnet_limit_enforced() {
+    // Create pool with max 2 peers per /24 subnet
+    let diversity_config = PeerDiversityConfig::default().with_max_per_ipv4_subnet(2);
+    let config = ConnectionPoolConfig::default().with_diversity(diversity_config);
+    let mut pool = ConnectionPool::new(config);
+
+    // Add first peer from 192.168.1.x - should succeed
+    let conn1 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 10, 8001));
+    assert!(pool.add_connection(conn1).is_ok());
+
+    // Add second peer from same subnet - should succeed
+    let conn2 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 20, 8002));
+    assert!(pool.add_connection(conn2).is_ok());
+
+    // Add third peer from same subnet - should FAIL due to diversity limit
+    let conn3 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 30, 8003));
+    let result = pool.add_connection(conn3);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), P2pError::DiversityLimitExceeded { .. }));
+
+    // Add peer from different subnet - should succeed
+    let conn4 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(2, 10, 8004));
+    assert!(pool.add_connection(conn4).is_ok());
+
+    assert_eq!(pool.len(), 3);
+}
+
+#[test]
+fn diversity_remove_restores_subnet_capacity() {
+    let diversity_config = PeerDiversityConfig::default().with_max_per_ipv4_subnet(1);
+    let config = ConnectionPoolConfig::default().with_diversity(diversity_config);
+    let mut pool = ConnectionPool::new(config);
+
+    // Add peer from subnet 1
+    let conn1 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 10, 8001));
+    let peer_id = conn1.peer_id();
+    pool.add_connection(conn1).expect("first should succeed");
+
+    // Second peer from same subnet should fail
+    let conn2 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 20, 8002));
+    assert!(pool.add_connection(conn2).is_err());
+
+    // Remove first peer
+    pool.remove(&peer_id);
+
+    // Now we should be able to add from that subnet again
+    let conn3 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 30, 8003));
+    assert!(pool.add_connection(conn3).is_ok());
+}
+
+#[test]
+fn diversity_asn_limit_enforced() {
+    let diversity_config = PeerDiversityConfig::default()
+        .with_max_per_asn(2)
+        .with_max_per_ipv4_subnet(100); // Don't trigger subnet limit
+    let config = ConnectionPoolConfig::default().with_diversity(diversity_config);
+    let mut pool = ConnectionPool::new(config);
+
+    let asn = Some(Asn(12345));
+
+    // Add two peers with same ASN from different subnets
+    let conn1 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 10, 8001));
+    pool.add_connection_with_metadata(conn1, asn, None).expect("first");
+
+    let conn2 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(2, 10, 8002));
+    pool.add_connection_with_metadata(conn2, asn, None).expect("second");
+
+    // Third peer with same ASN should fail
+    let conn3 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(3, 10, 8003));
+    let result = pool.add_connection_with_metadata(conn3, asn, None);
+    assert!(matches!(result.unwrap_err(), P2pError::DiversityLimitExceeded { .. }));
+
+    // Peer with different ASN should succeed
+    let conn4 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(4, 10, 8004));
+    assert!(pool.add_connection_with_metadata(conn4, Some(Asn(99999)), None).is_ok());
+}
+
+#[test]
+fn diversity_private_ip_rejection() {
+    let diversity_config = PeerDiversityConfig::default().with_private_ips(false);
+    let config = ConnectionPoolConfig::default().with_diversity(diversity_config);
+    let mut pool = ConnectionPool::new(config);
+
+    // Private IP (192.168.x.x) should be rejected
+    let conn1 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 10, 8001));
+    let result = pool.add_connection(conn1);
+    assert!(matches!(result.unwrap_err(), P2pError::PrivateIpRejected));
+
+    // Public IP should be accepted
+    let public_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 8002);
+    let conn2 = PeerConnection::new(make_peer_id(), public_addr);
+    assert!(pool.add_connection(conn2).is_ok());
+}
+
+#[test]
+fn diversity_disabled_allows_all() {
+    let diversity_config = PeerDiversityConfig::disabled();
+    let config = ConnectionPoolConfig::new(100).with_diversity(diversity_config);
+    let mut pool = ConnectionPool::new(config);
+
+    // Should allow many peers from same subnet when disabled
+    for i in 1..=10 {
+        let conn = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, i, 8000 + i as u16));
+        assert!(pool.add_connection(conn).is_ok(), "peer {} should be accepted", i);
+    }
+
+    assert_eq!(pool.len(), 10);
+}
+
+#[test]
+fn diversity_stats_tracking() {
+    let diversity_config = PeerDiversityConfig::default().with_max_per_ipv4_subnet(10);
+    let config = ConnectionPoolConfig::default().with_diversity(diversity_config);
+    let mut pool = ConnectionPool::new(config);
+
+    // Add peers from 3 different subnets
+    for subnet in 1..=3 {
+        for host in 1..=2 {
+            let conn = PeerConnection::new(
+                make_peer_id(),
+                make_socket_addr_in_subnet(subnet, host, 8000 + subnet as u16 * 10 + host as u16),
+            );
+            pool.add_connection(conn).expect("should add");
+        }
+    }
+
+    let stats = pool.diversity_stats();
+    assert_eq!(stats.total_peers, 6);
+    assert_eq!(stats.distinct_subnets, 3);
+    assert_eq!(stats.max_peers_per_subnet, 2);
+}
+
+#[test]
+fn diversity_would_accept_preflight_check() {
+    let diversity_config = PeerDiversityConfig::default().with_max_per_ipv4_subnet(1);
+    let config = ConnectionPoolConfig::default().with_diversity(diversity_config);
+    let mut pool = ConnectionPool::new(config);
+
+    let addr1 = make_socket_addr_in_subnet(1, 10, 8001);
+    let addr2 = make_socket_addr_in_subnet(1, 20, 8002);
+    let addr3 = make_socket_addr_in_subnet(2, 10, 8003);
+
+    // All should be acceptable initially
+    assert!(pool.would_accept(addr1, None).is_accepted());
+    assert!(pool.would_accept(addr2, None).is_accepted());
+
+    // Add first connection
+    let conn1 = PeerConnection::new(make_peer_id(), addr1);
+    pool.add_connection(conn1).expect("add");
+
+    // addr2 (same subnet) should no longer be acceptable
+    assert!(pool.would_accept(addr2, None).is_rejected());
+
+    // addr3 (different subnet) should still be acceptable
+    assert!(pool.would_accept(addr3, None).is_accepted());
+}
+
+#[test]
+fn diversity_cleanup_terminal_updates_tracking() {
+    let diversity_config = PeerDiversityConfig::default().with_max_per_ipv4_subnet(1);
+    let config = ConnectionPoolConfig::default().with_diversity(diversity_config);
+    let mut pool = ConnectionPool::new(config);
+
+    // Add and fail a connection
+    let mut conn1 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 10, 8001));
+    conn1.mark_failed("test");
+    pool.add_connection(conn1).expect("add");
+
+    // Can't add another from same subnet yet
+    let conn2 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 20, 8002));
+    assert!(pool.add_connection(conn2).is_err());
+
+    // Cleanup terminal connections
+    let cleaned = pool.cleanup_terminal();
+    assert_eq!(cleaned, 1);
+
+    // Now we can add from that subnet
+    let conn3 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 30, 8003));
+    assert!(pool.add_connection(conn3).is_ok());
+}
+
+#[test]
+fn diversity_config_builder() {
+    let config = ConnectionPoolConfig::new(50)
+        .with_diversity(
+            PeerDiversityConfig::strict()
+                .with_max_per_ipv4_subnet(3)
+                .with_max_per_asn(10)
+        );
+
+    assert_eq!(config.max_connections, 50);
+    assert_eq!(config.diversity.max_per_ipv4_subnet, 3);
+    assert_eq!(config.diversity.max_per_asn, 10);
+}
+
+#[test]
+fn diversity_geo_region_tracking() {
+    let diversity_config = PeerDiversityConfig::default()
+        .with_geo_diversity(true)
+        .with_max_per_ipv4_subnet(100);
+    let config = ConnectionPoolConfig::default().with_diversity(diversity_config);
+    let mut pool = ConnectionPool::new(config);
+
+    // Add peers with geo regions
+    let conn1 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(1, 10, 8001));
+    pool.add_connection_with_metadata(conn1, None, Some(GeoRegion("US".to_string())))
+        .expect("add US");
+
+    let conn2 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(2, 10, 8002));
+    pool.add_connection_with_metadata(conn2, None, Some(GeoRegion("EU".to_string())))
+        .expect("add EU");
+
+    let conn3 = PeerConnection::new(make_peer_id(), make_socket_addr_in_subnet(3, 10, 8003));
+    pool.add_connection_with_metadata(conn3, None, Some(GeoRegion("APAC".to_string())))
+        .expect("add APAC");
+
+    let stats = pool.diversity_stats();
+    assert_eq!(stats.distinct_regions, 3);
+}
+
 // ========== Proptest ==========
 
 mod proptest_tests {
@@ -878,11 +1128,15 @@ mod proptest_tests {
 
         #[test]
         fn connection_pool_add_up_to_max(max_conns in 1usize..20) {
-            let config = ConnectionPoolConfig::new(max_conns);
+            // Use permissive diversity and unique subnets
+            let config = ConnectionPoolConfig::new(max_conns)
+                .with_diversity(PeerDiversityConfig::permissive());
             let mut pool = ConnectionPool::new(config);
 
             for i in 0..max_conns {
-                let result = pool.add_connection(make_connection(8000 + i as u16));
+                // Use different subnets to avoid diversity limits
+                let port = 8000 + i as u16;
+                let result = pool.add_connection(make_connection(port));
                 prop_assert!(result.is_ok());
             }
 
@@ -911,6 +1165,37 @@ mod proptest_tests {
                 conn.mark_disconnected();
                 prop_assert_eq!(conn.state(), ConnectionState::Disconnected);
             }
+        }
+
+        #[test]
+        fn diversity_subnet_limit_respects_config(
+            max_per_subnet in 1usize..5,
+            peers_to_add in 1usize..10
+        ) {
+            let diversity_config = PeerDiversityConfig::default()
+                .with_max_per_ipv4_subnet(max_per_subnet);
+            let config = ConnectionPoolConfig::new(100).with_diversity(diversity_config);
+            let mut pool = ConnectionPool::new(config);
+
+            let mut accepted = 0;
+            let mut rejected = 0;
+
+            // Try to add peers all from same subnet
+            for i in 0..peers_to_add {
+                let conn = PeerConnection::new(
+                    make_peer_id(),
+                    make_socket_addr_in_subnet(1, i as u8 + 1, 8000 + i as u16)
+                );
+                if pool.add_connection(conn).is_ok() {
+                    accepted += 1;
+                } else {
+                    rejected += 1;
+                }
+            }
+
+            // Should accept exactly max_per_subnet
+            prop_assert_eq!(accepted, max_per_subnet.min(peers_to_add));
+            prop_assert_eq!(rejected, peers_to_add.saturating_sub(max_per_subnet));
         }
     }
 }

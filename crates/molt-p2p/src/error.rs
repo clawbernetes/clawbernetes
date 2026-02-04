@@ -44,4 +44,15 @@ pub enum P2pError {
         /// The peer that was banned.
         peer_id: PeerId,
     },
+
+    /// Connection rejected due to peer diversity constraints (eclipse attack mitigation).
+    #[error("peer diversity limit exceeded: {reason}")]
+    DiversityLimitExceeded {
+        /// Human-readable reason for rejection.
+        reason: String,
+    },
+
+    /// Connection rejected because private IPs are not allowed.
+    #[error("private IP addresses are not allowed")]
+    PrivateIpRejected,
 }

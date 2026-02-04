@@ -57,6 +57,19 @@ pub enum MarketError {
         /// The actual role of the caller.
         caller_role: String,
     },
+
+    /// Escrow has expired due to timeout.
+    /// 
+    /// SECURITY: This error is returned when an operation is attempted on an
+    /// escrow that has exceeded its timeout duration. Expired escrows can only
+    /// be finalized via the `expire()` method which auto-refunds the buyer.
+    #[error("escrow expired: {job_id} timed out after {timeout_days} days")]
+    EscrowExpired {
+        /// The job ID of the expired escrow.
+        job_id: String,
+        /// The timeout duration in days.
+        timeout_days: u64,
+    },
 }
 
 impl From<molt_token::MoltError> for MarketError {

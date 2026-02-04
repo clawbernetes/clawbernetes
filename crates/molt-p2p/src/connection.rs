@@ -5,13 +5,15 @@
 //! - [`ConnectionPool`]: Manages multiple peer connections
 //! - [`MessageChannel`]: Bidirectional message channel for peer communication
 //! - Connection lifecycle (connect, disconnect, health monitoring)
+//! - Peer diversity enforcement for eclipse attack mitigation
 
+use crate::diversity::{Asn, DiversityResult, GeoRegion, PeerDiversityConfig, PeerDiversityTracker};
 use crate::error::P2pError;
 use crate::message::P2pMessage;
 use crate::protocol::PeerId;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
@@ -527,6 +529,8 @@ pub struct ConnectionPoolConfig {
     pub ping_interval: Duration,
     /// Maximum time without activity before considering connection unhealthy.
     pub max_silence: Duration,
+    /// Peer diversity configuration for eclipse attack mitigation.
+    pub diversity: PeerDiversityConfig,
 }
 
 impl Default for ConnectionPoolConfig {
@@ -536,6 +540,7 @@ impl Default for ConnectionPoolConfig {
             connect_timeout: Duration::from_secs(10),
             ping_interval: Duration::from_secs(30),
             max_silence: Duration::from_secs(90),
+            diversity: PeerDiversityConfig::default(),
         }
     }
 }
@@ -543,12 +548,13 @@ impl Default for ConnectionPoolConfig {
 impl ConnectionPoolConfig {
     /// Creates a new configuration with the given max connections.
     #[must_use]
-    pub const fn new(max_connections: usize) -> Self {
+    pub fn new(max_connections: usize) -> Self {
         Self {
             max_connections,
             connect_timeout: Duration::from_secs(10),
             ping_interval: Duration::from_secs(30),
             max_silence: Duration::from_secs(90),
+            diversity: PeerDiversityConfig::default(),
         }
     }
 
@@ -572,22 +578,32 @@ impl ConnectionPoolConfig {
         self.max_silence = duration;
         self
     }
+
+    /// Sets the peer diversity configuration.
+    #[must_use]
+    pub fn with_diversity(mut self, diversity: PeerDiversityConfig) -> Self {
+        self.diversity = diversity;
+        self
+    }
 }
 
-/// Manages a pool of peer connections.
+/// Manages a pool of peer connections with diversity enforcement.
 #[derive(Debug)]
 pub struct ConnectionPool {
     config: ConnectionPoolConfig,
     connections: HashMap<PeerId, PeerConnection>,
+    diversity_tracker: PeerDiversityTracker,
 }
 
 impl ConnectionPool {
     /// Creates a new connection pool with the given configuration.
     #[must_use]
     pub fn new(config: ConnectionPoolConfig) -> Self {
+        let diversity_tracker = PeerDiversityTracker::new(config.diversity.clone());
         Self {
             config,
             connections: HashMap::new(),
+            diversity_tracker,
         }
     }
 
@@ -599,8 +615,14 @@ impl ConnectionPool {
 
     /// Returns the pool configuration.
     #[must_use]
-    pub const fn config(&self) -> &ConnectionPoolConfig {
+    pub fn config(&self) -> &ConnectionPoolConfig {
         &self.config
+    }
+
+    /// Returns a reference to the diversity tracker.
+    #[must_use]
+    pub fn diversity_tracker(&self) -> &PeerDiversityTracker {
+        &self.diversity_tracker
     }
 
     /// Returns the number of connections in the pool.
@@ -631,8 +653,25 @@ impl ConnectionPool {
     ///
     /// # Errors
     ///
-    /// Returns an error if the pool is full or if a connection to this peer already exists.
+    /// Returns an error if:
+    /// - The pool is full
+    /// - A connection to this peer already exists
+    /// - The connection violates diversity constraints (eclipse attack mitigation)
     pub fn add_connection(&mut self, conn: PeerConnection) -> Result<(), P2pError> {
+        self.add_connection_with_metadata(conn, None, None)
+    }
+
+    /// Adds a new connection with optional AS and geo metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pool is full, connection exists, or diversity limits exceeded.
+    pub fn add_connection_with_metadata(
+        &mut self,
+        conn: PeerConnection,
+        asn: Option<Asn>,
+        geo_region: Option<GeoRegion>,
+    ) -> Result<(), P2pError> {
         if self.is_full() {
             return Err(P2pError::Connection(format!(
                 "Connection pool is full (max: {})",
@@ -647,8 +686,49 @@ impl ConnectionPool {
             )));
         }
 
-        self.connections.insert(conn.peer_id, conn);
-        Ok(())
+        // Check diversity constraints
+        let ip = conn.remote_addr.ip();
+        let diversity_result = self.diversity_tracker.check_and_add(ip, asn, geo_region);
+
+        match diversity_result {
+            DiversityResult::Accepted | DiversityResult::Disabled => {
+                self.connections.insert(conn.peer_id, conn);
+                Ok(())
+            }
+            DiversityResult::RejectedPrivateIp => Err(P2pError::PrivateIpRejected),
+            other => {
+                if let Some(reason) = other.rejection_reason() {
+                    Err(P2pError::DiversityLimitExceeded { reason })
+                } else {
+                    // Should not happen, but handle gracefully
+                    Err(P2pError::DiversityLimitExceeded {
+                        reason: "unknown diversity constraint".to_string(),
+                    })
+                }
+            }
+        }
+    }
+
+    /// Checks if a connection would be accepted based on diversity constraints.
+    ///
+    /// Does NOT add the connection; use this for pre-flight checks.
+    #[must_use]
+    pub fn would_accept(&self, addr: SocketAddr, asn: Option<Asn>) -> DiversityResult {
+        if self.is_full() {
+            return DiversityResult::RejectedSubnetLimit {
+                subnet: "pool".to_string(),
+                current: self.connections.len(),
+                limit: self.config.max_connections,
+            };
+        }
+
+        self.diversity_tracker.check(addr.ip(), asn)
+    }
+
+    /// Returns diversity statistics for the current peer set.
+    #[must_use]
+    pub fn diversity_stats(&self) -> crate::diversity::DiversityStats {
+        self.diversity_tracker.stats()
     }
 
     /// Gets a reference to a connection by peer ID.
@@ -664,8 +744,17 @@ impl ConnectionPool {
     }
 
     /// Removes a connection from the pool.
+    ///
+    /// Also removes the peer from diversity tracking, freeing up capacity
+    /// for new connections from the same subnet/AS.
     pub fn remove(&mut self, peer_id: &PeerId) -> Option<PeerConnection> {
-        self.connections.remove(peer_id)
+        if let Some(conn) = self.connections.remove(peer_id) {
+            // Remove from diversity tracker
+            self.diversity_tracker.remove(conn.remote_addr.ip());
+            Some(conn)
+        } else {
+            None
+        }
     }
 
     /// Returns true if the pool contains a connection to the given peer.
@@ -699,17 +788,20 @@ impl ConnectionPool {
     }
 
     /// Removes all connections in terminal states (Disconnected, Failed).
+    ///
+    /// Also updates diversity tracking for removed connections.
     pub fn cleanup_terminal(&mut self) -> usize {
-        let to_remove: Vec<PeerId> = self
+        let to_remove: Vec<(PeerId, IpAddr)> = self
             .connections
             .iter()
             .filter(|(_, c)| c.state().is_terminal())
-            .map(|(id, _)| *id)
+            .map(|(id, c)| (*id, c.remote_addr.ip()))
             .collect();
 
         let count = to_remove.len();
-        for peer_id in to_remove {
+        for (peer_id, ip) in to_remove {
             self.connections.remove(&peer_id);
+            self.diversity_tracker.remove(ip);
         }
         count
     }

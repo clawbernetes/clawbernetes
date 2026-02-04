@@ -232,26 +232,102 @@ impl AttestationEntry {
     }
 }
 
+/// Configuration for verification rate limiting.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Minimum time between verifications in seconds (default: 3600 = 1 hour).
+    pub min_verification_interval_secs: u64,
+    /// Cooldown period after a failed verification in seconds (default: 7200 = 2 hours).
+    pub failed_verification_cooldown_secs: u64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            min_verification_interval_secs: 3600,      // 1 hour
+            failed_verification_cooldown_secs: 7200,   // 2 hours
+        }
+    }
+}
+
+impl RateLimitConfig {
+    /// Create a new rate limit config with custom values.
+    #[must_use]
+    pub const fn new(min_verification_interval_secs: u64, failed_verification_cooldown_secs: u64) -> Self {
+        Self {
+            min_verification_interval_secs,
+            failed_verification_cooldown_secs,
+        }
+    }
+
+    /// Create a config with no rate limiting (for testing).
+    #[must_use]
+    pub const fn no_limit() -> Self {
+        Self {
+            min_verification_interval_secs: 0,
+            failed_verification_cooldown_secs: 0,
+        }
+    }
+}
+
 /// A chain of hardware attestation verification events.
 ///
 /// This provides an auditable history of attestation verifications for a node,
 /// enabling trust accumulation over time.
+///
+/// ## Rate Limiting
+///
+/// The chain includes rate limiting to prevent trust score manipulation via rapid
+/// re-verification. This protects against attackers artificially inflating their
+/// trust scores by repeatedly verifying.
+///
+/// - **Minimum verification interval**: Enforces a minimum time between successful verifications
+/// - **Failed verification cooldown**: Applies a longer cooldown after failed verifications
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationChain {
     /// The node this chain is tracking.
     node_id: Uuid,
     /// Ordered list of attestation entries.
     entries: Vec<AttestationEntry>,
+    /// Rate limiting configuration.
+    #[serde(default)]
+    rate_limit_config: RateLimitConfig,
+    /// Timestamp of the last failed verification (for cooldown tracking).
+    last_failed_verification: Option<DateTime<Utc>>,
 }
 
 impl AttestationChain {
-    /// Create a new attestation chain for a node.
+    /// Create a new attestation chain for a node with default rate limiting.
     #[must_use]
     pub fn new(node_id: Uuid) -> Self {
         Self {
             node_id,
             entries: Vec::new(),
+            rate_limit_config: RateLimitConfig::default(),
+            last_failed_verification: None,
         }
+    }
+
+    /// Create a new attestation chain with custom rate limit configuration.
+    #[must_use]
+    pub fn with_rate_limit(node_id: Uuid, config: RateLimitConfig) -> Self {
+        Self {
+            node_id,
+            entries: Vec::new(),
+            rate_limit_config: config,
+            last_failed_verification: None,
+        }
+    }
+
+    /// Get the current rate limit configuration.
+    #[must_use]
+    pub const fn rate_limit_config(&self) -> &RateLimitConfig {
+        &self.rate_limit_config
+    }
+
+    /// Set a new rate limit configuration.
+    pub fn set_rate_limit_config(&mut self, config: RateLimitConfig) {
+        self.rate_limit_config = config;
     }
 
     /// Get the node ID this chain is tracking.
@@ -284,12 +360,122 @@ impl AttestationChain {
         self.entries.last().map(AttestationEntry::compute_hash)
     }
 
-    /// Add a verified attestation to the chain.
+    /// Check if a verification attempt is allowed based on rate limiting.
+    ///
+    /// Returns `Ok(())` if verification is allowed, or an error indicating
+    /// why it's not allowed (rate limit exceeded or cooldown active).
+    ///
+    /// # Errors
+    ///
+    /// Returns `AttestationError::RateLimitExceeded` if not enough time has passed
+    /// since the last verification.
+    /// Returns `AttestationError::CooldownActive` if a cooldown is in effect after
+    /// a failed verification.
+    pub fn check_rate_limit(&self) -> Result<(), AttestationError> {
+        let now = Utc::now();
+
+        // Check cooldown after failed verification first (takes precedence)
+        if let Some(last_failed) = self.last_failed_verification {
+            let elapsed = now.signed_duration_since(last_failed);
+            let cooldown_duration = chrono::Duration::seconds(
+                i64::try_from(self.rate_limit_config.failed_verification_cooldown_secs)
+                    .unwrap_or(i64::MAX)
+            );
+
+            if elapsed < cooldown_duration {
+                let remaining = cooldown_duration - elapsed;
+                let remaining_secs = u64::try_from(remaining.num_seconds().max(0))
+                    .unwrap_or(0);
+                return Err(AttestationError::CooldownActive { remaining_secs });
+            }
+        }
+
+        // Check minimum interval since last verification
+        if let Some(last_entry) = self.entries.last() {
+            let elapsed = now.signed_duration_since(last_entry.verified_at);
+            let min_interval = chrono::Duration::seconds(
+                i64::try_from(self.rate_limit_config.min_verification_interval_secs)
+                    .unwrap_or(i64::MAX)
+            );
+
+            if elapsed < min_interval {
+                let remaining = min_interval - elapsed;
+                let remaining_secs = u64::try_from(remaining.num_seconds().max(0))
+                    .unwrap_or(0);
+                return Err(AttestationError::RateLimitExceeded { remaining_secs });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the timestamp of the last verification attempt.
+    #[must_use]
+    pub fn last_verification_time(&self) -> Option<DateTime<Utc>> {
+        self.entries.last().map(|e| e.verified_at)
+    }
+
+    /// Get the timestamp of the last failed verification.
+    #[must_use]
+    pub const fn last_failed_verification_time(&self) -> Option<DateTime<Utc>> {
+        self.last_failed_verification
+    }
+
+    /// Check if a cooldown is currently active.
+    #[must_use]
+    pub fn is_cooldown_active(&self) -> bool {
+        matches!(self.check_rate_limit(), Err(AttestationError::CooldownActive { .. }))
+    }
+
+    /// Get the seconds remaining until the next verification is allowed.
+    /// Returns 0 if verification is currently allowed.
+    #[must_use]
+    pub fn seconds_until_verification_allowed(&self) -> u64 {
+        match self.check_rate_limit() {
+            Ok(()) => 0,
+            Err(AttestationError::RateLimitExceeded { remaining_secs }) => remaining_secs,
+            Err(AttestationError::CooldownActive { remaining_secs }) => remaining_secs,
+            Err(_) => 0,
+        }
+    }
+
+    /// Add a verified attestation to the chain with rate limiting.
+    ///
+    /// This method enforces rate limiting to prevent trust score manipulation.
+    /// Use `add_attestation_unchecked` if you need to bypass rate limiting
+    /// (e.g., for historical data import).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The attestation is for a different node
+    /// - Rate limit is exceeded (not enough time since last verification)
+    /// - Cooldown is active (after a failed verification)
+    pub fn add_attestation(
+        &mut self,
+        attestation: HardwareAttestation,
+        verification_passed: bool,
+    ) -> Result<(), AttestationError> {
+        // Check rate limit first
+        self.check_rate_limit()?;
+
+        // Delegate to unchecked version
+        self.add_attestation_unchecked(attestation, verification_passed)
+    }
+
+    /// Add a verified attestation to the chain without rate limiting checks.
+    ///
+    /// This bypasses rate limiting and should only be used for:
+    /// - Historical data import
+    /// - Testing
+    /// - Administrative operations
+    ///
+    /// For normal verification flows, use `add_attestation` instead.
     ///
     /// # Errors
     ///
     /// Returns an error if the attestation is for a different node.
-    pub fn add_attestation(
+    pub fn add_attestation_unchecked(
         &mut self,
         attestation: HardwareAttestation,
         verification_passed: bool,
@@ -302,15 +488,26 @@ impl AttestationChain {
         }
 
         let previous_hash = self.latest_hash();
+        let verified_at = Utc::now();
         let entry = AttestationEntry {
             attestation,
             previous_hash,
-            verified_at: Utc::now(),
+            verified_at,
             verification_passed,
         };
 
+        // Track failed verification for cooldown
+        if !verification_passed {
+            self.last_failed_verification = Some(verified_at);
+        }
+
         self.entries.push(entry);
         Ok(())
+    }
+
+    /// Clear the cooldown state (e.g., after administrative intervention).
+    pub fn clear_cooldown(&mut self) {
+        self.last_failed_verification = None;
     }
 
     /// Verify the integrity of the chain.
@@ -937,14 +1134,14 @@ mod tests {
         let node_id = Uuid::new_v4();
         let mut chain = AttestationChain::new(node_id);
 
-        // Add multiple attestations
+        // Add multiple attestations (using unchecked to bypass rate limit for test)
         for _ in 0..5 {
             let attestation =
                 HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
                     .expect("should create attestation");
 
             let verification_passed = attestation.verify(&verifying_key).is_ok();
-            chain.add_attestation(attestation, verification_passed).expect("should add");
+            chain.add_attestation_unchecked(attestation, verification_passed).expect("should add");
         }
 
         assert_eq!(chain.len(), 5);
@@ -963,7 +1160,7 @@ mod tests {
                     .expect("should create attestation");
 
             let passed = attestation.verify(&verifying_key).is_ok();
-            chain.add_attestation(attestation, passed).expect("should add");
+            chain.add_attestation_unchecked(attestation, passed).expect("should add");
         }
 
         let score = chain.trust_score();
@@ -981,8 +1178,8 @@ mod tests {
                 HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
                     .expect("should create attestation");
 
-            // Force failure
-            chain.add_attestation(attestation, false).expect("should add");
+            // Force failure (using unchecked to bypass cooldown for test)
+            chain.add_attestation_unchecked(attestation, false).expect("should add");
         }
 
         let score = chain.trust_score();
@@ -995,13 +1192,13 @@ mod tests {
         let node_id = Uuid::new_v4();
         let mut chain = AttestationChain::new(node_id);
 
-        // Add mix of passed and failed
+        // Add mix of passed and failed (using unchecked to bypass rate limit for test)
         for i in 0..10 {
             let attestation =
                 HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
                     .expect("should create attestation");
 
-            chain.add_attestation(attestation, i % 2 == 0).expect("should add");
+            chain.add_attestation_unchecked(attestation, i % 2 == 0).expect("should add");
         }
 
         let score = chain.trust_score();
@@ -1024,13 +1221,13 @@ mod tests {
         let node_id = Uuid::new_v4();
         let mut chain = AttestationChain::new(node_id);
 
-        // Add 3 passed and 2 failed
+        // Add 3 passed and 2 failed (using unchecked to bypass rate limit for test)
         for i in 0..5 {
             let attestation =
                 HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
                     .expect("should create attestation");
 
-            chain.add_attestation(attestation, i < 3).expect("should add");
+            chain.add_attestation_unchecked(attestation, i < 3).expect("should add");
         }
 
         assert_eq!(chain.successful_verification_count(), 3);
@@ -1046,11 +1243,11 @@ mod tests {
         // Empty chain has no time span
         assert!(chain.time_span().is_none());
 
-        // Single entry has no time span
+        // Single entry has no time span (using unchecked to bypass rate limit for test)
         let attestation =
             HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
                 .expect("should create attestation");
-        chain.add_attestation(attestation, true).expect("should add");
+        chain.add_attestation_unchecked(attestation, true).expect("should add");
         assert!(chain.time_span().is_none());
 
         // Multiple entries have a time span
@@ -1058,7 +1255,7 @@ mod tests {
         let attestation2 =
             HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
                 .expect("should create attestation");
-        chain.add_attestation(attestation2, true).expect("should add");
+        chain.add_attestation_unchecked(attestation2, true).expect("should add");
 
         let span = chain.time_span();
         assert!(span.is_some());
@@ -1233,6 +1430,333 @@ mod tests {
         assert_eq!(attestation.gpus.len(), 5);
         assert!(attestation.verify(&verifying_key).is_ok());
     }
+
+    // =========================================================================
+    // Rate Limiting Tests (MED-06: Trust Score Manipulation Protection)
+    // =========================================================================
+
+    #[test]
+    fn test_rate_limit_config_default() {
+        let config = RateLimitConfig::default();
+        assert_eq!(config.min_verification_interval_secs, 3600);  // 1 hour
+        assert_eq!(config.failed_verification_cooldown_secs, 7200);  // 2 hours
+    }
+
+    #[test]
+    fn test_rate_limit_config_no_limit() {
+        let config = RateLimitConfig::no_limit();
+        assert_eq!(config.min_verification_interval_secs, 0);
+        assert_eq!(config.failed_verification_cooldown_secs, 0);
+    }
+
+    #[test]
+    fn test_rate_limit_config_custom() {
+        let config = RateLimitConfig::new(1800, 3600);
+        assert_eq!(config.min_verification_interval_secs, 1800);  // 30 min
+        assert_eq!(config.failed_verification_cooldown_secs, 3600);  // 1 hour
+    }
+
+    #[test]
+    fn test_attestation_chain_with_rate_limit() {
+        let node_id = Uuid::new_v4();
+        let config = RateLimitConfig::new(60, 120);
+        let chain = AttestationChain::with_rate_limit(node_id, config);
+
+        assert_eq!(chain.rate_limit_config().min_verification_interval_secs, 60);
+        assert_eq!(chain.rate_limit_config().failed_verification_cooldown_secs, 120);
+    }
+
+    #[test]
+    fn test_rapid_reverification_rejected() {
+        let (signing_key, verifying_key) = create_keypair();
+        let node_id = Uuid::new_v4();
+        // Use 60 second rate limit for testing
+        let config = RateLimitConfig::new(60, 120);
+        let mut chain = AttestationChain::with_rate_limit(node_id, config);
+
+        // First verification should succeed
+        let attestation1 =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        let passed = attestation1.verify(&verifying_key).is_ok();
+        chain.add_attestation(attestation1, passed).expect("first should succeed");
+
+        // Immediate second verification should be rejected
+        let attestation2 =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        let passed = attestation2.verify(&verifying_key).is_ok();
+        let result = chain.add_attestation(attestation2, passed);
+        
+        assert!(matches!(result, Err(AttestationError::RateLimitExceeded { remaining_secs: _ })));
+    }
+
+    #[test]
+    fn test_normal_verification_cadence_works_with_no_limit() {
+        let (signing_key, verifying_key) = create_keypair();
+        let node_id = Uuid::new_v4();
+        // Use no rate limiting for this test
+        let config = RateLimitConfig::no_limit();
+        let mut chain = AttestationChain::with_rate_limit(node_id, config);
+
+        // Multiple rapid verifications should all succeed with no limit
+        for i in 0..5 {
+            let attestation =
+                HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                    .expect("should create attestation");
+            let passed = attestation.verify(&verifying_key).is_ok();
+            chain.add_attestation(attestation, passed)
+                .unwrap_or_else(|_| panic!("verification {} should succeed with no limit", i));
+        }
+
+        assert_eq!(chain.len(), 5);
+    }
+
+    #[test]
+    fn test_failed_verification_triggers_cooldown() {
+        let (signing_key, _) = create_keypair();
+        let node_id = Uuid::new_v4();
+        // Use short cooldown for testing
+        let config = RateLimitConfig::new(1, 60);  // 1 sec normal, 60 sec cooldown
+        let mut chain = AttestationChain::with_rate_limit(node_id, config);
+
+        // First verification fails
+        let attestation1 =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        // Add as failed (bypassing rate limit for first entry)
+        chain.add_attestation_unchecked(attestation1, false).expect("should add");
+
+        // Verify cooldown is active
+        assert!(chain.is_cooldown_active());
+        assert!(chain.last_failed_verification_time().is_some());
+
+        // Second attempt should be blocked by cooldown
+        let attestation2 =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        let result = chain.add_attestation(attestation2, true);
+        
+        assert!(matches!(result, Err(AttestationError::CooldownActive { remaining_secs: _ })));
+    }
+
+    #[test]
+    fn test_check_rate_limit_empty_chain() {
+        let node_id = Uuid::new_v4();
+        let chain = AttestationChain::new(node_id);
+
+        // Empty chain should allow verification
+        assert!(chain.check_rate_limit().is_ok());
+    }
+
+    #[test]
+    fn test_seconds_until_verification_allowed() {
+        let (signing_key, verifying_key) = create_keypair();
+        let node_id = Uuid::new_v4();
+        let config = RateLimitConfig::new(3600, 7200);  // 1 hour, 2 hours
+        let mut chain = AttestationChain::with_rate_limit(node_id, config);
+
+        // Empty chain should have 0 seconds wait
+        assert_eq!(chain.seconds_until_verification_allowed(), 0);
+
+        // After first verification, should have wait time
+        let attestation =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        let passed = attestation.verify(&verifying_key).is_ok();
+        chain.add_attestation(attestation, passed).expect("should add");
+
+        let wait_time = chain.seconds_until_verification_allowed();
+        assert!(wait_time > 3500);  // Should be close to 3600 seconds
+        assert!(wait_time <= 3600);
+    }
+
+    #[test]
+    fn test_clear_cooldown() {
+        let (signing_key, _) = create_keypair();
+        let node_id = Uuid::new_v4();
+        let config = RateLimitConfig::new(1, 3600);  // 1 sec normal, 1 hour cooldown
+        let mut chain = AttestationChain::with_rate_limit(node_id, config);
+
+        // Add a failed verification
+        let attestation =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        chain.add_attestation_unchecked(attestation, false).expect("should add");
+
+        // Cooldown should be active
+        assert!(chain.is_cooldown_active());
+
+        // Clear cooldown
+        chain.clear_cooldown();
+
+        // Cooldown should no longer be active (but rate limit still applies)
+        assert!(!chain.is_cooldown_active());
+        assert!(chain.last_failed_verification_time().is_none());
+    }
+
+    #[test]
+    fn test_last_verification_time() {
+        let (signing_key, verifying_key) = create_keypair();
+        let node_id = Uuid::new_v4();
+        let config = RateLimitConfig::no_limit();
+        let mut chain = AttestationChain::with_rate_limit(node_id, config);
+
+        // Empty chain has no last verification time
+        assert!(chain.last_verification_time().is_none());
+
+        let before = Utc::now();
+        let attestation =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        let passed = attestation.verify(&verifying_key).is_ok();
+        chain.add_attestation(attestation, passed).expect("should add");
+        let after = Utc::now();
+
+        let last_time = chain.last_verification_time().expect("should have time");
+        assert!(last_time >= before);
+        assert!(last_time <= after);
+    }
+
+    #[test]
+    fn test_set_rate_limit_config() {
+        let node_id = Uuid::new_v4();
+        let mut chain = AttestationChain::new(node_id);
+
+        // Default config
+        assert_eq!(chain.rate_limit_config().min_verification_interval_secs, 3600);
+
+        // Update config
+        let new_config = RateLimitConfig::new(1800, 3600);
+        chain.set_rate_limit_config(new_config);
+
+        assert_eq!(chain.rate_limit_config().min_verification_interval_secs, 1800);
+    }
+
+    #[test]
+    fn test_rate_limit_config_serialization() {
+        let config = RateLimitConfig::new(1800, 3600);
+        let json = serde_json::to_string(&config).expect("should serialize");
+        let deserialized: RateLimitConfig = serde_json::from_str(&json).expect("should deserialize");
+
+        assert_eq!(deserialized.min_verification_interval_secs, 1800);
+        assert_eq!(deserialized.failed_verification_cooldown_secs, 3600);
+    }
+
+    #[test]
+    fn test_attestation_chain_with_rate_limit_serialization() {
+        let (signing_key, verifying_key) = create_keypair();
+        let node_id = Uuid::new_v4();
+        let config = RateLimitConfig::new(60, 120);
+        let mut chain = AttestationChain::with_rate_limit(node_id, config);
+
+        let attestation =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        let passed = attestation.verify(&verifying_key).is_ok();
+        chain.add_attestation(attestation, passed).expect("should add");
+
+        let json = serde_json::to_string(&chain).expect("should serialize");
+        let deserialized: AttestationChain = serde_json::from_str(&json).expect("should deserialize");
+
+        assert_eq!(deserialized.rate_limit_config().min_verification_interval_secs, 60);
+        assert_eq!(deserialized.len(), 1);
+    }
+
+    #[test]
+    fn test_add_attestation_unchecked_bypasses_rate_limit() {
+        let (signing_key, verifying_key) = create_keypair();
+        let node_id = Uuid::new_v4();
+        // Use strict rate limiting
+        let config = RateLimitConfig::new(3600, 7200);
+        let mut chain = AttestationChain::with_rate_limit(node_id, config);
+
+        // Multiple rapid verifications with unchecked should all succeed
+        for _ in 0..5 {
+            let attestation =
+                HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                    .expect("should create attestation");
+            let passed = attestation.verify(&verifying_key).is_ok();
+            chain.add_attestation_unchecked(attestation, passed).expect("unchecked should succeed");
+        }
+
+        assert_eq!(chain.len(), 5);
+
+        // But regular add should fail
+        let attestation =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        let passed = attestation.verify(&verifying_key).is_ok();
+        let result = chain.add_attestation(attestation, passed);
+        assert!(matches!(result, Err(AttestationError::RateLimitExceeded { .. })));
+    }
+
+    #[test]
+    fn test_cooldown_takes_precedence_over_rate_limit() {
+        let (signing_key, _) = create_keypair();
+        let node_id = Uuid::new_v4();
+        // Both rate limit and cooldown active
+        let config = RateLimitConfig::new(60, 3600);  // 1 min rate limit, 1 hour cooldown
+        let mut chain = AttestationChain::with_rate_limit(node_id, config);
+
+        // Add a failed verification
+        let attestation =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        chain.add_attestation_unchecked(attestation, false).expect("should add");
+
+        // Check rate limit should return cooldown error (takes precedence)
+        let result = chain.check_rate_limit();
+        assert!(matches!(result, Err(AttestationError::CooldownActive { .. })));
+    }
+
+    #[test]
+    fn test_trust_score_not_affected_by_rate_limiting() {
+        let (signing_key, _) = create_keypair();
+        let node_id = Uuid::new_v4();
+        let config = RateLimitConfig::no_limit();
+        let mut chain = AttestationChain::with_rate_limit(node_id, config);
+
+        // Add some attestations
+        for _ in 0..10 {
+            let attestation =
+                HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                    .expect("should create attestation");
+            chain.add_attestation(attestation, true).expect("should add");
+        }
+
+        // Trust score should be 1.0 for all passed
+        let score = chain.trust_score();
+        assert!((score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_multiple_failed_verifications_extend_cooldown() {
+        let (signing_key, _) = create_keypair();
+        let node_id = Uuid::new_v4();
+        let config = RateLimitConfig::new(1, 60);  // 1 sec rate limit, 60 sec cooldown
+        let mut chain = AttestationChain::with_rate_limit(node_id, config);
+
+        // Add first failed verification
+        let attestation1 =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        chain.add_attestation_unchecked(attestation1, false).expect("should add");
+
+        let first_cooldown_end = chain.last_failed_verification_time().expect("should have time");
+
+        // Add second failed verification (bypassing rate limit)
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let attestation2 =
+            HardwareAttestation::create_and_sign(node_id, vec![create_test_gpu()], chrono::Duration::hours(24), &signing_key)
+                .expect("should create attestation");
+        chain.add_attestation_unchecked(attestation2, false).expect("should add");
+
+        let second_cooldown_end = chain.last_failed_verification_time().expect("should have time");
+
+        // Second failed verification should have reset the cooldown timer
+        assert!(second_cooldown_end > first_cooldown_end);
+    }
 }
 
 #[cfg(test)]
@@ -1375,7 +1899,8 @@ mod proptest_tests {
                 .expect("should create attestation");
 
                 let passed = attestation.verify(&verifying_key).is_ok();
-                chain.add_attestation(attestation, passed).expect("should add");
+                // Use unchecked to bypass rate limiting in proptest
+                chain.add_attestation_unchecked(attestation, passed).expect("should add");
             }
 
             prop_assert_eq!(chain.len(), count);
@@ -1409,7 +1934,8 @@ mod proptest_tests {
                     &signing_key,
                 )
                 .expect("should create attestation");
-                chain.add_attestation(attestation, true).expect("should add");
+                // Use unchecked to bypass rate limiting in proptest
+                chain.add_attestation_unchecked(attestation, true).expect("should add");
             }
 
             for _ in 0..failed_count {
@@ -1426,7 +1952,8 @@ mod proptest_tests {
                     &signing_key,
                 )
                 .expect("should create attestation");
-                chain.add_attestation(attestation, false).expect("should add");
+                // Use unchecked to bypass rate limiting and cooldown in proptest
+                chain.add_attestation_unchecked(attestation, false).expect("should add");
             }
 
             let score = chain.trust_score();

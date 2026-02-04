@@ -93,7 +93,7 @@ pub use error::AttestationError;
 
 // Re-export commonly used types
 pub use execution::{Checkpoint, CheckpointChain, ExecutionAttestation, ExecutionMetrics};
-pub use hardware::{AttestationChain, AttestationEntry, GpuInfo, GpuVendor, HardwareAttestation};
+pub use hardware::{AttestationChain, AttestationEntry, GpuInfo, GpuVendor, HardwareAttestation, RateLimitConfig};
 pub use verification::{
     batch_verify_execution, batch_verify_hardware, verify_execution_attestation,
     verify_execution_with_data, verify_hardware_attestation, VerificationDetails,
