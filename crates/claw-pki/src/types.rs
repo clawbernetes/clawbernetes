@@ -608,4 +608,243 @@ mod tests {
         let deserialized: KeyUsage = serde_json::from_str(&json).unwrap();
         assert_eq!(usage, deserialized);
     }
+
+    // =========================================================================
+    // Additional Coverage Tests
+    // =========================================================================
+
+    #[test]
+    fn certificate_id_default() {
+        let id = CertificateId::default();
+        // Default should create a new unique ID
+        assert!(!id.as_uuid().is_nil());
+    }
+
+    #[test]
+    fn certificate_id_equality() {
+        let uuid = Uuid::new_v4();
+        let id1 = CertificateId::from_uuid(uuid);
+        let id2 = CertificateId::from_uuid(uuid);
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn certificate_id_hash() {
+        use std::collections::HashSet;
+        let id1 = CertificateId::new();
+        let id2 = CertificateId::new();
+        let id3 = CertificateId::from_uuid(*id1.as_uuid());
+
+        let mut set = HashSet::new();
+        set.insert(id1);
+        set.insert(id2);
+        set.insert(id3); // Same as id1
+
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn key_usage_all_oids() {
+        assert_eq!(KeyUsage::ServerAuth.oid(), "1.3.6.1.5.5.7.3.1");
+        assert_eq!(KeyUsage::ClientAuth.oid(), "1.3.6.1.5.5.7.3.2");
+        assert_eq!(KeyUsage::CodeSigning.oid(), "1.3.6.1.5.5.7.3.3");
+    }
+
+    #[test]
+    fn key_usage_equality() {
+        assert_eq!(KeyUsage::ServerAuth, KeyUsage::ServerAuth);
+        assert_ne!(KeyUsage::ServerAuth, KeyUsage::ClientAuth);
+    }
+
+    #[test]
+    fn key_usage_clone() {
+        let usage = KeyUsage::CodeSigning;
+        let cloned = usage.clone();
+        assert_eq!(usage, cloned);
+    }
+
+    #[test]
+    fn key_usage_debug() {
+        let usage = KeyUsage::ServerAuth;
+        let debug = format!("{:?}", usage);
+        assert!(debug.contains("ServerAuth"));
+    }
+
+    #[test]
+    fn subject_alt_name_dns() {
+        let san = SubjectAltName::Dns("example.com".into());
+        assert!(matches!(san, SubjectAltName::Dns(s) if s == "example.com"));
+    }
+
+    #[test]
+    fn subject_alt_name_ip() {
+        let san = SubjectAltName::Ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+        assert!(matches!(san, SubjectAltName::Ip(ip) if ip == IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+    }
+
+    #[test]
+    fn subject_alt_name_email() {
+        let san = SubjectAltName::Email("test@example.com".into());
+        assert!(matches!(san, SubjectAltName::Email(e) if e == "test@example.com"));
+    }
+
+    #[test]
+    fn subject_alt_name_uri() {
+        let san = SubjectAltName::Uri("https://example.com".into());
+        assert!(matches!(san, SubjectAltName::Uri(u) if u == "https://example.com"));
+    }
+
+    #[test]
+    fn subject_alt_name_equality() {
+        let san1 = SubjectAltName::Dns("example.com".into());
+        let san2 = SubjectAltName::Dns("example.com".into());
+        let san3 = SubjectAltName::Dns("other.com".into());
+        assert_eq!(san1, san2);
+        assert_ne!(san1, san3);
+    }
+
+    #[test]
+    fn subject_alt_name_clone() {
+        let san = SubjectAltName::Dns("example.com".into());
+        let cloned = san.clone();
+        assert_eq!(san, cloned);
+    }
+
+    #[test]
+    fn certificate_request_builder_all_key_usages() {
+        let request = CertificateRequest::builder("test")
+            .validity_days(30)
+            .server_auth()
+            .client_auth()
+            .key_usage(KeyUsage::CodeSigning)
+            .build()
+            .unwrap();
+
+        assert_eq!(request.key_usage.len(), 3);
+        assert!(request.key_usage.contains(&KeyUsage::ServerAuth));
+        assert!(request.key_usage.contains(&KeyUsage::ClientAuth));
+        assert!(request.key_usage.contains(&KeyUsage::CodeSigning));
+    }
+
+    #[test]
+    fn certificate_request_builder_multiple_dns() {
+        let request = CertificateRequest::builder("test")
+            .validity_days(30)
+            .dns("example.com")
+            .dns("www.example.com")
+            .dns("api.example.com")
+            .server_auth()
+            .build()
+            .unwrap();
+
+        let dns_count = request.san.iter().filter(|s| matches!(s, SubjectAltName::Dns(_))).count();
+        assert_eq!(dns_count, 3);
+    }
+
+    #[test]
+    fn certificate_request_builder_multiple_ips() {
+        let request = CertificateRequest::builder("test")
+            .validity_days(30)
+            .ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)))
+            .ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)))
+            .server_auth()
+            .build()
+            .unwrap();
+
+        let ip_count = request.san.iter().filter(|s| matches!(s, SubjectAltName::Ip(_))).count();
+        assert_eq!(ip_count, 2);
+    }
+
+    #[test]
+    fn certificate_request_default_validity() {
+        let request = CertificateRequest::builder("test")
+            .server_auth()
+            .build()
+            .unwrap();
+
+        // Default validity should be set (usually 365 days)
+        assert!(request.validity_days > 0);
+    }
+
+    #[test]
+    fn private_key_der_access() {
+        let der_data = vec![1, 2, 3, 4, 5];
+        let key = PrivateKey::new(der_data.clone());
+        assert_eq!(key.der(), &der_data);
+    }
+
+    #[test]
+    fn certificate_debug() {
+        let cert = Certificate::new(
+            vec![1, 2, 3],
+            Utc::now(),
+            Utc::now(),
+            "subject".into(),
+            "issuer".into(),
+            vec![],
+        );
+        let debug = format!("{:?}", cert);
+        assert!(debug.contains("Certificate"));
+    }
+
+    #[test]
+    fn certificate_clone() {
+        let cert = Certificate::new(
+            vec![1, 2, 3],
+            Utc::now(),
+            Utc::now(),
+            "subject".into(),
+            "issuer".into(),
+            vec![],
+        );
+        let cloned = cert.clone();
+        assert_eq!(cert.subject(), cloned.subject());
+        assert_eq!(cert.der(), cloned.der());
+    }
+
+    #[test]
+    fn certificate_request_serialization() {
+        let request = CertificateRequest::builder("test")
+            .validity_days(30)
+            .dns("example.com")
+            .server_auth()
+            .build()
+            .unwrap();
+
+        let json = serde_json::to_string(&request).unwrap();
+        let deserialized: CertificateRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(request.subject, deserialized.subject);
+        assert_eq!(request.validity_days, deserialized.validity_days);
+    }
+
+    #[test]
+    fn certificate_with_empty_san() {
+        let cert = Certificate::new(
+            vec![1, 2, 3],
+            Utc::now(),
+            Utc::now(),
+            "subject".into(),
+            "issuer".into(),
+            vec![],
+        );
+        assert!(cert.san().is_empty());
+    }
+
+    #[test]
+    fn certificate_with_multiple_san() {
+        let san = vec![
+            SubjectAltName::Dns("example.com".into()),
+            SubjectAltName::Ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))),
+            SubjectAltName::Email("admin@example.com".into()),
+        ];
+        let cert = Certificate::new(
+            vec![1, 2, 3],
+            Utc::now(),
+            Utc::now(),
+            "subject".into(),
+            "issuer".into(),
+            san,
+        );
+        assert_eq!(cert.san().len(), 3);
+    }
 }
