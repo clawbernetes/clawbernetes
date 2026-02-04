@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use claw_gateway::{NodeRegistry, WorkloadManager};
+use claw_gateway::{NodeRegistry, WorkloadLogStore, WorkloadManager};
 use claw_proto::{GatewayMessage, NodeId, NodeMessage};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, Mutex};
@@ -284,6 +284,7 @@ pub async fn run_session<S>(
     session: Arc<Mutex<NodeSession>>,
     registry: Arc<Mutex<NodeRegistry>>,
     workload_mgr: Arc<Mutex<WorkloadManager>>,
+    log_store: Arc<Mutex<WorkloadLogStore>>,
     config: Arc<ServerConfig>,
     mut outbound_rx: SessionReceiver,
 ) -> ServerResult<()>
@@ -306,6 +307,7 @@ where
     let read_session = session.clone();
     let read_registry = registry.clone();
     let read_workload_mgr = workload_mgr.clone();
+    let read_log_store = log_store.clone();
     let read_config = config.clone();
     let ws_config = config.websocket;
 
@@ -368,7 +370,8 @@ where
             let response = {
                 let mut registry = read_registry.lock().await;
                 let mut workload_mgr = read_workload_mgr.lock().await;
-                route_message(&node_msg, &mut registry, &mut workload_mgr, &read_config)
+                let mut log_store = read_log_store.lock().await;
+                route_message(&node_msg, &mut registry, &mut workload_mgr, &mut log_store, &read_config)
             };
 
             // If there's a response, send it through the channel (don't exit the loop!)
@@ -873,6 +876,7 @@ mod tests {
     fn test_full_registration_flow() {
         let mut registry = NodeRegistry::new();
         let mut workload_mgr = WorkloadManager::new();
+        let mut log_store = WorkloadLogStore::new();
         let config = ServerConfig::default();
         let node_id = NodeId::new();
 
@@ -883,7 +887,7 @@ mod tests {
             NodeCapabilities::new(8, 16384),
         );
 
-        let result = route_message(&register_msg, &mut registry, &mut workload_mgr, &config);
+        let result = route_message(&register_msg, &mut registry, &mut workload_mgr, &mut log_store, &config);
 
         assert!(result.is_ok());
         let response = result.unwrap().unwrap();
@@ -903,6 +907,7 @@ mod tests {
     fn test_heartbeat_after_registration() {
         let mut registry = NodeRegistry::new();
         let mut workload_mgr = WorkloadManager::new();
+        let mut log_store = WorkloadLogStore::new();
         let config = ServerConfig::default();
         let node_id = NodeId::new();
 
@@ -912,11 +917,11 @@ mod tests {
             "test-node",
             NodeCapabilities::new(8, 16384),
         );
-        route_message(&register_msg, &mut registry, &mut workload_mgr, &config).unwrap();
+        route_message(&register_msg, &mut registry, &mut workload_mgr, &mut log_store, &config).unwrap();
 
         // Send heartbeat
         let heartbeat_msg = NodeMessage::heartbeat(node_id);
-        let result = route_message(&heartbeat_msg, &mut registry, &mut workload_mgr, &config);
+        let result = route_message(&heartbeat_msg, &mut registry, &mut workload_mgr, &mut log_store, &config);
 
         assert!(result.is_ok());
         assert!(matches!(

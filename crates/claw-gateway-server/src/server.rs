@@ -363,6 +363,7 @@ async fn detect_and_handle_connection(
             session.clone(),
             registry,
             workload_manager,
+            log_store,
             config,
             receiver,
             first_msg,
@@ -388,6 +389,7 @@ async fn run_node_session_with_first_message(
     _session: Arc<Mutex<NodeSession>>,
     registry: Arc<Mutex<NodeRegistry>>,
     workload_mgr: Arc<Mutex<WorkloadManager>>,
+    log_store: Arc<Mutex<WorkloadLogStore>>,
     config: Arc<ServerConfig>,
     mut outbound_rx: mpsc::Receiver<GatewayMessage>,
     first_msg: String,
@@ -406,7 +408,8 @@ async fn run_node_session_with_first_message(
     if let Ok(node_msg) = NodeMessage::from_json(&first_msg) {
         let mut reg = registry.lock().await;
         let mut wm = workload_mgr.lock().await;
-        if let Ok(Some(resp)) = route_message(&node_msg, &mut reg, &mut wm, &config) {
+        let mut ls = log_store.lock().await;
+        if let Ok(Some(resp)) = route_message(&node_msg, &mut reg, &mut wm, &mut ls, &config) {
             let _ = response_tx.send(resp).await;
         }
     }
@@ -414,6 +417,7 @@ async fn run_node_session_with_first_message(
     // Task for reading from WebSocket
     let read_registry = registry.clone();
     let read_workload_mgr = workload_mgr.clone();
+    let read_log_store = log_store.clone();
     let read_config = config.clone();
     let read_response_tx = response_tx.clone();
 
@@ -446,7 +450,8 @@ async fn run_node_session_with_first_message(
             // Acquire locks and route message
             let mut reg = read_registry.lock().await;
             let mut wm = read_workload_mgr.lock().await;
-            if let Ok(Some(resp)) = route_message(&node_msg, &mut reg, &mut wm, &read_config) {
+            let mut ls = read_log_store.lock().await;
+            if let Ok(Some(resp)) = route_message(&node_msg, &mut reg, &mut wm, &mut ls, &read_config) {
                 if read_response_tx.send(resp).await.is_err() {
                     break;
                 }

@@ -1,6 +1,8 @@
 //! Message handlers for gateway server.
 
-use claw_gateway::{NodeRegistry, RegistryError, WorkloadManager, WorkloadManagerError};
+use claw_gateway::{
+    NodeRegistry, RegistryError, WorkloadLogStore, WorkloadManager, WorkloadManagerError,
+};
 use claw_proto::{
     GatewayMessage, GpuMetricsProto, NodeCapabilities, NodeId, NodeMessage, WorkloadId,
     WorkloadState,
@@ -162,6 +164,7 @@ pub fn route_message(
     msg: &NodeMessage,
     registry: &mut NodeRegistry,
     workload_mgr: &mut WorkloadManager,
+    log_store: &mut WorkloadLogStore,
     config: &ServerConfig,
 ) -> ServerResult<Option<GatewayMessage>> {
     match msg {
@@ -196,12 +199,34 @@ pub fn route_message(
             Ok(None)
         }
         NodeMessage::WorkloadLogs {
-            workload_id, lines, ..
+            workload_id,
+            lines,
+            is_stderr,
         } => {
-            debug!(workload_id = %workload_id, lines = lines.len(), "Received workload logs");
-            // For now, just log. In production, this would go to a log aggregator.
+            handle_workload_logs(*workload_id, lines, *is_stderr, log_store);
             Ok(None)
         }
+    }
+}
+
+/// Handle workload log lines from a node.
+fn handle_workload_logs(
+    workload_id: WorkloadId,
+    lines: &[String],
+    is_stderr: bool,
+    log_store: &mut WorkloadLogStore,
+) {
+    debug!(
+        workload_id = %workload_id,
+        lines = lines.len(),
+        is_stderr = is_stderr,
+        "Received workload logs"
+    );
+
+    if is_stderr {
+        log_store.append_stderr(workload_id, lines.iter().cloned());
+    } else {
+        log_store.append_stdout(workload_id, lines.iter().cloned());
     }
 }
 
@@ -449,12 +474,13 @@ mod tests {
     fn test_route_register_message() {
         let mut registry = NodeRegistry::new();
         let mut workload_mgr = WorkloadManager::new();
+        let mut log_store = WorkloadLogStore::new();
         let config = make_config();
         let node_id = NodeId::new();
 
         let msg = NodeMessage::register(node_id, "test-node", make_capabilities());
 
-        let result = route_message(&msg, &mut registry, &mut workload_mgr, &config);
+        let result = route_message(&msg, &mut registry, &mut workload_mgr, &mut log_store, &config);
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
@@ -465,13 +491,14 @@ mod tests {
     fn test_route_heartbeat_message() {
         let mut registry = NodeRegistry::new();
         let mut workload_mgr = WorkloadManager::new();
+        let mut log_store = WorkloadLogStore::new();
         let config = make_config();
         let node_id = NodeId::new();
 
         registry.register(node_id, make_capabilities()).unwrap();
 
         let msg = NodeMessage::heartbeat(node_id);
-        let result = route_message(&msg, &mut registry, &mut workload_mgr, &config);
+        let result = route_message(&msg, &mut registry, &mut workload_mgr, &mut log_store, &config);
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
@@ -481,13 +508,14 @@ mod tests {
     fn test_route_metrics_message() {
         let mut registry = NodeRegistry::new();
         let mut workload_mgr = WorkloadManager::new();
+        let mut log_store = WorkloadLogStore::new();
         let config = make_config();
         let node_id = NodeId::new();
 
         registry.register(node_id, make_capabilities_with_gpu()).unwrap();
 
         let msg = NodeMessage::metrics(node_id, make_gpu_metrics());
-        let result = route_message(&msg, &mut registry, &mut workload_mgr, &config);
+        let result = route_message(&msg, &mut registry, &mut workload_mgr, &mut log_store, &config);
 
         assert!(result.is_ok());
         // Metrics don't have a response
@@ -498,6 +526,7 @@ mod tests {
     fn test_route_workload_update_message() {
         let mut registry = NodeRegistry::new();
         let mut workload_mgr = WorkloadManager::new();
+        let mut log_store = WorkloadLogStore::new();
         let config = make_config();
 
         let spec = WorkloadSpec::new("nginx:latest")
@@ -506,7 +535,7 @@ mod tests {
         let workload_id = workload_mgr.submit(spec).unwrap();
 
         let msg = NodeMessage::workload_update(workload_id, WorkloadState::Starting, None);
-        let result = route_message(&msg, &mut registry, &mut workload_mgr, &config);
+        let result = route_message(&msg, &mut registry, &mut workload_mgr, &mut log_store, &config);
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
@@ -516,6 +545,7 @@ mod tests {
     fn test_route_workload_logs_message() {
         let mut registry = NodeRegistry::new();
         let mut workload_mgr = WorkloadManager::new();
+        let mut log_store = WorkloadLogStore::new();
         let config = make_config();
         let workload_id = WorkloadId::new();
 
@@ -525,9 +555,37 @@ mod tests {
             is_stderr: false,
         };
 
-        let result = route_message(&msg, &mut registry, &mut workload_mgr, &config);
+        let result = route_message(&msg, &mut registry, &mut workload_mgr, &mut log_store, &config);
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+
+        // Verify logs were stored
+        let logs = log_store.get_logs(workload_id).unwrap();
+        assert_eq!(logs.get_stdout(None), vec!["log line 1", "log line 2"]);
+    }
+
+    #[test]
+    fn test_route_workload_logs_stderr() {
+        let mut registry = NodeRegistry::new();
+        let mut workload_mgr = WorkloadManager::new();
+        let mut log_store = WorkloadLogStore::new();
+        let config = make_config();
+        let workload_id = WorkloadId::new();
+
+        let msg = NodeMessage::WorkloadLogs {
+            workload_id,
+            lines: vec!["error line".to_string()],
+            is_stderr: true,
+        };
+
+        let result = route_message(&msg, &mut registry, &mut workload_mgr, &mut log_store, &config);
+
+        assert!(result.is_ok());
+
+        // Verify stderr was stored
+        let logs = log_store.get_logs(workload_id).unwrap();
+        assert_eq!(logs.get_stderr(None), vec!["error line"]);
+        assert!(logs.get_stdout(None).is_empty());
     }
 }
