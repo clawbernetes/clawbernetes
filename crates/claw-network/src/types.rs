@@ -425,4 +425,192 @@ mod tests {
         assert_eq!(format!("{}", Region::Molt), "molt");
         assert_eq!(format!("{}", Region::Gateway), "gateway");
     }
+
+    // =========================================================================
+    // Additional Coverage Tests
+    // =========================================================================
+
+    #[test]
+    fn node_id_default() {
+        let id = NodeId::default();
+        // Default should create a new unique ID
+        assert_ne!(id.as_uuid(), Uuid::nil());
+    }
+
+    #[test]
+    fn node_id_display() {
+        let uuid = Uuid::new_v4();
+        let id = NodeId::from_uuid(uuid);
+        assert_eq!(format!("{}", id), uuid.to_string());
+    }
+
+    #[test]
+    fn node_id_equality() {
+        let uuid = Uuid::new_v4();
+        let id1 = NodeId::from_uuid(uuid);
+        let id2 = NodeId::from_uuid(uuid);
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn node_id_hash() {
+        use std::collections::HashSet;
+        let id1 = NodeId::new();
+        let id2 = NodeId::new();
+        let id3 = NodeId::from_uuid(id1.as_uuid());
+
+        let mut set = HashSet::new();
+        set.insert(id1);
+        set.insert(id2);
+        set.insert(id3); // Same as id1
+
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn node_id_serialization() {
+        let id = NodeId::new();
+        let json = serde_json::to_string(&id).expect("serialize");
+        let parsed: NodeId = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn region_all_compute() {
+        let regions = Region::all_compute();
+        assert_eq!(regions.len(), 5);
+        assert!(!regions.contains(&Region::Gateway));
+    }
+
+    #[test]
+    fn region_equality() {
+        assert_eq!(Region::UsWest, Region::UsWest);
+        assert_ne!(Region::UsWest, Region::UsEast);
+    }
+
+    #[test]
+    fn region_serialization() {
+        let region = Region::EuWest;
+        let json = serde_json::to_string(&region).expect("serialize");
+        let parsed: Region = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(region, parsed);
+    }
+
+    #[test]
+    fn wireguard_key_as_str() {
+        let key_str = "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=";
+        let key = WireGuardKey::new(key_str).expect("valid key");
+        assert_eq!(key.as_str(), key_str);
+    }
+
+    #[test]
+    fn wireguard_key_equality() {
+        let key1 = WireGuardKey::new("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=").unwrap();
+        let key2 = WireGuardKey::new("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=").unwrap();
+        let key3 = WireGuardKey::new("YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=").unwrap();
+        assert_eq!(key1, key2);
+        assert_ne!(key1, key3);
+    }
+
+    #[test]
+    fn wireguard_key_hash() {
+        use std::collections::HashSet;
+        let key1 = WireGuardKey::new("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=").unwrap();
+        let key2 = WireGuardKey::new("YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=").unwrap();
+
+        let mut set = HashSet::new();
+        set.insert(key1.clone());
+        set.insert(key2);
+        set.insert(key1); // Duplicate
+
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn wireguard_key_error_display() {
+        let err = WireGuardKeyError::InvalidBase64;
+        assert!(format!("{}", err).contains("base64"));
+
+        let err = WireGuardKeyError::InvalidLength { expected: 32, actual: 16 };
+        let msg = format!("{}", err);
+        assert!(msg.contains("32"));
+        assert!(msg.contains("16"));
+    }
+
+    #[test]
+    fn mesh_node_builder_with_endpoint() {
+        let key = WireGuardKey::new("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=").unwrap();
+
+        let node = MeshNode::builder()
+            .mesh_ip("10.100.2.1".parse().unwrap())
+            .workload_subnet("10.200.1.0/24".parse().unwrap())
+            .wireguard_key(key)
+            .region(Region::UsEast)
+            .endpoint("192.168.1.100:51820".parse().unwrap())
+            .build()
+            .expect("should build");
+
+        assert_eq!(node.endpoint, Some("192.168.1.100:51820".parse().unwrap()));
+    }
+
+    #[test]
+    fn mesh_node_builder_with_node_id() {
+        let key = WireGuardKey::new("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=").unwrap();
+        let custom_id = NodeId::new();
+
+        let node = MeshNode::builder()
+            .node_id(custom_id)
+            .mesh_ip("10.100.2.1".parse().unwrap())
+            .workload_subnet("10.200.1.0/24".parse().unwrap())
+            .wireguard_key(key)
+            .region(Region::Asia)
+            .build()
+            .expect("should build");
+
+        assert_eq!(node.node_id, custom_id);
+    }
+
+    #[test]
+    fn mesh_node_serialization() {
+        let key = WireGuardKey::new("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=").unwrap();
+
+        let node = MeshNode::builder()
+            .mesh_ip("10.100.2.1".parse().unwrap())
+            .workload_subnet("10.200.1.0/24".parse().unwrap())
+            .wireguard_key(key)
+            .region(Region::UsWest)
+            .build()
+            .expect("should build");
+
+        let json = serde_json::to_string(&node).expect("serialize");
+        let parsed: MeshNode = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(node.node_id, parsed.node_id);
+        assert_eq!(node.mesh_ip, parsed.mesh_ip);
+    }
+
+    #[test]
+    fn mesh_topology_new() {
+        let topology = MeshTopology::new();
+        assert_eq!(topology.node_count(), 0);
+        assert!(topology.nodes.is_empty());
+    }
+
+    #[test]
+    fn mesh_topology_multiple_nodes() {
+        let mut topology = MeshTopology::new();
+
+        for i in 1..=5 {
+            let key = WireGuardKey::new("YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=").unwrap();
+            let node = MeshNode::builder()
+                .mesh_ip(format!("10.100.2.{}", i).parse().unwrap())
+                .workload_subnet(format!("10.200.{}.0/24", i).parse().unwrap())
+                .wireguard_key(key)
+                .region(Region::UsWest)
+                .build()
+                .expect("should build");
+            topology.nodes.insert(node.node_id, node);
+        }
+
+        assert_eq!(topology.node_count(), 5);
+    }
 }
