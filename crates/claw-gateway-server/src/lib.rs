@@ -67,6 +67,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod cli_handler;
 pub mod config;
 pub mod error;
 pub mod handlers;

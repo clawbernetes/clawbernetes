@@ -3,14 +3,18 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use claw_gateway::{NodeRegistry, WorkloadManager};
-use claw_proto::{GatewayMessage, NodeId};
+use claw_proto::cli::CliMessage;
+use claw_proto::{GatewayMessage, NodeId, NodeMessage};
+use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::{accept_async, tungstenite::Message as WsMessage, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, info, warn};
 
+use crate::cli_handler::handle_cli_connection;
 use crate::config::ServerConfig;
 use crate::error::{ServerError, ServerResult};
 use crate::session::{run_session, session_channel, NodeSession, SessionSender};
@@ -24,7 +28,7 @@ struct ActiveSession {
     sender: SessionSender,
 }
 
-/// Gateway server for managing WebSocket connections from clawnode instances.
+/// Gateway server for managing WebSocket connections from clawnode instances and CLI clients.
 #[derive(Debug)]
 pub struct GatewayServer {
     /// Server configuration.
@@ -37,6 +41,8 @@ pub struct GatewayServer {
     sessions: Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
     /// Shutdown signal sender.
     shutdown_tx: Option<mpsc::Sender<()>>,
+    /// Server start time (for uptime calculation).
+    start_time: Instant,
 }
 
 impl GatewayServer {
@@ -49,6 +55,7 @@ impl GatewayServer {
             workload_manager: Arc::new(Mutex::new(WorkloadManager::new())),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
+            start_time: Instant::now(),
         }
     }
 
@@ -65,6 +72,7 @@ impl GatewayServer {
             workload_manager: Arc::new(Mutex::new(workload_manager)),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
+            start_time: Instant::now(),
         }
     }
 
@@ -158,49 +166,28 @@ impl GatewayServer {
 
         info!(peer = %peer_addr, "WebSocket connection established");
 
-        // Create session
-        let session = Arc::new(Mutex::new(NodeSession::new()));
-        let session_id = session.lock().await.id();
-
-        // Create channel for outbound messages
-        let (sender, receiver) = session_channel(64);
-
-        // Store session
-        {
-            let mut sessions = self.sessions.write().await;
-            sessions.insert(
-                session_id,
-                ActiveSession {
-                    session: session.clone(),
-                    sender: sender.clone(),
-                },
-            );
-        }
-
-        // Spawn session handler task
+        // Spawn connection handler task that will determine connection type
         let registry = self.registry.clone();
         let workload_mgr = self.workload_manager.clone();
         let config = self.config.clone();
         let sessions = self.sessions.clone();
+        let start_time = self.start_time;
 
         tokio::spawn(async move {
-            let result = run_session(
+            // Determine connection type from first message
+            match detect_and_handle_connection(
                 ws_stream,
-                session.clone(),
                 registry,
                 workload_mgr,
                 config,
-                receiver,
+                sessions,
+                start_time,
             )
-            .await;
-
-            if let Err(e) = result {
-                debug!(session_id = %session_id, error = %e, "Session ended with error");
+            .await
+            {
+                Ok(()) => debug!(peer = %peer_addr, "Connection closed normally"),
+                Err(e) => debug!(peer = %peer_addr, error = %e, "Connection ended with error"),
             }
-
-            // Remove session from tracking
-            sessions.write().await.remove(&session_id);
-            info!(session_id = %session_id, "Session removed");
         });
     }
 
@@ -288,6 +275,217 @@ impl GatewayServer {
         }
         Ok(())
     }
+}
+
+/// Connection type determined from the first message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionType {
+    /// CLI client connection.
+    Cli,
+    /// Node connection.
+    Node,
+}
+
+/// Detect connection type from first message and route to appropriate handler.
+///
+/// CLI clients send a `Hello` message first, while nodes send `Register`.
+async fn detect_and_handle_connection(
+    mut ws_stream: WebSocketStream<TcpStream>,
+    registry: Arc<Mutex<NodeRegistry>>,
+    workload_manager: Arc<Mutex<WorkloadManager>>,
+    config: Arc<ServerConfig>,
+    sessions: Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
+    start_time: Instant,
+) -> ServerResult<()> {
+    // Wait for first message to determine connection type
+    let first_msg = match ws_stream.next().await {
+        Some(Ok(WsMessage::Text(text))) => text,
+        Some(Ok(WsMessage::Close(_))) => return Ok(()),
+        Some(Ok(_)) => {
+            return Err(ServerError::Protocol(
+                "expected text message as first message".into(),
+            ))
+        }
+        Some(Err(e)) => return Err(ServerError::Protocol(e.to_string())),
+        None => return Ok(()),
+    };
+
+    // Try to parse as CLI message first
+    if let Ok(cli_msg) = CliMessage::from_json(&first_msg) {
+        if matches!(cli_msg, CliMessage::Hello { .. }) {
+            debug!("Detected CLI connection");
+            return handle_cli_connection(
+                ws_stream,
+                registry,
+                workload_manager,
+                config,
+                start_time,
+            )
+            .await;
+        }
+    }
+
+    // Try to parse as Node message
+    if NodeMessage::from_json(&first_msg).is_ok() {
+        debug!("Detected node connection");
+
+        // Create session for node
+        let session = Arc::new(Mutex::new(NodeSession::new()));
+        let session_id = session.lock().await.id();
+
+        // Create channel for outbound messages
+        let (sender, receiver) = session_channel(64);
+
+        // Store session
+        {
+            let mut sessions_guard = sessions.write().await;
+            sessions_guard.insert(
+                session_id,
+                ActiveSession {
+                    session: session.clone(),
+                    sender: sender.clone(),
+                },
+            );
+        }
+
+        // For node connections, we need to handle the first message manually
+        // then continue with the normal session loop
+        let result = run_node_session_with_first_message(
+            ws_stream,
+            session.clone(),
+            registry,
+            workload_manager,
+            config,
+            receiver,
+            first_msg,
+        )
+        .await;
+
+        // Remove session from tracking
+        sessions.write().await.remove(&session_id);
+        info!(session_id = %session_id, "Node session removed");
+
+        return result;
+    }
+
+    Err(ServerError::Protocol(format!(
+        "unrecognized first message: {}",
+        &first_msg[..first_msg.len().min(100)]
+    )))
+}
+
+/// Run a node session with an already-received first message.
+async fn run_node_session_with_first_message(
+    ws_stream: WebSocketStream<TcpStream>,
+    _session: Arc<Mutex<NodeSession>>,
+    registry: Arc<Mutex<NodeRegistry>>,
+    workload_mgr: Arc<Mutex<WorkloadManager>>,
+    config: Arc<ServerConfig>,
+    mut outbound_rx: mpsc::Receiver<GatewayMessage>,
+    first_msg: String,
+) -> ServerResult<()> {
+    use crate::handlers::route_message;
+    use crate::session::gateway_msg_to_ws;
+
+    let (mut ws_sink, mut ws_stream_rest) = ws_stream.split();
+
+    info!("Starting node session handler");
+
+    // Channel for sending responses from read task to write task
+    let (response_tx, mut response_rx) = mpsc::channel::<GatewayMessage>(32);
+
+    // Process the first message
+    if let Ok(node_msg) = NodeMessage::from_json(&first_msg) {
+        let mut reg = registry.lock().await;
+        let mut wm = workload_mgr.lock().await;
+        if let Ok(Some(resp)) = route_message(&node_msg, &mut reg, &mut wm, &config) {
+            let _ = response_tx.send(resp).await;
+        }
+    }
+
+    // Task for reading from WebSocket
+    let read_registry = registry.clone();
+    let read_workload_mgr = workload_mgr.clone();
+    let read_config = config.clone();
+    let read_response_tx = response_tx.clone();
+
+    let read_task = async move {
+        while let Some(msg_result) = ws_stream_rest.next().await {
+            let ws_msg = match msg_result {
+                Ok(msg) => msg,
+                Err(e) => {
+                    warn!(error = %e, "WebSocket read error");
+                    break;
+                }
+            };
+
+            // Process the message
+            let text = match ws_msg {
+                WsMessage::Text(t) => t,
+                WsMessage::Close(_) => break,
+                WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
+                _ => continue,
+            };
+
+            let node_msg = match NodeMessage::from_json(&text) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    warn!(error = %e, "Failed to parse node message");
+                    continue;
+                }
+            };
+
+            // Acquire locks and route message
+            let mut reg = read_registry.lock().await;
+            let mut wm = read_workload_mgr.lock().await;
+            if let Ok(Some(resp)) = route_message(&node_msg, &mut reg, &mut wm, &read_config) {
+                if read_response_tx.send(resp).await.is_err() {
+                    break;
+                }
+            }
+        }
+    };
+
+    // Task for writing to WebSocket
+    let write_task = async move {
+        loop {
+            tokio::select! {
+                Some(msg) = response_rx.recv() => {
+                    match gateway_msg_to_ws(&msg) {
+                        Ok(ws_msg) => {
+                            if ws_sink.send(ws_msg).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to serialize gateway message");
+                        }
+                    }
+                }
+                Some(msg) = outbound_rx.recv() => {
+                    match gateway_msg_to_ws(&msg) {
+                        Ok(ws_msg) => {
+                            if ws_sink.send(ws_msg).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to serialize outbound message");
+                        }
+                    }
+                }
+                else => break,
+            }
+        }
+    };
+
+    // Run both tasks
+    tokio::select! {
+        _ = read_task => {}
+        _ = write_task => {}
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -430,6 +628,13 @@ mod tests {
 
         // Clean up
         shutdown_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_start_time() {
+        let server = GatewayServer::new(make_config());
+        // start_time should be very recent
+        assert!(server.start_time.elapsed().as_secs() < 1);
     }
 
     #[tokio::test]
