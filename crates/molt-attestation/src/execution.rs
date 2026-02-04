@@ -506,4 +506,316 @@ mod tests {
             Err(AttestationError::CheckpointVerification(_))
         ));
     }
+
+    // =========================================================================
+    // Additional Coverage Tests
+    // =========================================================================
+
+    #[test]
+    fn test_checkpoint_hash_is_deterministic() {
+        let data = b"test data";
+        let checkpoint1 = Checkpoint::new(0, data);
+        let checkpoint2 = Checkpoint::new(0, data);
+
+        assert_eq!(checkpoint1.hash, checkpoint2.hash);
+    }
+
+    #[test]
+    fn test_checkpoint_hash_differs_for_different_data() {
+        let checkpoint1 = Checkpoint::new(0, b"data1");
+        let checkpoint2 = Checkpoint::new(0, b"data2");
+
+        assert_ne!(checkpoint1.hash, checkpoint2.hash);
+    }
+
+    #[test]
+    fn test_checkpoint_chain_from_preserves_sequence() {
+        let first = Checkpoint::new(0, b"first");
+        let second = Checkpoint::chain_from(&first, b"second");
+        let third = Checkpoint::chain_from(&second, b"third");
+
+        assert_eq!(first.sequence, 0);
+        assert_eq!(second.sequence, 1);
+        assert_eq!(third.sequence, 2);
+    }
+
+    #[test]
+    fn test_checkpoint_chain_hash_includes_previous() {
+        let first = Checkpoint::new(0, b"data");
+        let second1 = Checkpoint::chain_from(&first, b"same");
+        
+        // Different first checkpoint
+        let alt_first = Checkpoint::new(0, b"different");
+        let second2 = Checkpoint::chain_from(&alt_first, b"same");
+
+        // Same data but different chain = different hash
+        assert_ne!(second1.hash, second2.hash);
+    }
+
+    #[test]
+    fn test_execution_metrics_equality() {
+        let metrics1 = ExecutionMetrics {
+            gpu_utilization: 50.0,
+            memory_used_mb: 1024,
+            compute_ops: 1000,
+        };
+        let metrics2 = ExecutionMetrics {
+            gpu_utilization: 50.0,
+            memory_used_mb: 1024,
+            compute_ops: 1000,
+        };
+        let metrics3 = ExecutionMetrics {
+            gpu_utilization: 60.0,
+            memory_used_mb: 1024,
+            compute_ops: 1000,
+        };
+
+        assert_eq!(metrics1, metrics2);
+        assert_ne!(metrics1, metrics3);
+    }
+
+    #[test]
+    fn test_execution_metrics_default() {
+        let metrics = ExecutionMetrics::default();
+        assert!((metrics.gpu_utilization - 0.0).abs() < f64::EPSILON);
+        assert_eq!(metrics.memory_used_mb, 0);
+        assert_eq!(metrics.compute_ops, 0);
+    }
+
+    #[test]
+    fn test_execution_metrics_clone() {
+        let metrics = ExecutionMetrics {
+            gpu_utilization: 75.5,
+            memory_used_mb: 4096,
+            compute_ops: 999999,
+        };
+        let cloned = metrics.clone();
+        assert_eq!(metrics, cloned);
+    }
+
+    #[test]
+    fn test_checkpoint_chain_length() {
+        let mut chain = CheckpointChain::new(b"initial");
+        assert_eq!(chain.len(), 1);
+        assert!(!chain.is_empty());
+
+        chain.add_checkpoint(b"step1");
+        assert_eq!(chain.len(), 2);
+
+        chain.add_checkpoint(b"step2");
+        assert_eq!(chain.len(), 3);
+    }
+
+    #[test]
+    fn test_checkpoint_chain_into_checkpoints() {
+        let mut chain = CheckpointChain::new(b"initial");
+        chain.add_checkpoint(b"step1");
+        chain.add_checkpoint(b"step2");
+
+        let checkpoints = chain.into_checkpoints();
+        assert_eq!(checkpoints.len(), 3);
+        
+        for (i, checkpoint) in checkpoints.iter().enumerate() {
+            assert_eq!(checkpoint.sequence, i as u64);
+        }
+    }
+
+    #[test]
+    fn test_long_checkpoint_chain() {
+        let mut chain = CheckpointChain::new(b"start");
+        
+        for i in 0..100 {
+            chain.add_checkpoint(format!("step_{}", i).as_bytes());
+        }
+
+        assert_eq!(chain.len(), 101);
+        
+        let checkpoints = chain.into_checkpoints();
+        
+        // Verify all sequences are correct
+        for (i, checkpoint) in checkpoints.iter().enumerate() {
+            assert_eq!(checkpoint.sequence, i as u64);
+        }
+    }
+
+    #[test]
+    fn test_execution_attestation_duration() {
+        let (signing_key, _) = create_keypair();
+        let job_id = Uuid::new_v4();
+        let duration = Duration::hours(5);
+
+        let chain = CheckpointChain::new(b"data");
+        let attestation = ExecutionAttestation::create_and_sign(
+            job_id,
+            chain.into_checkpoints(),
+            duration,
+            ExecutionMetrics::default(),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        assert_eq!(attestation.duration.num_hours(), 5);
+    }
+
+    #[test]
+    fn test_execution_attestation_zero_duration() {
+        let (signing_key, verifying_key) = create_keypair();
+        let job_id = Uuid::new_v4();
+
+        let chain = CheckpointChain::new(b"data");
+        let attestation = ExecutionAttestation::create_and_sign(
+            job_id,
+            chain.into_checkpoints(),
+            Duration::zero(),
+            ExecutionMetrics::default(),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        assert!(attestation.verify_signature(&verifying_key).is_ok());
+        assert_eq!(attestation.duration.num_seconds(), 0);
+    }
+
+    #[test]
+    fn test_execution_attestation_large_metrics() {
+        let (signing_key, verifying_key) = create_keypair();
+        let job_id = Uuid::new_v4();
+
+        let metrics = ExecutionMetrics {
+            gpu_utilization: 100.0,
+            memory_used_mb: u64::MAX,
+            compute_ops: u64::MAX,
+        };
+
+        let chain = CheckpointChain::new(b"data");
+        let attestation = ExecutionAttestation::create_and_sign(
+            job_id,
+            chain.into_checkpoints(),
+            Duration::seconds(1),
+            metrics,
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        assert!(attestation.verify_signature(&verifying_key).is_ok());
+    }
+
+    #[test]
+    fn test_single_checkpoint_attestation() {
+        let (signing_key, verifying_key) = create_keypair();
+        let job_id = Uuid::new_v4();
+
+        let chain = CheckpointChain::new(b"only_one");
+        let attestation = ExecutionAttestation::create_and_sign(
+            job_id,
+            chain.into_checkpoints(),
+            Duration::seconds(60),
+            ExecutionMetrics::default(),
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        assert_eq!(attestation.checkpoint_count(), 1);
+        assert!(attestation.final_checkpoint_hash().is_some());
+        assert!(attestation.verify_signature(&verifying_key).is_ok());
+    }
+
+    #[test]
+    fn test_checkpoint_timestamp_increases() {
+        let mut chain = CheckpointChain::new(b"initial");
+        
+        // Add checkpoints with small delays
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        chain.add_checkpoint(b"step1");
+        
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        chain.add_checkpoint(b"step2");
+
+        let checkpoints = chain.into_checkpoints();
+        
+        // Each checkpoint should have a timestamp >= the previous
+        for i in 1..checkpoints.len() {
+            assert!(checkpoints[i].timestamp >= checkpoints[i - 1].timestamp);
+        }
+    }
+
+    #[test]
+    fn test_execution_attestation_json_bytes_serialization() {
+        let (signing_key, verifying_key) = create_keypair();
+        let job_id = Uuid::new_v4();
+
+        let mut chain = CheckpointChain::new(b"initial");
+        chain.add_checkpoint(b"step1");
+
+        let attestation = ExecutionAttestation::create_and_sign(
+            job_id,
+            chain.into_checkpoints(),
+            Duration::seconds(3600),
+            ExecutionMetrics {
+                gpu_utilization: 50.0,
+                memory_used_mb: 1024,
+                compute_ops: 10000,
+            },
+            &signing_key,
+        )
+        .expect("should create attestation");
+
+        let bytes = serde_json::to_vec(&attestation).expect("should serialize");
+        let deserialized: ExecutionAttestation =
+            serde_json::from_slice(&bytes).expect("should deserialize");
+
+        assert_eq!(deserialized.job_id, attestation.job_id);
+        assert!(deserialized.verify_signature(&verifying_key).is_ok());
+    }
+
+    #[test]
+    fn test_checkpoint_debug_format() {
+        let checkpoint = Checkpoint::new(0, b"test");
+        let debug = format!("{:?}", checkpoint);
+        assert!(debug.contains("Checkpoint"));
+        assert!(debug.contains("sequence: 0"));
+    }
+
+    #[test]
+    fn test_checkpoint_chain_debug_format() {
+        let chain = CheckpointChain::new(b"initial");
+        let debug = format!("{:?}", chain);
+        assert!(debug.contains("CheckpointChain"));
+    }
+
+    #[test]
+    fn test_execution_metrics_debug_format() {
+        let metrics = ExecutionMetrics {
+            gpu_utilization: 75.0,
+            memory_used_mb: 4096,
+            compute_ops: 1000000,
+        };
+        let debug = format!("{:?}", metrics);
+        assert!(debug.contains("ExecutionMetrics"));
+    }
+
+    #[test]
+    fn test_verify_chain_with_correct_data() {
+        let first = Checkpoint::new(0, b"first");
+        let second = Checkpoint::chain_from(&first, b"second");
+        
+        assert!(second.verify_chain(&first, b"second"));
+    }
+
+    #[test]
+    fn test_verify_chain_with_empty_data() {
+        let first = Checkpoint::new(0, b"");
+        let second = Checkpoint::chain_from(&first, b"");
+        
+        assert!(second.verify_chain(&first, b""));
+    }
+
+    #[test]
+    fn test_verify_chain_with_large_data() {
+        let large_data = vec![0u8; 1024 * 1024]; // 1MB
+        let first = Checkpoint::new(0, &large_data);
+        let second = Checkpoint::chain_from(&first, &large_data);
+        
+        assert!(second.verify_chain(&first, &large_data));
+    }
 }

@@ -679,4 +679,312 @@ mod tests {
         assert!(peer.endpoint.is_some());
         assert_eq!(peer.persistent_keepalive, Some(25));
     }
+
+    // =========================================================================
+    // Additional Coverage Tests
+    // =========================================================================
+
+    #[test]
+    fn allowed_ip_ipv4_cidr() {
+        let ip = AllowedIp::from_cidr("10.0.0.0/8").expect("valid");
+        assert_eq!(ip.to_string(), "10.0.0.0/8");
+    }
+
+    #[test]
+    fn allowed_ip_ipv4_host() {
+        let ip = AllowedIp::from_cidr("192.168.1.1/32").expect("valid");
+        assert_eq!(ip.to_string(), "192.168.1.1/32");
+    }
+
+    #[test]
+    fn allowed_ip_ipv6_cidr() {
+        let ip = AllowedIp::from_cidr("fd00::/8").expect("valid");
+        assert!(ip.to_string().contains("fd00::"));
+    }
+
+    #[test]
+    fn allowed_ip_ipv6_host() {
+        let ip = AllowedIp::from_cidr("::1/128").expect("valid");
+        assert!(ip.to_string().contains("::1"));
+    }
+
+    #[test]
+    fn allowed_ip_all_traffic() {
+        let ip = AllowedIp::from_cidr("0.0.0.0/0").expect("valid");
+        assert_eq!(ip.to_string(), "0.0.0.0/0");
+    }
+
+    #[test]
+    fn allowed_ip_invalid_cidr() {
+        assert!(AllowedIp::from_cidr("invalid").is_err());
+        assert!(AllowedIp::from_cidr("10.0.0.0/33").is_err()); // Invalid prefix
+        assert!(AllowedIp::from_cidr("10.0.0.0").is_err()); // Missing prefix
+    }
+
+    #[test]
+    fn endpoint_ipv4() {
+        let endpoint: Endpoint = "192.168.1.1:51820".parse().expect("valid");
+        assert_eq!(endpoint.to_string(), "192.168.1.1:51820");
+    }
+
+    #[test]
+    fn endpoint_ipv6() {
+        let endpoint: Endpoint = "[::1]:51820".parse().expect("valid");
+        assert!(endpoint.to_string().contains("51820"));
+    }
+
+    #[test]
+    fn endpoint_with_high_port() {
+        let endpoint: Endpoint = "192.168.1.1:65535".parse().expect("valid");
+        assert!(endpoint.to_string().contains("65535"));
+    }
+
+    #[test]
+    fn config_with_multiple_addresses() {
+        let config = InterfaceConfig::new(test_private_key())
+            .with_address(AllowedIp::from_cidr("10.0.0.1/24").expect("valid"))
+            .with_address(AllowedIp::from_cidr("fd00::1/64").expect("valid"));
+
+        assert_eq!(config.addresses.len(), 2);
+        
+        let output = generate_wg_config(&config);
+        assert!(output.contains("10.0.0.1/24"));
+    }
+
+    #[test]
+    fn config_with_dns() {
+        let config = InterfaceConfig::new(test_private_key())
+            .with_dns("8.8.8.8".parse().expect("valid"))
+            .with_dns("8.8.4.4".parse().expect("valid"));
+
+        assert_eq!(config.dns.len(), 2);
+    }
+
+    #[test]
+    fn config_with_mtu() {
+        let config = InterfaceConfig::new(test_private_key())
+            .with_mtu(1420);
+
+        assert_eq!(config.mtu, Some(1420));
+        
+        let output = generate_wg_config(&config);
+        assert!(output.contains("MTU = 1420"));
+    }
+
+    #[test]
+    fn peer_with_preshared_key() {
+        let (_, public_key) = generate_keypair();
+        let psk = PresharedKey::generate();
+        
+        let mut peer = PeerConfig::new(public_key);
+        peer.preshared_key = Some(psk);
+        peer.allowed_ips.push(AllowedIp::from_cidr("10.0.0.2/32").expect("valid"));
+
+        let config = InterfaceConfig::new(test_private_key())
+            .with_peer(peer);
+
+        let output = generate_wg_config(&config);
+        assert!(output.contains("PresharedKey = "));
+    }
+
+    #[test]
+    fn peer_without_endpoint() {
+        let (_, public_key) = generate_keypair();
+        
+        let mut peer = PeerConfig::new(public_key);
+        peer.allowed_ips.push(AllowedIp::from_cidr("10.0.0.2/32").expect("valid"));
+
+        let config = InterfaceConfig::new(test_private_key())
+            .with_peer(peer);
+
+        let output = generate_wg_config(&config);
+        assert!(!output.contains("Endpoint ="));
+    }
+
+    #[test]
+    fn peer_without_keepalive() {
+        let (_, public_key) = generate_keypair();
+        
+        let mut peer = PeerConfig::new(public_key);
+        peer.allowed_ips.push(AllowedIp::from_cidr("10.0.0.2/32").expect("valid"));
+
+        let config = InterfaceConfig::new(test_private_key())
+            .with_peer(peer);
+
+        let output = generate_wg_config(&config);
+        assert!(!output.contains("PersistentKeepalive"));
+    }
+
+    #[test]
+    fn multiple_peers_config() {
+        let config = InterfaceConfig::new(test_private_key())
+            .with_peer({
+                let (_, pk) = generate_keypair();
+                let mut peer = PeerConfig::new(pk);
+                peer.allowed_ips.push(AllowedIp::from_cidr("10.0.0.2/32").expect("valid"));
+                peer
+            })
+            .with_peer({
+                let (_, pk) = generate_keypair();
+                let mut peer = PeerConfig::new(pk);
+                peer.allowed_ips.push(AllowedIp::from_cidr("10.0.0.3/32").expect("valid"));
+                peer
+            })
+            .with_peer({
+                let (_, pk) = generate_keypair();
+                let mut peer = PeerConfig::new(pk);
+                peer.allowed_ips.push(AllowedIp::from_cidr("10.0.0.4/32").expect("valid"));
+                peer
+            });
+
+        assert_eq!(config.peers.len(), 3);
+        
+        let output = generate_wg_config(&config);
+        // Should have 3 [Peer] sections
+        assert_eq!(output.matches("[Peer]").count(), 3);
+    }
+
+    #[test]
+    fn peer_with_multiple_allowed_ips_config() {
+        let (_, public_key) = generate_keypair();
+        
+        let mut peer = PeerConfig::new(public_key);
+        peer.allowed_ips.push(AllowedIp::from_cidr("10.0.0.0/24").expect("valid"));
+        peer.allowed_ips.push(AllowedIp::from_cidr("192.168.1.0/24").expect("valid"));
+        peer.allowed_ips.push(AllowedIp::from_cidr("172.16.0.0/16").expect("valid"));
+
+        let config = InterfaceConfig::new(test_private_key())
+            .with_peer(peer);
+
+        let output = generate_wg_config(&config);
+        assert!(output.contains("AllowedIPs = "));
+    }
+
+    #[test]
+    fn parse_config_with_comments() {
+        let private_key = test_private_key();
+        let config_str = format!(
+            "# This is a comment\n\
+             [Interface]\n\
+             # Private key below\n\
+             PrivateKey = {}\n\
+             # Port\n\
+             ListenPort = 51820\n",
+            private_key.to_base64()
+        );
+
+        let config = parse_wg_config(&config_str).expect("valid config");
+        assert_eq!(config.listen_port, Some(51820));
+    }
+
+    #[test]
+    fn parse_config_with_extra_whitespace() {
+        let private_key = test_private_key();
+        let config_str = format!(
+            "[Interface]\n\
+             PrivateKey   =   {}\n\
+             ListenPort   =   51820\n",
+            private_key.to_base64()
+        );
+
+        let config = parse_wg_config(&config_str).expect("valid config");
+        assert_eq!(config.listen_port, Some(51820));
+    }
+
+    #[test]
+    fn builder_with_address() {
+        let config = InterfaceConfigBuilder::new()
+            .generate_private_key()
+            .address_cidr("10.0.0.1/24")
+            .expect("valid")
+            .build()
+            .expect("valid config");
+
+        assert_eq!(config.addresses.len(), 1);
+    }
+
+    #[test]
+    fn builder_with_dns() {
+        let config = InterfaceConfigBuilder::new()
+            .generate_private_key()
+            .dns("8.8.8.8".parse().expect("valid ip"))
+            .build()
+            .expect("valid config");
+
+        assert_eq!(config.dns.len(), 1);
+    }
+
+    #[test]
+    fn peer_builder_without_public_key_fails() {
+        let result = PeerConfigBuilder::new()
+            .allowed_ip("10.0.0.2/32")
+            .expect("valid")
+            .build();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn peer_builder_multiple_allowed_ips() {
+        let (_, public_key) = generate_keypair();
+
+        let peer = PeerConfigBuilder::new()
+            .public_key(public_key)
+            .allowed_ip("10.0.0.0/24")
+            .expect("valid")
+            .allowed_ip("192.168.0.0/24")
+            .expect("valid")
+            .build()
+            .expect("valid peer");
+
+        assert_eq!(peer.allowed_ips.len(), 2);
+    }
+
+    #[test]
+    fn interface_config_clone() {
+        let original = InterfaceConfig::new(test_private_key())
+            .with_listen_port(51820)
+            .with_address(AllowedIp::from_cidr("10.0.0.1/24").expect("valid"));
+
+        let cloned = original.clone();
+        assert_eq!(original.listen_port, cloned.listen_port);
+        assert_eq!(original.addresses.len(), cloned.addresses.len());
+    }
+
+    #[test]
+    fn peer_config_clone() {
+        let (_, public_key) = generate_keypair();
+        let mut peer = PeerConfig::new(public_key);
+        peer.allowed_ips.push(AllowedIp::from_cidr("10.0.0.2/32").expect("valid"));
+        peer.persistent_keepalive = Some(25);
+
+        let cloned = peer.clone();
+        assert_eq!(peer.allowed_ips.len(), cloned.allowed_ips.len());
+        assert_eq!(peer.persistent_keepalive, cloned.persistent_keepalive);
+    }
+
+    #[test]
+    fn allowed_ip_equality() {
+        let ip1 = AllowedIp::from_cidr("10.0.0.0/24").expect("valid");
+        let ip2 = AllowedIp::from_cidr("10.0.0.0/24").expect("valid");
+        let ip3 = AllowedIp::from_cidr("192.168.0.0/24").expect("valid");
+
+        assert_eq!(ip1, ip2);
+        assert_ne!(ip1, ip3);
+    }
+
+    #[test]
+    fn config_debug_format() {
+        let config = InterfaceConfig::new(test_private_key());
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("InterfaceConfig"));
+    }
+
+    #[test]
+    fn peer_config_debug_format() {
+        let (_, public_key) = generate_keypair();
+        let peer = PeerConfig::new(public_key);
+        let debug = format!("{:?}", peer);
+        assert!(debug.contains("PeerConfig"));
+    }
 }
