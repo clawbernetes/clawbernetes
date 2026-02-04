@@ -1,0 +1,50 @@
+[package]
+name = "claw-compute"
+description = "Multi-platform GPU compute for Clawbernetes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = ["cpu"]
+cpu = []
+# GPU backends (to be implemented with CubeCL)
+cuda = []
+wgpu = []
+hip = []
+# Convenience aliases
+metal = ["wgpu"]
+rocm = ["hip"]
+# All backends
+all = ["cpu", "cuda", "wgpu", "hip"]
+
+[dependencies]
+# Error handling
+thiserror = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Math functions (for CPU kernels)
+libm = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+test-case = { workspace = true }
+
+[lints]
+workspace = true
+
+# Note: CubeCL integration planned for GPU backends
+# When ready, add:
+# cubecl = "0.9"
+# cubecl-cuda = { version = "0.9", optional = true }
+# cubecl-wgpu = { version = "0.9", optional = true }
+# cubecl-hip = { version = "0.9", optional = true }
+# cubecl-cpu = { version = "0.9", optional = true }
