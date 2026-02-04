@@ -1,4 +1,3 @@
-#![allow(clippy::expect_used)]
 //! Container runtime interface.
 //!
 //! Provides abstraction over container runtimes (containerd, podman, etc.)
@@ -256,16 +255,19 @@ impl FakeContainerRuntime {
             .unwrap_or(0)
     }
 
-    fn generate_id(&self) -> String {
-        let mut id = self.next_id.write().expect("lock poisoned");
+    fn generate_id(&self) -> Result<String, NodeError> {
+        let mut id = self
+            .next_id
+            .write()
+            .map_err(|_| NodeError::ContainerRuntime("lock poisoned".to_string()))?;
         *id += 1;
-        format!("container-{:08x}", *id)
+        Ok(format!("container-{:08x}", *id))
     }
 }
 
 impl ContainerRuntime for FakeContainerRuntime {
     fn create(&self, spec: &ContainerSpec) -> Result<Container, NodeError> {
-        let id = self.generate_id();
+        let id = self.generate_id()?;
         let mut container = Container::new(&id, &spec.image)
             .with_gpus(spec.gpu_ids.clone());
 

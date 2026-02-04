@@ -19,6 +19,9 @@ thiserror = { workspace = true }
 # Logging
 tracing = { workspace = true }
 
+# Input validation and safe command execution
+claw-validation = { path = "../claw-validation", features = ["command"] }
+
 # Async runtime
 tokio = { version = "1.43", features = ["net", "io-util", "process", "sync", "fs", "rt", "macros", "rt-multi-thread"] }
 

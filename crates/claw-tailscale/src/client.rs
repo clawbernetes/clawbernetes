@@ -4,11 +4,10 @@
 //! It provides status queries, peer information, and some control operations.
 
 use crate::error::{Result, TailscaleError};
+use claw_validation::command::{AllowedProgram, SafeCommand};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use tokio::process::Command;
 
 /// Default socket path on Linux.
 #[cfg(target_os = "linux")]
@@ -166,22 +165,13 @@ impl LocalClient {
     ///
     /// Returns error if tailscale CLI is not available or tailscaled is not running.
     pub async fn status(&self) -> Result<Status> {
-        let output = Command::new("tailscale")
+        let output = SafeCommand::new(AllowedProgram::Tailscale)
             .args(["status", "--json"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
+            .execute()
             .await
             .map_err(|e| TailscaleError::NotInstalled {
                 message: e.to_string(),
             })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(TailscaleError::NotRunning {
-                message: stderr.to_string(),
-            });
-        }
 
         let status: Status = serde_json::from_slice(&output.stdout).map_err(|e| {
             TailscaleError::ApiError {
@@ -198,22 +188,16 @@ impl LocalClient {
     ///
     /// Returns error if the IP is not a Tailscale peer.
     pub async fn whois(&self, ip: IpAddr) -> Result<WhoIsResponse> {
-        let output = Command::new("tailscale")
-            .args(["whois", "--json", &ip.to_string()])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
+        // Convert IP to string - IpAddr::to_string is safe (no injection possible)
+        let ip_str = ip.to_string();
+
+        let output = SafeCommand::new(AllowedProgram::Tailscale)
+            .args(["whois", "--json", &ip_str])
+            .execute()
             .await
             .map_err(|e| TailscaleError::NotInstalled {
                 message: e.to_string(),
             })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(TailscaleError::ApiError {
-                message: format!("whois failed: {stderr}"),
-            });
-        }
 
         let response: WhoIsResponse =
             serde_json::from_slice(&output.stdout).map_err(|e| TailscaleError::ApiError {

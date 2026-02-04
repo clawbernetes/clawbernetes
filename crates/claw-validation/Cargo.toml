@@ -1,0 +1,29 @@
+[package]
+name = "claw-validation"
+description = "Centralized input validation and sanitization for Clawbernetes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+command = ["dep:tokio"]
+
+[dependencies]
+thiserror.workspace = true
+uuid.workspace = true
+once_cell = "1.19"
+regex = "1.10"
+tokio = { workspace = true, features = ["process"], optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+test-case.workspace = true
+tempfile = "3.10"
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -49,6 +49,7 @@ ipnet = { version = "2.10", features = ["serde"] }
 # Internal
 claw-proto = { path = "../claw-proto" }
 claw-wireguard = { path = "../claw-wireguard" }
+claw-validation = { path = "../claw-validation", features = ["command"] }
 molt-core = { path = "../molt-core", optional = true }
 molt-p2p = { path = "../molt-p2p", optional = true }
 

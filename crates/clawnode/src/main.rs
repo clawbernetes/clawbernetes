@@ -129,10 +129,16 @@ async fn run(cli: Cli) -> Result<(), NodeError> {
 fn main() {
     let cli = Cli::parse();
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("failed to create tokio runtime");
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("failed to create tokio runtime: {e}");
+            std::process::exit(1);
+        }
+    };
 
     if let Err(e) = runtime.block_on(run(cli)) {
         eprintln!("clawnode error: {e}");

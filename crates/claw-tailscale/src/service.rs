@@ -3,6 +3,11 @@
 //! Tailscale Services (v1.94+) allow publishing internal resources as named
 //! services in your tailnet, decoupling resources from specific devices.
 //!
+//! # Security
+//!
+//! All service names, ports, and targets are validated before being passed
+//! to the tailscale CLI to prevent command injection.
+//!
 //! # Example
 //!
 //! ```rust,no_run
@@ -21,10 +26,10 @@
 //! ```
 
 use crate::error::{Result, TailscaleError};
+use claw_validation::command::{AllowedProgram, SafeCommand};
+use claw_validation::{sanitize_service_name, sanitize_url, validate_port};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
-use std::process::Stdio;
-use tokio::process::Command;
 use tracing::{debug, info};
 
 /// Service mode for Tailscale Services.
@@ -99,6 +104,15 @@ pub struct ServiceEndpoint {
 ///
 /// This uses `tailscale serve --service` to advertise the service.
 ///
+/// # Security
+///
+/// The service name is validated to prevent command injection:
+/// - Must be lowercase alphanumeric with hyphens
+/// - Must start and end with alphanumeric
+/// - Maximum 64 characters
+///
+/// The target URL is validated to ensure it starts with a valid scheme.
+///
 /// # Arguments
 ///
 /// * `config` - Service configuration
@@ -106,26 +120,52 @@ pub struct ServiceEndpoint {
 ///
 /// # Errors
 ///
-/// Returns error if tailscale CLI fails or service cannot be advertised.
+/// Returns error if validation fails, tailscale CLI fails, or service cannot be advertised.
 pub async fn advertise_service(config: &ServiceConfig, target: &str) -> Result<()> {
+    // Validate service name (security critical)
+    let validated_name = sanitize_service_name(&config.name).map_err(|e| {
+        TailscaleError::ServiceError {
+            service_name: config.name.clone(),
+            operation: "validate".to_string(),
+            reason: e.to_string(),
+        }
+    })?;
+
+    // Validate port
+    let _validated_port = validate_port(config.port).map_err(|e| {
+        TailscaleError::ServiceError {
+            service_name: config.name.clone(),
+            operation: "validate".to_string(),
+            reason: e.to_string(),
+        }
+    })?;
+
+    // Validate target URL (security critical)
+    let validated_target = sanitize_url(target).map_err(|e| {
+        TailscaleError::ServiceError {
+            service_name: config.name.clone(),
+            operation: "validate".to_string(),
+            reason: e.to_string(),
+        }
+    })?;
+
     let port_spec = format!("{}:{}", config.mode.protocol(), config.port);
 
-    let output = Command::new("tailscale")
-        .args(["serve", "--service", &config.name, &port_spec, target])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+    let output = SafeCommand::new(AllowedProgram::Tailscale)
+        .args(["serve", "--service", validated_name.as_str(), &port_spec, validated_target.as_str()])
+        .execute()
         .await
-        .map_err(|e| TailscaleError::NotInstalled {
-            message: e.to_string(),
+        .map_err(|e| TailscaleError::ServiceError {
+            service_name: config.name.clone(),
+            operation: "advertise".to_string(),
+            reason: e.to_string(),
         })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.success() {
         return Err(TailscaleError::ServiceError {
             service_name: config.name.clone(),
             operation: "advertise".to_string(),
-            reason: stderr.to_string(),
+            reason: output.stderr_lossy(),
         });
     }
 
@@ -137,23 +177,34 @@ pub async fn advertise_service(config: &ServiceConfig, target: &str) -> Result<(
 ///
 /// # Errors
 ///
-/// Returns error if tailscale CLI fails.
+/// Returns error if validation fails or tailscale CLI fails.
 pub async fn drain_service(name: &str) -> Result<()> {
-    let output = Command::new("tailscale")
-        .args(["serve", "drain", &format!("svc:{name}")])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+    // Validate service name
+    let validated_name = sanitize_service_name(name).map_err(|e| {
+        TailscaleError::ServiceError {
+            service_name: name.to_string(),
+            operation: "validate".to_string(),
+            reason: e.to_string(),
+        }
+    })?;
+
+    let svc_spec = format!("svc:{}", validated_name.as_str());
+
+    let output = SafeCommand::new(AllowedProgram::Tailscale)
+        .args(["serve", "drain", &svc_spec])
+        .execute()
         .await
-        .map_err(|e| TailscaleError::NotInstalled {
-            message: e.to_string(),
+        .map_err(|e| TailscaleError::ServiceError {
+            service_name: name.to_string(),
+            operation: "drain".to_string(),
+            reason: e.to_string(),
         })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.success() {
         return Err(TailscaleError::ServiceError {
             service_name: name.to_string(),
-            operation: "serve".to_string(), reason: stderr.to_string(),
+            operation: "drain".to_string(),
+            reason: output.stderr_lossy(),
         });
     }
 
@@ -165,25 +216,43 @@ pub async fn drain_service(name: &str) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns error if tailscale CLI fails.
+/// Returns error if validation fails or tailscale CLI fails.
 pub async fn remove_service(name: &str, port: u16, mode: ServiceMode) -> Result<()> {
+    // Validate service name
+    let validated_name = sanitize_service_name(name).map_err(|e| {
+        TailscaleError::ServiceError {
+            service_name: name.to_string(),
+            operation: "validate".to_string(),
+            reason: e.to_string(),
+        }
+    })?;
+
+    // Validate port
+    let _validated_port = validate_port(port).map_err(|e| {
+        TailscaleError::ServiceError {
+            service_name: name.to_string(),
+            operation: "validate".to_string(),
+            reason: e.to_string(),
+        }
+    })?;
+
     let port_spec = format!("{}:{}", mode.protocol(), port);
 
-    let output = Command::new("tailscale")
-        .args(["serve", "--service", name, &port_spec, "off"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+    let output = SafeCommand::new(AllowedProgram::Tailscale)
+        .args(["serve", "--service", validated_name.as_str(), &port_spec, "off"])
+        .execute()
         .await
-        .map_err(|e| TailscaleError::NotInstalled {
-            message: e.to_string(),
+        .map_err(|e| TailscaleError::ServiceError {
+            service_name: name.to_string(),
+            operation: "remove".to_string(),
+            reason: e.to_string(),
         })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.success() {
         return Err(TailscaleError::ServiceError {
             service_name: name.to_string(),
-            operation: "serve".to_string(), reason: stderr.to_string(),
+            operation: "remove".to_string(),
+            reason: output.stderr_lossy(),
         });
     }
 
@@ -197,25 +266,17 @@ pub async fn remove_service(name: &str, port: u16, mode: ServiceMode) -> Result<
 ///
 /// Returns error if tailscale CLI fails.
 pub async fn serve_status() -> Result<String> {
-    let output = Command::new("tailscale")
+    let output = SafeCommand::new(AllowedProgram::Tailscale)
         .args(["serve", "status"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
+        .execute()
         .await
-        .map_err(|e| TailscaleError::NotInstalled {
-            message: e.to_string(),
+        .map_err(|e| TailscaleError::ServiceError {
+            service_name: "status".to_string(),
+            operation: "serve".to_string(),
+            reason: e.to_string(),
         })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TailscaleError::ServiceError {
-            service_name: "status".to_string(),
-            operation: "serve".to_string(), reason: stderr.to_string(),
-        });
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(output.stdout_lossy())
 }
 
 /// Service manager for handling multiple services.
@@ -318,5 +379,37 @@ mod tests {
     fn test_default_service_mode() {
         let mode = ServiceMode::default();
         assert_eq!(mode, ServiceMode::Tcp);
+    }
+
+    // Security tests - these validate that injection attempts are caught
+    #[test]
+    fn test_service_name_injection_blocked() {
+        // These should all fail validation
+        assert!(sanitize_service_name("; rm -rf /").is_err());
+        assert!(sanitize_service_name("service$(whoami)").is_err());
+        assert!(sanitize_service_name("service`id`").is_err());
+        assert!(sanitize_service_name("service|cat /etc/passwd").is_err());
+    }
+
+    #[test]
+    fn test_target_url_injection_blocked() {
+        // These should all fail validation
+        assert!(sanitize_url("http://localhost; rm -rf /").is_err());
+        assert!(sanitize_url("http://localhost`id`").is_err());
+        assert!(sanitize_url("not-a-url").is_err());
+    }
+
+    #[test]
+    fn test_valid_service_name_accepted() {
+        assert!(sanitize_service_name("my-api").is_ok());
+        assert!(sanitize_service_name("api-v2").is_ok());
+        assert!(sanitize_service_name("service123").is_ok());
+    }
+
+    #[test]
+    fn test_valid_target_url_accepted() {
+        assert!(sanitize_url("http://localhost:8080").is_ok());
+        assert!(sanitize_url("https://example.com/path").is_ok());
+        assert!(sanitize_url("tcp://localhost:5432").is_ok());
     }
 }
