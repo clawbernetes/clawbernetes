@@ -1,7 +1,4 @@
-//! Gossip protocol for capacity announcements.
-//!
-//! This module handles broadcasting and receiving capacity announcements
-//! from peers in the network.
+//! Capacity announcement types and signing.
 
 use crate::error::P2pError;
 use crate::protocol::PeerId;
@@ -69,9 +66,7 @@ mod signature_serde {
                 let arr: [u8; 64] = bytes
                     .try_into()
                     .map_err(|_| serde::de::Error::custom("Invalid signature length"))?;
-                Ok(Some(
-                    Signature::from_bytes(&arr),
-                ))
+                Ok(Some(Signature::from_bytes(&arr)))
             }
             None => Ok(None),
         }
@@ -97,6 +92,13 @@ impl CapacityAnnouncement {
             created_at: Utc::now(),
             signature: None,
         }
+    }
+
+    /// Creates an announcement with a specific creation time (for testing).
+    #[cfg(test)]
+    pub(crate) fn with_created_at(mut self, created_at: DateTime<Utc>) -> Self {
+        self.created_at = created_at;
+        self
     }
 
     /// Returns the peer ID of the announcer.
@@ -129,6 +131,12 @@ impl CapacityAnnouncement {
         self.ttl
     }
 
+    /// Returns the creation timestamp.
+    #[must_use]
+    pub const fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
+
     /// Checks if this announcement has expired.
     #[must_use]
     pub fn is_expired(&self) -> bool {
@@ -143,6 +151,12 @@ impl CapacityAnnouncement {
     pub fn sign(&mut self, signing_key: &SigningKey) {
         let message = self.signing_message();
         self.signature = Some(signing_key.sign(&message));
+    }
+
+    /// Returns whether this announcement is signed.
+    #[must_use]
+    pub const fn is_signed(&self) -> bool {
+        self.signature.is_some()
     }
 
     /// Verifies the announcement's signature against the given public key.
@@ -166,12 +180,7 @@ impl CapacityAnnouncement {
         let mut msg = Vec::new();
         msg.extend_from_slice(self.peer_id.as_bytes());
         msg.extend_from_slice(&self.ttl.as_secs().to_le_bytes());
-        msg.extend_from_slice(
-            &self
-                .created_at
-                .timestamp()
-                .to_le_bytes(),
-        );
+        msg.extend_from_slice(&self.created_at.timestamp().to_le_bytes());
         // Include GPUs, pricing, job_types in the signature
         for gpu in &self.gpus {
             msg.extend_from_slice(gpu.model.as_bytes());
@@ -184,6 +193,42 @@ impl CapacityAnnouncement {
             msg.extend_from_slice(jt.as_bytes());
         }
         msg
+    }
+
+    /// Checks if this announcement matches the given filter criteria.
+    #[must_use]
+    pub fn matches_filter(&self, filter: &super::QueryFilter) -> bool {
+        // Check GPU model filter
+        if let Some(ref model) = filter.gpu_model {
+            let has_model = self.gpus.iter().any(|g| &g.model == model);
+            if !has_model {
+                return false;
+            }
+        }
+
+        // Check minimum VRAM filter
+        if let Some(min_vram) = filter.min_vram_gb {
+            let has_vram = self.gpus.iter().any(|g| g.vram_gb >= min_vram);
+            if !has_vram {
+                return false;
+            }
+        }
+
+        // Check job type filter
+        if let Some(ref job_type) = filter.job_type {
+            if !self.job_types.contains(job_type) {
+                return false;
+            }
+        }
+
+        // Check max price filter
+        if let Some(max_price) = filter.max_gpu_hour_cents {
+            if self.pricing.gpu_hour_cents > max_price {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -327,6 +372,27 @@ mod tests {
         assert_eq!(deserialized.count, 8);
     }
 
+    #[test]
+    fn is_signed_reports_correctly() {
+        let signing_key = make_signing_key();
+        let peer_id = PeerId::from_public_key(&signing_key.verifying_key());
+
+        let mut announcement = CapacityAnnouncement::new(
+            peer_id,
+            vec![],
+            Pricing {
+                gpu_hour_cents: 50,
+                cpu_hour_cents: 5,
+            },
+            vec![],
+            Duration::from_secs(60),
+        );
+
+        assert!(!announcement.is_signed());
+        announcement.sign(&signing_key);
+        assert!(announcement.is_signed());
+    }
+
     mod proptest_tests {
         use super::*;
         use proptest::prelude::*;
@@ -361,7 +427,7 @@ mod tests {
             ) {
                 let signing_key = SigningKey::generate(&mut OsRng);
                 let peer_id = PeerId::from_public_key(&signing_key.verifying_key());
-                
+
                 let announcement = CapacityAnnouncement::new(
                     peer_id,
                     vec![],
@@ -369,7 +435,7 @@ mod tests {
                     vec![],
                     Duration::from_millis(ttl_ms),
                 );
-                
+
                 // Immediately after creation, should not be expired (unless TTL is extremely short)
                 if ttl_ms > 1 {
                     prop_assert!(!announcement.is_expired());

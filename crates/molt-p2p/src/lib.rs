@@ -35,7 +35,11 @@ pub use connection::{
 };
 pub use discovery::{BootstrapNode, PeerTable};
 pub use error::P2pError;
-pub use gossip::{CapacityAnnouncement, GpuInfo, Pricing};
+pub use gossip::{
+    BroadcastConfig, BroadcastResult, CapacityAnnouncement, GossipBroadcaster, GossipEvent,
+    GossipMessage, GossipNode, GossipQuery, GpuInfo, LocalGossipNode, MessageId, NodeState,
+    Pricing, QueryFilter,
+};
 pub use message::{CapacityRequirements, P2pMessage};
 pub use network::{MoltNetwork, NetworkConfig, NetworkState, NetworkStats, ProviderSearchResult};
 pub use protocol::{PeerId, PeerInfo};

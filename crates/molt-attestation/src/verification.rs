@@ -224,8 +224,10 @@ mod tests {
         signing_key: &SigningKey,
         validity_hours: i64,
     ) -> HardwareAttestation {
+        use crate::hardware::GpuVendor;
         let gpu = GpuInfo {
-            model: "NVIDIA RTX 4090".to_string(),
+            vendor: GpuVendor::Nvidia,
+            model: "RTX 4090".to_string(),
             vram_mb: 24576,
             compute_capability: "8.9".to_string(),
         };
@@ -520,26 +522,31 @@ mod tests {
 
     #[test]
     fn test_multi_gpu_attestation() {
+        use crate::hardware::GpuVendor;
         let (signing_key, verifying_key) = create_keypair();
 
         let gpus = vec![
             GpuInfo {
-                model: "NVIDIA H100".to_string(),
+                vendor: GpuVendor::Nvidia,
+                model: "H100".to_string(),
                 vram_mb: 80000,
                 compute_capability: "9.0".to_string(),
             },
             GpuInfo {
-                model: "NVIDIA H100".to_string(),
+                vendor: GpuVendor::Nvidia,
+                model: "H100".to_string(),
                 vram_mb: 80000,
                 compute_capability: "9.0".to_string(),
             },
             GpuInfo {
-                model: "NVIDIA A100".to_string(),
+                vendor: GpuVendor::Nvidia,
+                model: "A100".to_string(),
                 vram_mb: 40000,
                 compute_capability: "8.0".to_string(),
             },
             GpuInfo {
-                model: "NVIDIA A100".to_string(),
+                vendor: GpuVendor::Nvidia,
+                model: "A100".to_string(),
                 vram_mb: 40000,
                 compute_capability: "8.0".to_string(),
             },
@@ -567,12 +574,14 @@ mod tests {
 
     #[test]
     fn test_very_long_validity_period() {
+        use crate::hardware::GpuVendor;
         let (signing_key, verifying_key) = create_keypair();
 
         // 10 years validity
         let attestation = HardwareAttestation::create_and_sign(
             Uuid::new_v4(),
             vec![GpuInfo {
+                vendor: GpuVendor::Unknown,
                 model: "GPU".to_string(),
                 vram_mb: 1000,
                 compute_capability: "1.0".to_string(),
@@ -589,12 +598,14 @@ mod tests {
 
     #[test]
     fn test_attestation_expiry_boundary() {
+        use crate::hardware::GpuVendor;
         let (signing_key, verifying_key) = create_keypair();
 
         // Create attestation that expires in 1 second
         let attestation = HardwareAttestation::create_and_sign(
             Uuid::new_v4(),
             vec![GpuInfo {
+                vendor: GpuVendor::Unknown,
                 model: "GPU".to_string(),
                 vram_mb: 1000,
                 compute_capability: "1.0".to_string(),
@@ -611,6 +622,7 @@ mod tests {
 
     #[test]
     fn test_replay_attack_detection_different_node() {
+        use crate::hardware::GpuVendor;
         let (signing_key, verifying_key) = create_keypair();
 
         let node1 = Uuid::new_v4();
@@ -620,6 +632,7 @@ mod tests {
         let attestation = HardwareAttestation::create_and_sign(
             node1,
             vec![GpuInfo {
+                vendor: GpuVendor::Unknown,
                 model: "GPU".to_string(),
                 vram_mb: 1000,
                 compute_capability: "1.0".to_string(),
@@ -752,10 +765,12 @@ mod tests {
 
     #[test]
     fn test_special_characters_in_gpu_model() {
+        use crate::hardware::GpuVendor;
         let (signing_key, verifying_key) = create_keypair();
 
         let gpu = GpuInfo {
-            model: "NVIDIA RTX™ 4090 \"Super\" <special>".to_string(),
+            vendor: GpuVendor::Nvidia,
+            model: "RTX™ 4090 \"Super\" <special>".to_string(),
             vram_mb: 24576,
             compute_capability: "8.9+".to_string(),
         };
@@ -775,9 +790,11 @@ mod tests {
 
     #[test]
     fn test_zero_vram_gpu() {
+        use crate::hardware::GpuVendor;
         let (signing_key, verifying_key) = create_keypair();
 
         let gpu = GpuInfo {
+            vendor: GpuVendor::Unknown,
             model: "Virtual GPU".to_string(),
             vram_mb: 0, // Edge case: zero VRAM
             compute_capability: "0.0".to_string(),
@@ -798,9 +815,11 @@ mod tests {
 
     #[test]
     fn test_max_vram_gpu() {
+        use crate::hardware::GpuVendor;
         let (signing_key, verifying_key) = create_keypair();
 
         let gpu = GpuInfo {
+            vendor: GpuVendor::Unknown,
             model: "Future GPU".to_string(),
             vram_mb: u64::MAX, // Maximum possible VRAM
             compute_capability: "99.9".to_string(),
@@ -821,6 +840,7 @@ mod tests {
 
     #[test]
     fn test_concurrent_attestations_same_node() {
+        use crate::hardware::GpuVendor;
         let (signing_key, verifying_key) = create_keypair();
         let node_id = Uuid::new_v4();
 
@@ -828,6 +848,7 @@ mod tests {
         let attestation1 = HardwareAttestation::create_and_sign(
             node_id,
             vec![GpuInfo {
+                vendor: GpuVendor::Unknown,
                 model: "GPU v1".to_string(),
                 vram_mb: 1000,
                 compute_capability: "1.0".to_string(),
@@ -840,6 +861,7 @@ mod tests {
         let attestation2 = HardwareAttestation::create_and_sign(
             node_id,
             vec![GpuInfo {
+                vendor: GpuVendor::Unknown,
                 model: "GPU v2".to_string(), // Different config
                 vram_mb: 2000,
                 compute_capability: "2.0".to_string(),
@@ -864,12 +886,14 @@ mod tests {
 
     #[test]
     fn test_nil_uuid_node_id() {
+        use crate::hardware::GpuVendor;
         let (signing_key, verifying_key) = create_keypair();
 
         // Use nil UUID (all zeros)
         let attestation = HardwareAttestation::create_and_sign(
             Uuid::nil(),
             vec![GpuInfo {
+                vendor: GpuVendor::Unknown,
                 model: "GPU".to_string(),
                 vram_mb: 1000,
                 compute_capability: "1.0".to_string(),

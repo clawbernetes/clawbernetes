@@ -41,7 +41,10 @@ pub mod strategy;
 pub use error::AgentError;
 
 // Re-exports for convenience
-pub use autonomy::{AutonomyMode, Decision, DecisionThresholds, JobDecision};
+pub use autonomy::{
+    AutonomyMode, AutonomyPolicy, BudgetExceededError, Decision, DecisionThresholds,
+    EvaluationResult, JobDecision, PolicyBounds, PolicyEvaluator, ProposedAction, SpendingTracker,
+};
 pub use buyer::{BuyerState, BuyerError, BuyerPolicy, JobRequirements, ProviderOffer};
 pub use buyer::{evaluate_offer, score_offer, select_best_offer};
 pub use negotiation::{Bid, NegotiationJob, NegotiationState, NegotiationStrategy, SelectedBid};

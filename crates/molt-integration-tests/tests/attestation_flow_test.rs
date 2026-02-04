@@ -32,6 +32,7 @@ fn create_keypair() -> (SigningKey, VerifyingKey) {
 
 fn create_test_gpu() -> GpuInfo {
     GpuInfo {
+        vendor: molt_attestation::GpuVendor::Nvidia,
         model: "NVIDIA RTX 4090".to_string(),
         vram_mb: 24576,
         compute_capability: "8.9".to_string(),
@@ -72,16 +73,19 @@ fn create_hardware_attestation_multiple_gpus() {
 
     let gpus = vec![
         GpuInfo {
+            vendor: molt_attestation::GpuVendor::Nvidia,
             model: "NVIDIA A100".to_string(),
             vram_mb: 81920,
             compute_capability: "8.0".to_string(),
         },
         GpuInfo {
+            vendor: molt_attestation::GpuVendor::Nvidia,
             model: "NVIDIA A100".to_string(),
             vram_mb: 81920,
             compute_capability: "8.0".to_string(),
         },
         GpuInfo {
+            vendor: molt_attestation::GpuVendor::Nvidia,
             model: "NVIDIA H100".to_string(),
             vram_mb: 81920,
             compute_capability: "9.0".to_string(),
@@ -606,11 +610,13 @@ fn full_attestation_flow_end_to_end() {
     // Step 1: Create hardware attestation
     let gpus = vec![
         GpuInfo {
+            vendor: molt_attestation::GpuVendor::Nvidia,
             model: "NVIDIA A100".to_string(),
             vram_mb: 81920,
             compute_capability: "8.0".to_string(),
         },
         GpuInfo {
+            vendor: molt_attestation::GpuVendor::Nvidia,
             model: "NVIDIA A100".to_string(),
             vram_mb: 81920,
             compute_capability: "8.0".to_string(),

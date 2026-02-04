@@ -27,7 +27,8 @@
 //!
 //! // Create GPU info
 //! let gpu = GpuInfo {
-//!     model: "NVIDIA RTX 4090".to_string(),
+//!     vendor: molt_attestation::GpuVendor::Nvidia,
+//!     model: "RTX 4090".to_string(),
 //!     vram_mb: 24576,
 //!     compute_capability: "8.9".to_string(),
 //! };
@@ -91,7 +92,7 @@ pub use error::AttestationError;
 
 // Re-export commonly used types
 pub use execution::{Checkpoint, CheckpointChain, ExecutionAttestation, ExecutionMetrics};
-pub use hardware::{GpuInfo, HardwareAttestation};
+pub use hardware::{AttestationChain, AttestationEntry, GpuInfo, GpuVendor, HardwareAttestation};
 pub use verification::{
     batch_verify_execution, batch_verify_hardware, verify_execution_attestation,
     verify_execution_with_data, verify_hardware_attestation, VerificationDetails,

@@ -4,6 +4,8 @@
 //! Uses a mock WebSocket server to verify message flows.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -12,7 +14,10 @@ use claw_proto::{
     WorkloadId, WorkloadSpec, WorkloadState,
 };
 use clawnode::error::NodeError;
-use clawnode::gateway::{ConnectionState, GatewayEvent, GatewayHandle};
+use clawnode::gateway::{
+    AutoReconnectClient, AutoReconnectEvent, ConnectionState, GatewayEvent, GatewayHandle,
+    HeartbeatConfig, ReconnectConfig,
+};
 use clawnode::metrics::MetricsReport;
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -788,4 +793,470 @@ async fn test_handles_gateway_error_message() {
         }
         _ => panic!("expected Error message, got {:?}", event),
     }
+}
+
+// ============================================================================
+// AutoReconnectClient Integration Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_auto_reconnect_client_connects_and_registers() {
+    // Arrange
+    let gateway = MockGateway::new().await.expect("failed to create mock gateway");
+    let url = gateway.url();
+    let node_id = NodeId::new();
+    let capabilities = test_capabilities();
+
+    let client = AutoReconnectClient::new(url.clone(), node_id, "test-node", capabilities.clone());
+
+    // Gateway task: accept and verify registration
+    let gateway_task = tokio::spawn(async move {
+        let (ws, recv_node_id) = gateway
+            .accept_and_register()
+            .await
+            .expect("failed to accept and register");
+        (ws, recv_node_id)
+    });
+
+    // Act: Start the client
+    let (_tx, mut rx) = client.start();
+
+    // Should receive Connected event
+    let event = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timeout waiting for Connected")
+        .expect("channel closed");
+
+    assert!(
+        matches!(event, AutoReconnectEvent::Connected),
+        "expected Connected, got {:?}",
+        event
+    );
+
+    // Should receive Registered message
+    let event = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timeout waiting for Registered")
+        .expect("channel closed");
+
+    assert!(
+        matches!(
+            event,
+            AutoReconnectEvent::Message(GatewayMessage::Registered { .. })
+        ),
+        "expected Registered message, got {:?}",
+        event
+    );
+
+    // Verify gateway received correct node_id
+    let (_, recv_node_id) = timeout(Duration::from_secs(5), gateway_task)
+        .await
+        .expect("timeout")
+        .expect("gateway failed");
+
+    assert_eq!(recv_node_id, node_id);
+
+    client.stop();
+}
+
+#[tokio::test]
+async fn test_auto_reconnect_client_sends_messages() {
+    // Arrange
+    let gateway = MockGateway::new().await.expect("failed to create mock gateway");
+    let url = gateway.url();
+    let node_id = NodeId::new();
+    let capabilities = test_capabilities();
+
+    let client = AutoReconnectClient::new(url.clone(), node_id, "test-node", capabilities.clone());
+
+    // Gateway task: accept, register, then read a message
+    let gateway_task = tokio::spawn(async move {
+        let (mut ws, _) = gateway
+            .accept_and_register()
+            .await
+            .expect("failed to accept and register");
+
+        // Read additional message (workload update)
+        let msg = ws.next().await.expect("no message").expect("ws error");
+        let text = match msg {
+            Message::Text(t) => t.to_string(),
+            _ => panic!("expected text message"),
+        };
+        NodeMessage::from_json(&text).expect("failed to parse")
+    });
+
+    // Start client
+    let (tx, mut rx) = client.start();
+
+    // Wait for Connected
+    let _ = timeout(Duration::from_secs(5), rx.recv()).await;
+    // Wait for Registered
+    let _ = timeout(Duration::from_secs(5), rx.recv()).await;
+
+    // Act: Send a workload update
+    let workload_id = WorkloadId::new();
+    let msg = NodeMessage::workload_update(workload_id, WorkloadState::Running, None);
+    tx.send(msg).await.expect("send failed");
+
+    // Verify gateway received the message
+    let received = timeout(Duration::from_secs(5), gateway_task)
+        .await
+        .expect("timeout")
+        .expect("gateway failed");
+
+    match received {
+        NodeMessage::WorkloadUpdate {
+            workload_id: recv_id,
+            state,
+            ..
+        } => {
+            assert_eq!(recv_id, workload_id);
+            assert_eq!(state, WorkloadState::Running);
+        }
+        _ => panic!("expected WorkloadUpdate, got {:?}", received),
+    }
+
+    client.stop();
+}
+
+#[tokio::test]
+async fn test_auto_reconnect_client_receives_commands() {
+    // Arrange
+    let gateway = MockGateway::new().await.expect("failed to create mock gateway");
+    let url = gateway.url();
+    let node_id = NodeId::new();
+    let capabilities = test_capabilities();
+
+    let client = AutoReconnectClient::new(url.clone(), node_id, "test-node", capabilities.clone());
+
+    let workload_id = WorkloadId::new();
+    let spec = WorkloadSpec::new("nginx:latest").with_gpu_count(2);
+
+    // Gateway task: accept, register, send StartWorkload
+    let gateway_task = tokio::spawn(async move {
+        let (mut ws, _) = gateway
+            .accept_and_register()
+            .await
+            .expect("failed to accept and register");
+
+        // Send StartWorkload command
+        let cmd = GatewayMessage::StartWorkload {
+            workload_id,
+            spec: spec.clone(),
+        };
+        ws.send(Message::Text(cmd.to_json().expect("json").into()))
+            .await
+            .expect("send failed");
+
+        (workload_id, spec)
+    });
+
+    // Start client
+    let (_tx, mut rx) = client.start();
+
+    // Skip Connected event
+    let _ = timeout(Duration::from_secs(5), rx.recv()).await;
+    // Skip Registered message
+    let _ = timeout(Duration::from_secs(5), rx.recv()).await;
+
+    // Act: Receive StartWorkload command
+    let event = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timeout waiting for StartWorkload")
+        .expect("channel closed");
+
+    let (expected_workload_id, expected_spec) = timeout(Duration::from_secs(5), gateway_task)
+        .await
+        .expect("timeout")
+        .expect("gateway failed");
+
+    // Assert
+    match event {
+        AutoReconnectEvent::Message(GatewayMessage::StartWorkload { workload_id, spec }) => {
+            assert_eq!(workload_id, expected_workload_id);
+            assert_eq!(spec.image, expected_spec.image);
+            assert_eq!(spec.gpu_count, 2);
+        }
+        _ => panic!("expected StartWorkload message, got {:?}", event),
+    }
+
+    client.stop();
+}
+
+#[tokio::test]
+async fn test_auto_reconnect_client_reconnects_on_disconnect() {
+    // Arrange: Create a gateway that will accept one connection then close it
+    let gateway = MockGateway::new().await.expect("failed to create mock gateway");
+    let url = gateway.url();
+    let node_id = NodeId::new();
+    let capabilities = test_capabilities();
+
+    let reconnect_config = ReconnectConfig {
+        initial_delay: Duration::from_millis(10),
+        max_delay: Duration::from_millis(100),
+        backoff_multiplier: 2.0,
+        max_attempts: Some(3),
+    };
+
+    let client = AutoReconnectClient::new(url.clone(), node_id, "test-node", capabilities.clone())
+        .with_reconnect_config(reconnect_config);
+
+    // Gateway task: accept first connection, close it, accept second connection
+    let gateway_task = tokio::spawn(async move {
+        // First connection - close immediately after registration
+        let (ws, _) = gateway
+            .accept_and_register()
+            .await
+            .expect("failed to accept first connection");
+        drop(ws); // Close connection
+
+        // Second connection - keep open
+        let (ws, node_id) = gateway
+            .accept_and_register()
+            .await
+            .expect("failed to accept second connection");
+        (ws, node_id)
+    });
+
+    // Start client
+    let (_tx, mut rx) = client.start();
+
+    // First connection: Connected
+    let event = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timeout")
+        .expect("closed");
+    assert!(matches!(event, AutoReconnectEvent::Connected));
+
+    // First connection: Registered
+    let event = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timeout")
+        .expect("closed");
+    assert!(matches!(
+        event,
+        AutoReconnectEvent::Message(GatewayMessage::Registered { .. })
+    ));
+
+    // Should receive Disconnected after server closes
+    let event = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timeout waiting for Disconnected")
+        .expect("closed");
+    assert!(
+        matches!(event, AutoReconnectEvent::Disconnected { .. }),
+        "expected Disconnected, got {:?}",
+        event
+    );
+
+    // Should receive Connected again after reconnect
+    let event = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timeout waiting for reconnect Connected")
+        .expect("closed");
+    assert!(
+        matches!(event, AutoReconnectEvent::Connected),
+        "expected Connected after reconnect, got {:?}",
+        event
+    );
+
+    // Should receive Registered again
+    let event = timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timeout")
+        .expect("closed");
+    assert!(matches!(
+        event,
+        AutoReconnectEvent::Message(GatewayMessage::Registered { .. })
+    ));
+
+    // Verify gateway accepted both connections
+    let _ = timeout(Duration::from_secs(5), gateway_task).await;
+
+    client.stop();
+}
+
+#[tokio::test]
+async fn test_auto_reconnect_client_fails_after_max_attempts() {
+    // Arrange: Use non-existent URL
+    let node_id = NodeId::new();
+    let capabilities = test_capabilities();
+
+    let reconnect_config = ReconnectConfig {
+        initial_delay: Duration::from_millis(1),
+        max_delay: Duration::from_millis(10),
+        backoff_multiplier: 2.0,
+        max_attempts: Some(3),
+    };
+
+    let client = AutoReconnectClient::new(
+        "ws://127.0.0.1:1", // Non-routable
+        node_id,
+        "test-node",
+        capabilities.clone(),
+    )
+    .with_reconnect_config(reconnect_config);
+
+    // Start client
+    let (_tx, mut rx) = client.start();
+
+    // Should receive Reconnecting events
+    let mut reconnect_count = 0;
+    loop {
+        let event = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timeout")
+            .expect("closed");
+
+        match event {
+            AutoReconnectEvent::Reconnecting { attempt, .. } => {
+                reconnect_count = attempt;
+            }
+            AutoReconnectEvent::ReconnectFailed { attempts, .. } => {
+                assert_eq!(attempts, 3);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(reconnect_count >= 2, "should have made reconnect attempts");
+    assert_eq!(client.state(), ConnectionState::Failed);
+}
+
+#[tokio::test]
+async fn test_auto_reconnect_client_with_heartbeat() {
+    // Arrange
+    let gateway = MockGateway::new().await.expect("failed to create mock gateway");
+    let url = gateway.url();
+    let node_id = NodeId::new();
+    let capabilities = test_capabilities();
+
+    let heartbeat_config = HeartbeatConfig {
+        interval: Duration::from_millis(50),
+        ack_timeout: Duration::from_secs(1),
+        max_missed_acks: 10,
+    };
+
+    let client = AutoReconnectClient::new(url.clone(), node_id, "test-node", capabilities.clone())
+        .with_heartbeat(heartbeat_config);
+
+    // Gateway task: accept, register, read heartbeats, send acks
+    let heartbeat_count = Arc::new(AtomicU32::new(0));
+    let heartbeat_count_clone = Arc::clone(&heartbeat_count);
+
+    let gateway_task = tokio::spawn(async move {
+        let (mut ws, _) = gateway
+            .accept_and_register()
+            .await
+            .expect("failed to accept and register");
+
+        // Read heartbeats and send acks
+        for _ in 0..3 {
+            if let Some(Ok(Message::Text(text))) = ws.next().await {
+                if let Ok(NodeMessage::Heartbeat { .. }) = NodeMessage::from_json(&text) {
+                    heartbeat_count_clone.fetch_add(1, Ordering::SeqCst);
+
+                    // Send ack
+                    let ack = GatewayMessage::heartbeat_ack();
+                    let _ = ws.send(Message::Text(ack.to_json().expect("json").into())).await;
+                }
+            }
+        }
+    });
+
+    // Start client
+    let (_tx, mut rx) = client.start();
+
+    // Wait for connection
+    let _ = timeout(Duration::from_secs(5), rx.recv()).await; // Connected
+    let _ = timeout(Duration::from_secs(5), rx.recv()).await; // Registered
+
+    // Wait for heartbeats to be exchanged
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify heartbeats were received
+    let _ = timeout(Duration::from_secs(5), gateway_task).await;
+
+    let count = heartbeat_count.load(Ordering::SeqCst);
+    assert!(count >= 2, "expected at least 2 heartbeats, got {}", count);
+
+    client.stop();
+}
+
+#[tokio::test]
+async fn test_auto_reconnect_client_heartbeat_ack_resets_counter() {
+    // Arrange
+    let gateway = MockGateway::new().await.expect("failed to create mock gateway");
+    let url = gateway.url();
+    let node_id = NodeId::new();
+    let capabilities = test_capabilities();
+
+    let heartbeat_config = HeartbeatConfig {
+        interval: Duration::from_millis(20),
+        ack_timeout: Duration::from_secs(1),
+        max_missed_acks: 2, // Will stop quickly if acks not received
+    };
+
+    let client = AutoReconnectClient::new(url.clone(), node_id, "test-node", capabilities.clone())
+        .with_heartbeat(heartbeat_config);
+
+    // Gateway task: accept, register, send acks for heartbeats
+    // Keep connection open longer to allow state check
+    let gateway_task = tokio::spawn(async move {
+        let (mut ws, _) = gateway
+            .accept_and_register()
+            .await
+            .expect("failed to accept and register");
+
+        // Keep connection alive by acking heartbeats
+        for _ in 0..10 {
+            if let Some(Ok(Message::Text(text))) = ws.next().await {
+                if NodeMessage::from_json(&text)
+                    .map(|m| matches!(m, NodeMessage::Heartbeat { .. }))
+                    .unwrap_or(false)
+                {
+                    let ack = GatewayMessage::heartbeat_ack();
+                    let _ = ws.send(Message::Text(ack.to_json().expect("json").into())).await;
+                }
+            }
+        }
+        // Keep connection open briefly after acks
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    });
+
+    // Start client
+    let (_tx, mut rx) = client.start();
+
+    // Wait for connection
+    let _ = timeout(Duration::from_secs(5), rx.recv()).await; // Connected
+    let _ = timeout(Duration::from_secs(5), rx.recv()).await; // Registered
+
+    // Receive heartbeat acks and verify connection stays up
+    let mut ack_count = 0;
+    for _ in 0..15 {
+        if let Ok(Some(event)) = timeout(Duration::from_millis(50), rx.recv()).await {
+            if matches!(
+                event,
+                AutoReconnectEvent::Message(GatewayMessage::HeartbeatAck { .. })
+            ) {
+                ack_count += 1;
+                // Check state while acks are still coming - connection should be up
+                if ack_count == 3 {
+                    assert_eq!(
+                        client.state(),
+                        ConnectionState::Connected,
+                        "connection should stay up while receiving acks"
+                    );
+                }
+            }
+        }
+    }
+
+    assert!(ack_count >= 3, "expected at least 3 acks, got {}", ack_count);
+
+    // Wait for gateway task to complete
+    let _ = timeout(Duration::from_secs(5), gateway_task).await;
+
+    client.stop();
 }

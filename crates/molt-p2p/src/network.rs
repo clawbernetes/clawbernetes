@@ -505,7 +505,7 @@ impl MoltNetwork {
         let mut matching: Vec<CapacityAnnouncement> = inner
             .known_capacities
             .values()
-            .filter(|ann| !ann.is_expired() && matches_requirements(ann, requirements))
+            .filter(|ann: &&CapacityAnnouncement| !ann.is_expired() && matches_requirements(ann, requirements))
             .cloned()
             .collect();
 
@@ -549,7 +549,7 @@ impl MoltNetwork {
         let mut inner = self.inner.write().await;
         let initial = inner.known_capacities.len();
 
-        inner.known_capacities.retain(|_, ann| !ann.is_expired());
+        inner.known_capacities.retain(|_, ann: &mut CapacityAnnouncement| !ann.is_expired());
 
         initial - inner.known_capacities.len()
     }
