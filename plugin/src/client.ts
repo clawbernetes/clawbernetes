@@ -1,12 +1,14 @@
 /**
  * Clawbernetes Client
  *
- * Interfaces with the claw-* Rust crates. This is the bridge layer that will
- * eventually use FFI, gRPC, or embedded Rust via napi-rs.
- *
- * For now, this provides the interface contract with mock implementations
- * that will be replaced with real crate bindings.
+ * Communicates with the claw-bridge Rust binary via JSON-RPC over stdio.
+ * The bridge provides access to all claw-* Rust crates.
  */
+
+import { spawn, ChildProcess } from "node:child_process";
+import { createInterface, Interface } from "node:readline";
+import { EventEmitter } from "node:events";
+import path from "node:path";
 
 import type {
   ClawbernetesConfig,
@@ -22,83 +24,256 @@ import type {
   MoltBid,
 } from "./types.js";
 
+// ─────────────────────────────────────────────────────────────
+// JSON-RPC Types
+// ─────────────────────────────────────────────────────────────
+
+interface RpcRequest {
+  id: number;
+  method: string;
+  params: unknown;
+}
+
+interface RpcResponse {
+  id: number;
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+  };
+}
+
+type PendingRequest = {
+  resolve: (result: unknown) => void;
+  reject: (error: Error) => void;
+};
+
+// ─────────────────────────────────────────────────────────────
+// Bridge Process Manager
+// ─────────────────────────────────────────────────────────────
+
+class BridgeProcess extends EventEmitter {
+  private process: ChildProcess | null = null;
+  private readline: Interface | null = null;
+  private requestId = 0;
+  private pending = new Map<number, PendingRequest>();
+  private bridgePath: string;
+
+  constructor(bridgePath?: string) {
+    super();
+    // Default to looking for claw-bridge in PATH or relative to this module
+    this.bridgePath = bridgePath ?? this.findBridge();
+  }
+
+  private findBridge(): string {
+    // Try common locations
+    const candidates = [
+      "claw-bridge", // In PATH
+      path.join(process.cwd(), "target", "release", "claw-bridge"),
+      path.join(process.cwd(), "target", "debug", "claw-bridge"),
+      path.join(__dirname, "..", "..", "target", "release", "claw-bridge"),
+      path.join(__dirname, "..", "..", "target", "debug", "claw-bridge"),
+    ];
+    // For now, just return the first one (will error if not found)
+    return candidates[0];
+  }
+
+  async start(): Promise<void> {
+    if (this.process) {
+      return;
+    }
+
+    return new Promise((resolve, reject) => {
+      this.process = spawn(this.bridgePath, [], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, RUST_LOG: "claw_bridge=info" },
+      });
+
+      this.process.on("error", (err) => {
+        this.emit("error", err);
+        reject(err);
+      });
+
+      this.process.on("exit", (code) => {
+        this.emit("exit", code);
+        this.cleanup();
+      });
+
+      if (this.process.stdout) {
+        this.readline = createInterface({
+          input: this.process.stdout,
+          crlfDelay: Infinity,
+        });
+
+        this.readline.on("line", (line) => {
+          this.handleResponse(line);
+        });
+      }
+
+      if (this.process.stderr) {
+        this.process.stderr.on("data", (data) => {
+          // Log bridge stderr for debugging
+          console.error(`[claw-bridge] ${data.toString().trim()}`);
+        });
+      }
+
+      // Give the process a moment to start
+      setTimeout(() => resolve(), 100);
+    });
+  }
+
+  stop(): void {
+    if (this.process) {
+      this.process.kill();
+      this.cleanup();
+    }
+  }
+
+  private cleanup(): void {
+    this.process = null;
+    this.readline = null;
+    // Reject all pending requests
+    for (const [id, pending] of this.pending) {
+      pending.reject(new Error("Bridge process terminated"));
+      this.pending.delete(id);
+    }
+  }
+
+  private handleResponse(line: string): void {
+    try {
+      const response = JSON.parse(line) as RpcResponse;
+      const pending = this.pending.get(response.id);
+      if (pending) {
+        this.pending.delete(response.id);
+        if (response.error) {
+          pending.reject(new Error(`${response.error.message} (code: ${response.error.code})`));
+        } else {
+          pending.resolve(response.result);
+        }
+      }
+    } catch (err) {
+      console.error("[claw-bridge] Failed to parse response:", line);
+    }
+  }
+
+  async call<T>(method: string, params: unknown = {}): Promise<T> {
+    if (!this.process || !this.process.stdin) {
+      await this.start();
+    }
+
+    return new Promise((resolve, reject) => {
+      const id = ++this.requestId;
+      const request: RpcRequest = { id, method, params };
+
+      this.pending.set(id, {
+        resolve: resolve as (result: unknown) => void,
+        reject,
+      });
+
+      const json = JSON.stringify(request) + "\n";
+      this.process!.stdin!.write(json, (err) => {
+        if (err) {
+          this.pending.delete(id);
+          reject(err);
+        }
+      });
+
+      // Timeout after 30 seconds
+      setTimeout(() => {
+        if (this.pending.has(id)) {
+          this.pending.delete(id);
+          reject(new Error(`Request timeout: ${method}`));
+        }
+      }, 30000);
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Clawbernetes Client
+// ─────────────────────────────────────────────────────────────
+
 export class ClawbernetesClient {
   private config: ClawbernetesConfig;
+  private bridge: BridgeProcess;
 
   constructor(config: ClawbernetesConfig = {}) {
     this.config = config;
+    this.bridge = new BridgeProcess();
+  }
+
+  async initialize(): Promise<void> {
+    await this.bridge.start();
+  }
+
+  shutdown(): void {
+    this.bridge.stop();
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Cluster Operations (claw-gateway-server, claw-discovery)
+  // Cluster Operations
   // ─────────────────────────────────────────────────────────────
 
   async getClusterStatus(): Promise<ClusterStatus> {
-    // TODO: Call claw-gateway-server via FFI/gRPC
-    return {
-      name: this.config.defaultCluster ?? "default",
-      healthy: true,
-      nodes: { total: 0, ready: 0, notReady: 0 },
-      gpus: { total: 0, available: 0, allocated: 0 },
-      workloads: { running: 0, pending: 0, failed: 0 },
-    };
+    return this.bridge.call("cluster_status", {
+      cluster: this.config.defaultCluster,
+    });
   }
 
   async listNodes(filters?: {
     status?: string;
     labels?: Record<string, string>;
   }): Promise<ClusterNode[]> {
-    // TODO: Call claw-discovery via FFI/gRPC
-    void filters;
-    return [];
+    return this.bridge.call("node_list", filters ?? {});
   }
 
   async getNode(nodeId: string): Promise<ClusterNode | null> {
-    // TODO: Call claw-discovery via FFI/gRPC
-    void nodeId;
-    return null;
+    try {
+      return await this.bridge.call("node_get", { node_id: nodeId });
+    } catch (err) {
+      if (String(err).includes("not found")) {
+        return null;
+      }
+      throw err;
+    }
   }
 
   async drainNode(
     nodeId: string,
     options?: { gracePeriodSeconds?: number; force?: boolean }
   ): Promise<{ success: boolean; migratedWorkloads: number }> {
-    // TODO: Call claw-scheduler via FFI/gRPC
-    void nodeId;
-    void options;
-    return { success: true, migratedWorkloads: 0 };
+    return this.bridge.call("node_drain", {
+      node_id: nodeId,
+      grace_period_seconds: options?.gracePeriodSeconds,
+      force: options?.force,
+    });
   }
 
   async cordonNode(nodeId: string): Promise<{ success: boolean }> {
-    // TODO: Call claw-discovery via FFI/gRPC
-    void nodeId;
-    return { success: true };
+    return this.bridge.call("node_cordon", { node_id: nodeId });
   }
 
   async uncordonNode(nodeId: string): Promise<{ success: boolean }> {
-    // TODO: Call claw-discovery via FFI/gRPC
-    void nodeId;
-    return { success: true };
+    return this.bridge.call("node_uncordon", { node_id: nodeId });
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Workload Operations (claw-scheduler, claw-runtime)
+  // Workload Operations
   // ─────────────────────────────────────────────────────────────
 
   async submitWorkload(spec: WorkloadSpec): Promise<Workload> {
-    // TODO: Call claw-scheduler via FFI/gRPC
-    return {
-      id: `wl-${Date.now()}`,
-      spec,
-      state: "pending",
-      createdAt: Date.now(),
-    };
+    return this.bridge.call("workload_submit", spec);
   }
 
   async getWorkload(workloadId: string): Promise<Workload | null> {
-    // TODO: Call claw-scheduler via FFI/gRPC
-    void workloadId;
-    return null;
+    try {
+      return await this.bridge.call("workload_get", { workload_id: workloadId });
+    } catch (err) {
+      if (String(err).includes("not found")) {
+        return null;
+      }
+      throw err;
+    }
   }
 
   async listWorkloads(filters?: {
@@ -106,33 +281,36 @@ export class ClawbernetesClient {
     labels?: Record<string, string>;
     nodeId?: string;
   }): Promise<Workload[]> {
-    // TODO: Call claw-scheduler via FFI/gRPC
-    void filters;
-    return [];
+    return this.bridge.call("workload_list", {
+      state: filters?.state,
+      node_id: filters?.nodeId,
+      labels: filters?.labels,
+    });
   }
 
   async stopWorkload(
     workloadId: string,
     options?: { gracePeriodSeconds?: number; force?: boolean }
   ): Promise<{ success: boolean }> {
-    // TODO: Call claw-scheduler via FFI/gRPC
-    void workloadId;
-    void options;
-    return { success: true };
+    return this.bridge.call("workload_stop", {
+      workload_id: workloadId,
+      grace_period_seconds: options?.gracePeriodSeconds,
+      force: options?.force,
+    });
   }
 
   async scaleWorkload(
     workloadId: string,
     replicas: number
   ): Promise<{ success: boolean; previousReplicas: number }> {
-    // TODO: Call claw-scheduler via FFI/gRPC
-    void workloadId;
-    void replicas;
-    return { success: true, previousReplicas: 1 };
+    return this.bridge.call("workload_scale", {
+      workload_id: workloadId,
+      replicas,
+    });
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Observability (claw-metrics, claw-logs, claw-alerts)
+  // Observability
   // ─────────────────────────────────────────────────────────────
 
   async queryMetrics(query: {
@@ -142,9 +320,13 @@ export class ClawbernetesClient {
     step?: number;
     labels?: Record<string, string>;
   }): Promise<MetricSeries[]> {
-    // TODO: Call claw-metrics via FFI/gRPC
-    void query;
-    return [];
+    return this.bridge.call("metrics_query", {
+      name: query.name,
+      start_time: query.startTime,
+      end_time: query.endTime,
+      step: query.step,
+      labels: query.labels,
+    });
   }
 
   async searchLogs(query: {
@@ -156,9 +338,15 @@ export class ClawbernetesClient {
     endTime?: number;
     limit?: number;
   }): Promise<LogEntry[]> {
-    // TODO: Call claw-logs via FFI/gRPC
-    void query;
-    return [];
+    return this.bridge.call("logs_search", {
+      text: query.text,
+      level: query.level,
+      workload_id: query.workloadId,
+      node_id: query.nodeId,
+      start_time: query.startTime,
+      end_time: query.endTime,
+      limit: query.limit,
+    });
   }
 
   async createAlert(alert: {
@@ -168,77 +356,28 @@ export class ClawbernetesClient {
     message: string;
     labels?: Record<string, string>;
   }): Promise<Alert> {
-    // TODO: Call claw-alerts via FFI/gRPC
-    return {
-      id: `alert-${Date.now()}`,
-      name: alert.name,
-      severity: alert.severity,
-      message: alert.message,
-      source: "clawbernetes-plugin",
-      firedAt: Date.now(),
-      labels: alert.labels,
-    };
+    return this.bridge.call("alert_create", alert);
   }
 
   async listAlerts(filters?: {
     severity?: AlertSeverity;
     resolved?: boolean;
   }): Promise<Alert[]> {
-    // TODO: Call claw-alerts via FFI/gRPC
-    void filters;
-    return [];
+    return this.bridge.call("alert_list", filters ?? {});
   }
 
   async silenceAlert(
     alertId: string,
     durationSeconds: number
   ): Promise<{ success: boolean }> {
-    // TODO: Call claw-alerts via FFI/gRPC
-    void alertId;
-    void durationSeconds;
-    return { success: true };
+    return this.bridge.call("alert_silence", {
+      alert_id: alertId,
+      duration_seconds: durationSeconds,
+    });
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Security (claw-secrets, claw-pki, claw-auth)
-  // ─────────────────────────────────────────────────────────────
-
-  async getSecret(
-    secretId: string,
-    accessor: string,
-    reason: string
-  ): Promise<{ value: string } | null> {
-    // TODO: Call claw-secrets via FFI/gRPC
-    void secretId;
-    void accessor;
-    void reason;
-    return null;
-  }
-
-  async putSecret(
-    secretId: string,
-    value: string,
-    policy?: { allowedAccessors?: string[]; expiresAt?: number }
-  ): Promise<{ success: boolean }> {
-    // TODO: Call claw-secrets via FFI/gRPC
-    void secretId;
-    void value;
-    void policy;
-    return { success: true };
-  }
-
-  async issueCertificate(request: {
-    commonName: string;
-    dnsNames?: string[];
-    validityDays?: number;
-  }): Promise<{ cert: string; key: string; ca: string }> {
-    // TODO: Call claw-pki via FFI/gRPC
-    void request;
-    return { cert: "", key: "", ca: "" };
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // MOLT Marketplace (claw-molt)
+  // MOLT Marketplace
   // ─────────────────────────────────────────────────────────────
 
   async listMoltOffers(filters?: {
@@ -247,9 +386,12 @@ export class ClawbernetesClient {
     region?: string;
     gpuModel?: string;
   }): Promise<MoltOffer[]> {
-    // TODO: Call claw-molt via FFI/gRPC
-    void filters;
-    return [];
+    return this.bridge.call("molt_offers", {
+      min_gpus: filters?.minGpus,
+      max_price_per_hour: filters?.maxPricePerHour,
+      region: filters?.region,
+      gpu_model: filters?.gpuModel,
+    });
   }
 
   async createMoltOffer(offer: {
@@ -259,18 +401,13 @@ export class ClawbernetesClient {
     minDurationHours?: number;
     maxDurationHours?: number;
   }): Promise<MoltOffer> {
-    // TODO: Call claw-molt via FFI/gRPC
-    return {
-      id: `offer-${Date.now()}`,
-      nodeId: this.config.molt?.nodeId ?? "unknown",
+    return this.bridge.call("molt_offer_create", {
       gpus: offer.gpus,
-      gpuModel: offer.gpuModel,
-      pricePerHour: offer.pricePerHour,
-      minDurationHours: offer.minDurationHours,
-      maxDurationHours: offer.maxDurationHours,
-      region: this.config.molt?.region ?? "unknown",
-      availableAt: Date.now(),
-    };
+      gpu_model: offer.gpuModel,
+      price_per_hour: offer.pricePerHour,
+      min_duration_hours: offer.minDurationHours,
+      max_duration_hours: offer.maxDurationHours,
+    });
   }
 
   async placeMoltBid(bid: {
@@ -278,20 +415,15 @@ export class ClawbernetesClient {
     pricePerHour: number;
     durationHours: number;
   }): Promise<MoltBid> {
-    // TODO: Call claw-molt via FFI/gRPC
-    return {
-      id: `bid-${Date.now()}`,
-      offerId: bid.offerId,
-      bidderId: "self",
-      pricePerHour: bid.pricePerHour,
-      durationHours: bid.durationHours,
-      status: "pending",
-      createdAt: Date.now(),
-    };
+    return this.bridge.call("molt_bid", {
+      offer_id: bid.offerId,
+      price_per_hour: bid.pricePerHour,
+      duration_hours: bid.durationHours,
+    });
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Cost (claw-billing)
+  // Cost
   // ─────────────────────────────────────────────────────────────
 
   async getCostReport(query: {
@@ -302,7 +434,7 @@ export class ClawbernetesClient {
     totalCost: number;
     breakdown: Array<{ key: string; cost: number; gpuHours: number }>;
   }> {
-    // TODO: Call claw-billing via FFI/gRPC
+    // TODO: Implement when billing is wired up
     void query;
     return { totalCost: 0, breakdown: [] };
   }
@@ -311,9 +443,10 @@ export class ClawbernetesClient {
     region?: string;
     gpuModel?: string;
   }): Promise<Array<{ region: string; gpuModel: string; pricePerHour: number }>> {
-    // TODO: Call claw-billing + claw-molt via FFI/gRPC
-    void filters;
-    return [];
+    return this.bridge.call("molt_spot_prices", {
+      region: filters?.region,
+      gpu_model: filters?.gpuModel,
+    });
   }
 }
 

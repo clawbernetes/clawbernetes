@@ -36,7 +36,7 @@ members = [
     "crates/molt-attestation",
     "crates/molt-integration-tests",
     "crates/claw-e2e-tests",
-    "crates/claw-dashboard",
+    "crates/claw-dashboard", "crates/claw-bridge",
 ]
 
 [workspace.package]
