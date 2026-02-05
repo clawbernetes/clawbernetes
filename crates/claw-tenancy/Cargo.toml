@@ -1,0 +1,37 @@
+[package]
+name = "claw-tenancy"
+description = "Multi-tenancy and namespace isolation for Clawbernetes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Error handling
+thiserror.workspace = true
+
+# Serialization
+serde = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# UUID for identifiers
+uuid.workspace = true
+
+# Time for timestamps
+chrono = { workspace = true }
+
+# Concurrent data structures
+parking_lot.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+test-case.workspace = true
+serde_json.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

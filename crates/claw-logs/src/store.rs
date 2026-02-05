@@ -3,6 +3,7 @@
 //! This module provides:
 //! - [`LogStore`] — Thread-safe log storage with automatic retention
 //! - [`LogStream`] — Async stream for tailing logs
+//! - Implementation of [`LogStoreTrait`] for generic usage
 
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
@@ -18,6 +19,7 @@ use tokio::sync::broadcast;
 
 use crate::error::{LogError, Result};
 use crate::index::LogIndex;
+use crate::traits::{LogStoreTrait, RotatableStore};
 use crate::types::{LogEntry, LogFilter, LogId};
 
 /// Configuration for the log store.
@@ -330,6 +332,50 @@ pub type SharedLogStore = Arc<LogStore>;
 #[must_use]
 pub fn shared_store(max_entries: usize, retention: Duration) -> SharedLogStore {
     Arc::new(LogStore::new(max_entries, retention))
+}
+
+// ============================================================================
+// Trait Implementations
+// ============================================================================
+
+impl LogStoreTrait for LogStore {
+    fn append(&self, entry: LogEntry) -> Result<LogId> {
+        LogStore::append(self, entry)
+    }
+
+    fn query(&self, filter: &LogFilter, limit: usize) -> Vec<LogEntry> {
+        LogStore::query(self, filter, limit)
+    }
+
+    fn get(&self, id: LogId) -> Option<LogEntry> {
+        LogStore::get(self, id)
+    }
+
+    fn len(&self) -> usize {
+        LogStore::len(self)
+    }
+
+    fn is_empty(&self) -> bool {
+        LogStore::is_empty(self)
+    }
+
+    fn clear(&self) -> Result<()> {
+        LogStore::clear(self);
+        Ok(())
+    }
+}
+
+impl RotatableStore for LogStore {
+    fn rotate(&self) -> Result<()> {
+        // In-memory store doesn't have file rotation, but we can trigger retention
+        self.enforce_retention();
+        Ok(())
+    }
+
+    fn enforce_retention(&self) -> Result<()> {
+        LogStore::enforce_retention(self);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

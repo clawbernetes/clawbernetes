@@ -6,8 +6,9 @@
 //! - [`LogFilter`] — Query filters for searching logs
 //! - [`LogId`] — Unique identifier for log entries
 //! - [`TimeRange`] — Time-based filtering
+//! - [`RetentionPolicy`] — Log retention rules
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -179,6 +180,131 @@ impl TimeRange {
             }
         }
         true
+    }
+}
+
+/// Retention policy for log stores.
+///
+/// Defines rules for when log entries should be removed:
+/// - `max_age` — Remove entries older than this duration
+/// - `max_size` — Remove oldest entries when total size exceeds this (bytes)
+/// - `max_entries` — Remove oldest entries when count exceeds this
+///
+/// All criteria are optional; when multiple are set, entries are removed
+/// when ANY criterion is violated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetentionPolicy {
+    /// Maximum age of log entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age: Option<TimeDelta>,
+    /// Maximum total size in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<u64>,
+    /// Maximum number of entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entries: Option<usize>,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            max_age: Some(TimeDelta::try_days(7).unwrap_or(TimeDelta::zero())),
+            max_size: Some(100 * 1024 * 1024), // 100 MB
+            max_entries: Some(1_000_000),
+        }
+    }
+}
+
+impl RetentionPolicy {
+    /// Creates a new empty retention policy (no limits).
+    #[must_use]
+    pub const fn unlimited() -> Self {
+        Self {
+            max_age: None,
+            max_size: None,
+            max_entries: None,
+        }
+    }
+
+    /// Creates a retention policy with only max age.
+    #[must_use]
+    pub const fn with_max_age(max_age: TimeDelta) -> Self {
+        Self {
+            max_age: Some(max_age),
+            max_size: None,
+            max_entries: None,
+        }
+    }
+
+    /// Creates a retention policy with only max size.
+    #[must_use]
+    pub const fn with_max_size(max_size: u64) -> Self {
+        Self {
+            max_age: None,
+            max_size: Some(max_size),
+            max_entries: None,
+        }
+    }
+
+    /// Creates a retention policy with only max entries.
+    #[must_use]
+    pub const fn with_max_entries(max_entries: usize) -> Self {
+        Self {
+            max_age: None,
+            max_size: None,
+            max_entries: Some(max_entries),
+        }
+    }
+
+    /// Builder method to set max age.
+    #[must_use]
+    pub const fn max_age(mut self, age: TimeDelta) -> Self {
+        self.max_age = Some(age);
+        self
+    }
+
+    /// Builder method to set max size.
+    #[must_use]
+    pub const fn max_size(mut self, size: u64) -> Self {
+        self.max_size = Some(size);
+        self
+    }
+
+    /// Builder method to set max entries.
+    #[must_use]
+    pub const fn max_entries(mut self, entries: usize) -> Self {
+        self.max_entries = Some(entries);
+        self
+    }
+
+    /// Checks if an entry should be removed due to age.
+    #[must_use]
+    pub fn is_expired(&self, entry_timestamp: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        if let Some(max_age) = self.max_age {
+            let age = now.signed_duration_since(entry_timestamp);
+            if age > max_age {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Checks if the count exceeds the max entries limit.
+    #[must_use]
+    pub fn exceeds_max_entries(&self, count: usize) -> bool {
+        if let Some(max) = self.max_entries {
+            return count > max;
+        }
+        false
+    }
+
+    /// Checks if the size exceeds the max size limit.
+    #[must_use]
+    pub fn exceeds_max_size(&self, size: u64) -> bool {
+        if let Some(max) = self.max_size {
+            return size > max;
+        }
+        false
     }
 }
 
@@ -796,5 +922,141 @@ mod tests {
         assert!(entry.matches(&LogFilter::new().with_contains("hello")));
         assert!(entry.matches(&LogFilter::new().with_contains("HELLO")));
         assert!(entry.matches(&LogFilter::new().with_contains("HeLLo WoRLD")));
+    }
+
+    // ===========================================
+    // RetentionPolicy Tests
+    // ===========================================
+
+    #[test]
+    fn retention_policy_default() {
+        let policy = RetentionPolicy::default();
+        assert!(policy.max_age.is_some());
+        assert!(policy.max_size.is_some());
+        assert!(policy.max_entries.is_some());
+    }
+
+    #[test]
+    fn retention_policy_unlimited() {
+        let policy = RetentionPolicy::unlimited();
+        assert!(policy.max_age.is_none());
+        assert!(policy.max_size.is_none());
+        assert!(policy.max_entries.is_none());
+    }
+
+    #[test]
+    fn retention_policy_with_max_age() {
+        let age = TimeDelta::try_hours(24).unwrap_or(TimeDelta::zero());
+        let policy = RetentionPolicy::with_max_age(age);
+        assert_eq!(policy.max_age, Some(age));
+        assert!(policy.max_size.is_none());
+        assert!(policy.max_entries.is_none());
+    }
+
+    #[test]
+    fn retention_policy_with_max_size() {
+        let policy = RetentionPolicy::with_max_size(1024 * 1024);
+        assert!(policy.max_age.is_none());
+        assert_eq!(policy.max_size, Some(1024 * 1024));
+        assert!(policy.max_entries.is_none());
+    }
+
+    #[test]
+    fn retention_policy_with_max_entries() {
+        let policy = RetentionPolicy::with_max_entries(1000);
+        assert!(policy.max_age.is_none());
+        assert!(policy.max_size.is_none());
+        assert_eq!(policy.max_entries, Some(1000));
+    }
+
+    #[test]
+    fn retention_policy_builder() {
+        let age = TimeDelta::try_hours(12).unwrap_or(TimeDelta::zero());
+        let policy = RetentionPolicy::unlimited()
+            .max_age(age)
+            .max_size(50 * 1024 * 1024)
+            .max_entries(500_000);
+
+        assert_eq!(policy.max_age, Some(age));
+        assert_eq!(policy.max_size, Some(50 * 1024 * 1024));
+        assert_eq!(policy.max_entries, Some(500_000));
+    }
+
+    #[test]
+    fn retention_policy_is_expired() {
+        let age = TimeDelta::try_hours(1).unwrap_or(TimeDelta::zero());
+        let policy = RetentionPolicy::with_max_age(age);
+        let now = Utc::now();
+
+        // Recent entry - not expired
+        let recent = now - TimeDelta::try_minutes(30).unwrap_or(TimeDelta::zero());
+        assert!(!policy.is_expired(recent, now));
+
+        // Old entry - expired
+        let old = now - TimeDelta::try_hours(2).unwrap_or(TimeDelta::zero());
+        assert!(policy.is_expired(old, now));
+    }
+
+    #[test]
+    fn retention_policy_is_expired_unlimited() {
+        let policy = RetentionPolicy::unlimited();
+        let now = Utc::now();
+        let very_old = now - TimeDelta::try_days(365).unwrap_or(TimeDelta::zero());
+        assert!(!policy.is_expired(very_old, now));
+    }
+
+    #[test]
+    fn retention_policy_exceeds_max_entries() {
+        let policy = RetentionPolicy::with_max_entries(100);
+        assert!(!policy.exceeds_max_entries(50));
+        assert!(!policy.exceeds_max_entries(100));
+        assert!(policy.exceeds_max_entries(101));
+
+        let unlimited = RetentionPolicy::unlimited();
+        assert!(!unlimited.exceeds_max_entries(1_000_000));
+    }
+
+    #[test]
+    fn retention_policy_exceeds_max_size() {
+        let policy = RetentionPolicy::with_max_size(1024);
+        assert!(!policy.exceeds_max_size(512));
+        assert!(!policy.exceeds_max_size(1024));
+        assert!(policy.exceeds_max_size(1025));
+
+        let unlimited = RetentionPolicy::unlimited();
+        assert!(!unlimited.exceeds_max_size(u64::MAX));
+    }
+
+    #[test]
+    fn retention_policy_serialization() {
+        let age = TimeDelta::try_hours(24).unwrap_or(TimeDelta::zero());
+        let policy = RetentionPolicy::unlimited()
+            .max_age(age)
+            .max_entries(1000);
+
+        let json = serde_json::to_string(&policy);
+        assert!(json.is_ok());
+
+        if let Ok(json_str) = json {
+            let parsed: Result<RetentionPolicy, _> = serde_json::from_str(&json_str);
+            assert!(parsed.is_ok());
+            if let Ok(p) = parsed {
+                assert_eq!(p.max_entries, Some(1000));
+            }
+        }
+    }
+
+    #[test]
+    fn retention_policy_clone() {
+        let policy = RetentionPolicy::default();
+        let cloned = policy.clone();
+        assert_eq!(policy, cloned);
+    }
+
+    #[test]
+    fn retention_policy_debug() {
+        let policy = RetentionPolicy::default();
+        let debug = format!("{:?}", policy);
+        assert!(debug.contains("RetentionPolicy"));
     }
 }

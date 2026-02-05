@@ -2,7 +2,9 @@
 resolver = "2"
 members = [
     "crates/clawnode",
+    "crates/claw-alerts",
     "crates/claw-audit",
+    "crates/claw-autoscaler",
     "crates/claw-ddos",
     "crates/claw-validation",
     "crates/claw-compute",
@@ -20,6 +22,7 @@ members = [
     "crates/claw-secrets",
     "crates/claw-network",
     "crates/claw-wireguard",
+    "crates/claw-tenancy",
     "crates/molt-core",
     "crates/molt-p2p",
     "crates/molt-token",
@@ -28,6 +31,7 @@ members = [
     "crates/molt-attestation",
     "crates/molt-integration-tests",
     "crates/claw-e2e-tests",
+    "crates/claw-dashboard",
 ]
 
 [workspace.package]

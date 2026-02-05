@@ -37,6 +37,7 @@ parking_lot = "0.12"
 proptest = { workspace = true }
 test-case = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = "3.10"
 
 [lints]
 workspace = true
