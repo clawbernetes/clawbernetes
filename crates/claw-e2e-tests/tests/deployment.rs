@@ -11,20 +11,20 @@
 
 use std::time::Duration;
 use claw_deploy::{
-    ClusterContext, DeploymentConstraints, DeploymentExecutor, DeploymentId as DeployDeploymentId,
-    DeploymentIntent, DeploymentMonitor, DeploymentState, DeploymentStatus, DeploymentStrategy,
-    Environment, HealthAssessment, MetricPoint as DeployMetricPoint, StrategyHint,
-    parse_intent, select_strategy,
+    ClusterContext, DeploymentConstraints, DeploymentExecutor, DeploymentId,
+    DeploymentIntent, DeploymentMonitor, DeploymentState, DeploymentStrategy,
+    Environment, HealthAssessment, MetricPoint, StrategyHint,
+    select_strategy,
 };
 use claw_rollback::{
-    analyze_failure, AnalysisConfig, DefaultTriggers, DeploymentHistory, DeploymentId,
-    DeploymentSnapshot, DeploymentSpec, FailureAnalyzer, LogEntry, LogLevel, Metrics,
-    RollbackExecutor, RollbackPlan, RollbackStrategy, RollbackTrigger, RootCauseCategory,
+    analyze_failure, DefaultTriggers, DeploymentHistory,
+    DeploymentSnapshot, DeploymentSpec, LogEntry, LogLevel, Metrics,
+    RollbackExecutor, RollbackTrigger, RootCauseCategory,
     TriggerConfig, TriggerEvaluator, configure_triggers, ExecutionOptions, ComparisonOperator,
-    CustomTriggerConfig,
+    CustomTriggerConfig, DeploymentId as RollbackDeploymentId,
 };
 use claw_preemption::{
-    EvictionHandler, NoOpEvictionHandler, PreemptionCandidate, PreemptionConfig,
+    NoOpEvictionHandler, PreemptionCandidate, PreemptionConfig,
     PreemptionManager, PreemptionPolicy, PreemptionRequest, Preemptor, PriorityClass,
     ResourceRequirements, VictimSelectionStrategy, WorkloadId, WorkloadState,
 };
@@ -37,13 +37,12 @@ use claw_preemption::{
 fn test_deployment_intent_creation() {
     let intent = DeploymentIntent::new("myapp:v2.0")
         .with_replicas(5)
-        .with_gpus(2)
-        .with_memory_mb(8192);
+        .with_gpus(2);
 
     assert!(intent.validate().is_ok());
     assert_eq!(intent.image, "myapp:v2.0");
-    assert_eq!(intent.replicas, Some(5));
-    assert_eq!(intent.gpus, Some(2));
+    assert_eq!(intent.replicas, 5);
+    assert_eq!(intent.gpus, 2);
 }
 
 #[test]
@@ -58,10 +57,7 @@ fn test_deployment_intent_with_strategy_hint() {
 
 #[test]
 fn test_deployment_intent_with_constraints() {
-    let constraints = DeploymentConstraints::new()
-        .with_max_unavailable(2)
-        .with_max_surge(3)
-        .with_min_ready_seconds(30);
+    let constraints = DeploymentConstraints::default();
 
     let intent = DeploymentIntent::new("worker:v1.0")
         .with_replicas(20)
@@ -91,13 +87,11 @@ fn test_strategy_selection_canary() {
         .with_replicas(10)
         .with_strategy_hint(StrategyHint::Canary { percentage: 20 });
 
-    let context = ClusterContext::new()
-        .with_total_nodes(10)
-        .with_available_gpus(0);
+    let context = ClusterContext::new(Environment::Production);
 
     let strategy = select_strategy(&intent, &context);
-
-    assert!(matches!(strategy, DeploymentStrategy::Canary { .. }));
+    assert!(strategy.is_ok());
+    assert!(matches!(strategy.unwrap(), DeploymentStrategy::Canary { .. }));
 }
 
 #[test]
@@ -106,41 +100,38 @@ fn test_strategy_selection_blue_green() {
         .with_replicas(5)
         .with_strategy_hint(StrategyHint::BlueGreen);
 
-    let context = ClusterContext::new()
-        .with_total_nodes(10)
-        .with_available_gpus(0);
+    let context = ClusterContext::new(Environment::Production);
 
     let strategy = select_strategy(&intent, &context);
-
-    assert!(matches!(strategy, DeploymentStrategy::BlueGreen { .. }));
+    assert!(strategy.is_ok());
+    assert!(matches!(strategy.unwrap(), DeploymentStrategy::BlueGreen));
 }
 
 #[test]
 fn test_strategy_selection_rolling() {
     let intent = DeploymentIntent::new("service:v1.5")
         .with_replicas(100)
-        .with_strategy_hint(StrategyHint::Rolling { max_surge: 10, max_unavailable: 5 });
+        .with_strategy_hint(StrategyHint::Rolling { batch_size: 10 });
 
-    let context = ClusterContext::new()
-        .with_total_nodes(50);
+    let context = ClusterContext::new(Environment::Production);
 
     let strategy = select_strategy(&intent, &context);
-
-    assert!(matches!(strategy, DeploymentStrategy::Rolling { .. }));
+    assert!(strategy.is_ok());
+    assert!(matches!(strategy.unwrap(), DeploymentStrategy::Rolling { .. }));
 }
 
 #[test]
-fn test_strategy_selection_immediate_for_small() {
-    // Small deployments should use immediate strategy
+fn test_strategy_selection_immediate_for_dev() {
+    // Dev environment should allow immediate strategy
     let intent = DeploymentIntent::new("utility:v1.0")
-        .with_replicas(1);
+        .with_replicas(1)
+        .with_strategy_hint(StrategyHint::Immediate);
 
-    let context = ClusterContext::new()
-        .with_total_nodes(5);
+    let context = ClusterContext::new(Environment::Dev);
 
     let strategy = select_strategy(&intent, &context);
-
-    assert!(matches!(strategy, DeploymentStrategy::Immediate));
+    assert!(strategy.is_ok());
+    assert!(matches!(strategy.unwrap(), DeploymentStrategy::Immediate));
 }
 
 #[test]
@@ -149,15 +140,16 @@ fn test_auto_strategy_selection() {
     let intent = DeploymentIntent::new("large-app:v2.0")
         .with_replicas(50);
 
-    let context = ClusterContext::new()
-        .with_total_nodes(100)
-        .with_production(true);
+    let context = ClusterContext::new(Environment::Production);
 
     let strategy = select_strategy(&intent, &context);
+    assert!(strategy.is_ok());
 
     // For production with many replicas, should choose safe strategy
+    let strategy = strategy.unwrap();
     assert!(matches!(strategy,
         DeploymentStrategy::Canary { .. } |
+        DeploymentStrategy::BlueGreen |
         DeploymentStrategy::Rolling { .. }
     ));
 }
@@ -169,23 +161,36 @@ fn test_auto_strategy_selection() {
 #[test]
 fn test_deployment_executor_creation() {
     let executor = DeploymentExecutor::new();
-    assert!(executor.active_deployments().is_empty());
+    let list = executor.list();
+    assert!(list.is_ok());
+    assert!(list.unwrap().is_empty());
 }
 
 #[test]
-fn test_deployment_state_transitions() {
-    // Test valid state transitions
-    let state = DeploymentState::Pending;
+fn test_deployment_state_properties() {
+    // Test state properties
+    let pending = DeploymentState::Pending;
+    assert!(!pending.is_terminal());
+    assert!(!pending.can_promote());
+    assert!(!pending.can_rollback());
 
-    // Pending -> Progressing
-    assert!(state.can_transition_to(DeploymentState::Progressing));
+    let deploying = DeploymentState::Deploying;
+    assert!(!deploying.is_terminal());
+    assert!(!deploying.can_promote());
+    assert!(deploying.can_rollback());
 
-    // Progressing -> Available
-    let progressing = DeploymentState::Progressing;
-    assert!(progressing.can_transition_to(DeploymentState::Available));
+    let canary = DeploymentState::Canary;
+    assert!(!canary.is_terminal());
+    assert!(canary.can_promote());
+    assert!(canary.can_rollback());
 
-    // Progressing -> Failed
-    assert!(progressing.can_transition_to(DeploymentState::Failed));
+    let complete = DeploymentState::Complete;
+    assert!(complete.is_terminal());
+    assert!(!complete.can_promote());
+    assert!(!complete.can_rollback());
+
+    let failed = DeploymentState::Failed;
+    assert!(failed.is_terminal());
 }
 
 // ============================================================================
@@ -195,16 +200,42 @@ fn test_deployment_state_transitions() {
 #[test]
 fn test_deployment_monitoring() {
     let monitor = DeploymentMonitor::new();
+    let deployment_id = DeploymentId::new();
 
-    // Record metrics
-    monitor.record_metric(DeployMetricPoint::new("replicas_ready", 5.0));
-    monitor.record_metric(DeployMetricPoint::new("replicas_available", 5.0));
-    monitor.record_metric(DeployMetricPoint::new("replicas_desired", 10.0));
+    // Create metrics
+    let metrics = vec![
+        MetricPoint::new("error_rate", 0.5),
+        MetricPoint::new("latency_p99", 100.0),
+        MetricPoint::new("success_count", 950.0),
+        MetricPoint::new("failure_count", 5.0),
+    ];
 
-    // Assess health
-    let assessment = monitor.assess_health();
+    // Check health
+    let assessment = monitor.check_health(&deployment_id, &metrics);
+    assert!(assessment.is_ok());
 
-    assert!(matches!(assessment, HealthAssessment::Progressing | HealthAssessment::Healthy));
+    let assessment = assessment.unwrap();
+    assert!(assessment.is_healthy);
+}
+
+#[test]
+fn test_health_assessment_unhealthy() {
+    let monitor = DeploymentMonitor::new();
+    let deployment_id = DeploymentId::new();
+
+    // Create unhealthy metrics
+    let metrics = vec![
+        MetricPoint::new("error_rate", 5.0), // High error rate
+        MetricPoint::new("latency_p99", 1000.0), // High latency
+        MetricPoint::new("success_count", 900.0),
+        MetricPoint::new("failure_count", 100.0),
+    ];
+
+    let assessment = monitor.check_health(&deployment_id, &metrics);
+    assert!(assessment.is_ok());
+
+    let assessment = assessment.unwrap();
+    assert!(!assessment.is_healthy);
 }
 
 // ============================================================================
@@ -213,8 +244,9 @@ fn test_deployment_monitoring() {
 
 #[test]
 fn test_deployment_history_creation() {
-    let history = DeploymentHistory::new(10).unwrap();
-    assert!(history.is_empty());
+    let history = DeploymentHistory::new(10);
+    assert!(history.is_some());
+    assert!(history.unwrap().is_empty());
 }
 
 #[test]
@@ -223,13 +255,13 @@ fn test_deployment_history_recording() {
 
     // Record deployments
     let v1 = DeploymentSnapshot::new(
-        DeploymentId::new("v1"),
+        RollbackDeploymentId::new("v1"),
         DeploymentSpec::new("my-app", "my-app:v1.0"),
     );
     history.record(v1);
 
     let v2 = DeploymentSnapshot::new(
-        DeploymentId::new("v2"),
+        RollbackDeploymentId::new("v2"),
         DeploymentSpec::new("my-app", "my-app:v2.0"),
     );
     history.record(v2);
@@ -249,7 +281,7 @@ fn test_deployment_history_capacity() {
     // Record more than capacity
     for i in 1..=10 {
         let snapshot = DeploymentSnapshot::new(
-            DeploymentId::new(format!("v{}", i)),
+            RollbackDeploymentId::new(format!("v{}", i)),
             DeploymentSpec::new("app", format!("app:v{}", i)),
         );
         history.record(snapshot);
@@ -259,9 +291,9 @@ fn test_deployment_history_capacity() {
     assert_eq!(history.len(), 5);
 
     // Oldest should be v6 (v1-v5 evicted)
-    assert!(history.find(&DeploymentId::new("v1")).is_none());
-    assert!(history.find(&DeploymentId::new("v5")).is_none());
-    assert!(history.find(&DeploymentId::new("v6")).is_some());
+    assert!(history.find(&RollbackDeploymentId::new("v1")).is_none());
+    assert!(history.find(&RollbackDeploymentId::new("v5")).is_none());
+    assert!(history.find(&RollbackDeploymentId::new("v6")).is_some());
 }
 
 #[test]
@@ -270,7 +302,7 @@ fn test_deployment_history_list_recent() {
 
     for i in 1..=7 {
         let snapshot = DeploymentSnapshot::new(
-            DeploymentId::new(format!("v{}", i)),
+            RollbackDeploymentId::new(format!("v{}", i)),
             DeploymentSpec::new("app", format!("app:v{}", i)),
         );
         history.record(snapshot);
@@ -357,16 +389,16 @@ fn test_rollback_planning() {
     // Record versions
     for i in 1..=5 {
         let snapshot = DeploymentSnapshot::new(
-            DeploymentId::new(format!("v{}", i)),
+            RollbackDeploymentId::new(format!("v{}", i)),
             DeploymentSpec::new("app", format!("app:v{}", i)),
         );
         history.record(snapshot);
     }
 
-    let mut executor = RollbackExecutor::new(history);
+    let executor = RollbackExecutor::new(history);
 
     // Plan rollback from v5
-    let plan = executor.plan_rollback(&DeploymentId::new("v5"), None);
+    let plan = executor.plan_rollback(&RollbackDeploymentId::new("v5"), None);
     assert!(plan.is_ok());
 
     let plan = plan.unwrap();
@@ -380,18 +412,18 @@ fn test_rollback_to_specific_version() {
 
     for i in 1..=5 {
         let snapshot = DeploymentSnapshot::new(
-            DeploymentId::new(format!("v{}", i)),
+            RollbackDeploymentId::new(format!("v{}", i)),
             DeploymentSpec::new("app", format!("app:v{}", i)),
         );
         history.record(snapshot);
     }
 
-    let mut executor = RollbackExecutor::new(history);
+    let executor = RollbackExecutor::new(history);
 
     // Roll back to v2 specifically
     let plan = executor.plan_rollback(
-        &DeploymentId::new("v5"),
-        Some(&DeploymentId::new("v2")),
+        &RollbackDeploymentId::new("v5"),
+        Some(&RollbackDeploymentId::new("v2")),
     );
 
     assert!(plan.is_ok());
@@ -404,7 +436,7 @@ fn test_rollback_execution() {
     let mut history = DeploymentHistory::new(10).unwrap();
 
     let v1 = DeploymentSnapshot::new(
-        DeploymentId::new("v1"),
+        RollbackDeploymentId::new("v1"),
         DeploymentSpec::new("app", "app:v1.0")
             .with_replicas(3)
             .with_env("ENV", "production"),
@@ -412,7 +444,7 @@ fn test_rollback_execution() {
     history.record(v1);
 
     let v2 = DeploymentSnapshot::new(
-        DeploymentId::new("v2"),
+        RollbackDeploymentId::new("v2"),
         DeploymentSpec::new("app", "app:v2.0")
             .with_replicas(3)
             .with_env("ENV", "production"),
@@ -422,7 +454,7 @@ fn test_rollback_execution() {
     let mut executor = RollbackExecutor::new(history);
 
     // Plan and execute rollback
-    let plan = executor.plan_rollback(&DeploymentId::new("v2"), None).unwrap();
+    let plan = executor.plan_rollback(&RollbackDeploymentId::new("v2"), None).unwrap();
     let result = executor.execute(&plan).unwrap();
 
     assert!(result.success);
@@ -437,13 +469,13 @@ fn test_rollback_dry_run() {
     let mut history = DeploymentHistory::new(10).unwrap();
 
     let v1 = DeploymentSnapshot::new(
-        DeploymentId::new("v1"),
+        RollbackDeploymentId::new("v1"),
         DeploymentSpec::new("app", "app:v1.0"),
     );
     history.record(v1);
 
     let v2 = DeploymentSnapshot::new(
-        DeploymentId::new("v2"),
+        RollbackDeploymentId::new("v2"),
         DeploymentSpec::new("app", "app:v2.0"),
     );
     history.record(v2);
@@ -451,7 +483,7 @@ fn test_rollback_dry_run() {
     let options = ExecutionOptions::new().with_dry_run(true);
     let mut executor = RollbackExecutor::with_options(history, options);
 
-    let plan = executor.plan_rollback(&DeploymentId::new("v2"), None).unwrap();
+    let plan = executor.plan_rollback(&RollbackDeploymentId::new("v2"), None).unwrap();
     let result = executor.execute(&plan).unwrap();
 
     assert!(result.success);
@@ -469,7 +501,7 @@ fn test_rollback_dry_run() {
 #[test]
 fn test_root_cause_resource_exhaustion() {
     let snapshot = DeploymentSnapshot::new(
-        DeploymentId::new("test"),
+        RollbackDeploymentId::new("test"),
         DeploymentSpec::new("app", "app:v1"),
     );
 
@@ -484,7 +516,7 @@ fn test_root_cause_resource_exhaustion() {
 #[test]
 fn test_root_cause_dependency_failure() {
     let snapshot = DeploymentSnapshot::new(
-        DeploymentId::new("test"),
+        RollbackDeploymentId::new("test"),
         DeploymentSpec::new("app", "app:v1"),
     );
 
@@ -500,7 +532,7 @@ fn test_root_cause_dependency_failure() {
 #[test]
 fn test_root_cause_config_error() {
     let snapshot = DeploymentSnapshot::new(
-        DeploymentId::new("test"),
+        RollbackDeploymentId::new("test"),
         DeploymentSpec::new("app", "app:v1")
             .with_env("API_KEY", "")       // Empty
             .with_env("SECRET", "${MISSING}"),  // Unresolved
@@ -882,7 +914,7 @@ fn test_full_deployment_rollback_workflow() {
         .with_replicas(5)
         .with_env("ENV", "production");
 
-    let v1 = DeploymentSnapshot::new(DeploymentId::new("v1"), v1_spec);
+    let v1 = DeploymentSnapshot::new(RollbackDeploymentId::new("v1"), v1_spec);
     history.record(v1);
 
     // 3. Record update deployment (v2) - this will have issues
@@ -890,7 +922,7 @@ fn test_full_deployment_rollback_workflow() {
         .with_replicas(5)
         .with_env("ENV", "production");
 
-    let v2 = DeploymentSnapshot::new(DeploymentId::new("v2"), v2_spec);
+    let v2 = DeploymentSnapshot::new(RollbackDeploymentId::new("v2"), v2_spec);
     history.record(v2);
 
     // 4. Set up rollback triggers
@@ -908,7 +940,7 @@ fn test_full_deployment_rollback_workflow() {
 
     // 7. Execute rollback
     let mut executor = RollbackExecutor::new(history);
-    let plan = executor.plan_rollback(&DeploymentId::new("v2"), None).unwrap();
+    let plan = executor.plan_rollback(&RollbackDeploymentId::new("v2"), None).unwrap();
 
     assert_eq!(plan.from.id.as_str(), "v2");
     assert_eq!(plan.to.id.as_str(), "v1");
@@ -977,9 +1009,9 @@ fn test_full_preemption_workflow() {
     // Should have evicted spot workloads, not critical or high priority
     for workload_id in &result.evicted_workloads {
         let workload = manager.get_workload(workload_id);
-        // Evicted workloads should be spot priority
+        // Evicted workloads should be spot priority (value <= 100)
         if let Some(w) = workload {
-            assert!(w.priority.value <= 100);
+            assert!(w.priority_class.value <= 100);
         }
     }
 
