@@ -28,46 +28,70 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+#[cfg(feature = "docker")]
+use tracing::{debug, info};
 
 use crate::error::NodeError;
 use crate::runtime::{Container, ContainerSpec, ContainerState};
+
+// Import claw_compute's ContainerRuntime trait when docker feature is enabled
+#[cfg(feature = "docker")]
+use claw_compute::container::ContainerRuntime as ComputeContainerRuntime;
 
 /// Async container runtime trait for production use.
 ///
 /// This trait is object-safe and designed for use with Docker/containerd.
 #[allow(async_fn_in_trait)]
-pub trait AsyncContainerRuntime: Send + Sync {
+pub trait AsyncContainerRuntime: Send + Sync + 'static {
     /// Create and start a container from the given spec.
-    async fn create(&self, spec: &ContainerSpec) -> Result<Container, NodeError>;
+    fn create(
+        &self,
+        spec: &ContainerSpec,
+    ) -> impl std::future::Future<Output = Result<Container, NodeError>> + Send;
 
     /// Start a stopped container.
-    async fn start(&self, container_id: &str) -> Result<(), NodeError>;
-
-    /// Stop a running container.
-    async fn stop(&self, container_id: &str, timeout_secs: u32) -> Result<(), NodeError>;
-
-    /// Remove a container.
-    async fn remove(&self, container_id: &str) -> Result<(), NodeError>;
-
-    /// Get container by ID.
-    async fn get(&self, container_id: &str) -> Result<Container, NodeError>;
-
-    /// List all containers.
-    async fn list(&self) -> Result<Vec<Container>, NodeError>;
-
-    /// Get container logs.
-    async fn logs(&self, container_id: &str, tail: Option<usize>)
-        -> Result<Vec<String>, NodeError>;
-
-    /// Stream logs in real-time (returns lines as they arrive).
-    async fn stream_logs(
+    fn start(
         &self,
         container_id: &str,
-    ) -> Result<tokio::sync::mpsc::Receiver<String>, NodeError>;
+    ) -> impl std::future::Future<Output = Result<(), NodeError>> + Send;
+
+    /// Stop a running container.
+    fn stop(
+        &self,
+        container_id: &str,
+        timeout_secs: u32,
+    ) -> impl std::future::Future<Output = Result<(), NodeError>> + Send;
+
+    /// Remove a container.
+    fn remove(
+        &self,
+        container_id: &str,
+    ) -> impl std::future::Future<Output = Result<(), NodeError>> + Send;
+
+    /// Get container by ID.
+    fn get(
+        &self,
+        container_id: &str,
+    ) -> impl std::future::Future<Output = Result<Container, NodeError>> + Send;
+
+    /// List all containers.
+    fn list(&self) -> impl std::future::Future<Output = Result<Vec<Container>, NodeError>> + Send;
+
+    /// Get container logs.
+    fn logs(
+        &self,
+        container_id: &str,
+        tail: Option<usize>,
+    ) -> impl std::future::Future<Output = Result<Vec<String>, NodeError>> + Send;
+
+    /// Stream logs in real-time (returns lines as they arrive).
+    fn stream_logs(
+        &self,
+        container_id: &str,
+    ) -> impl std::future::Future<Output = Result<tokio::sync::mpsc::Receiver<String>, NodeError>> + Send;
 
     /// Check if the runtime is available and responsive.
-    async fn ping(&self) -> Result<(), NodeError>;
+    fn ping(&self) -> impl std::future::Future<Output = Result<(), NodeError>> + Send;
 }
 
 /// Docker container runtime adapter.
@@ -147,7 +171,7 @@ impl DockerContainerRuntime {
 
         // Set CPU limit if provided
         if let Some(cpu_limit) = spec.cpu_limit {
-            config = config.with_cpu(claw_compute::container::CpuConfig::cpus(cpu_limit));
+            config = config.with_cpu(claw_compute::container::CpuConfig::cpus(f64::from(cpu_limit)));
         }
 
         // Set GPU requirements if any
@@ -334,12 +358,16 @@ impl AsyncContainerRuntime for DockerContainerRuntime {
             .into_iter()
             .map(|s| {
                 let state = Self::convert_state(s.state);
+                let created_at = s
+                    .created_at
+                    .map(chrono::DateTime::<chrono::Utc>::from)
+                    .unwrap_or_else(chrono::Utc::now);
                 Container {
                     id: s.id,
                     image: s.image,
                     state,
                     gpu_ids: Vec::new(),
-                    created_at: s.created_at.unwrap_or_else(chrono::Utc::now),
+                    created_at,
                     labels: HashMap::new(),
                     exit_code: None,
                 }

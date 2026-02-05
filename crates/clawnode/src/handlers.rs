@@ -82,6 +82,16 @@ pub fn handle_gateway_message<R: ContainerRuntime + ?Sized>(
             // TODO: Apply config updates (intervals, etc.)
             Ok(None)
         }
+
+        GatewayMessage::MeshPeerConfig { .. } => {
+            debug!("received mesh peer config (not implemented)");
+            Ok(None)
+        }
+
+        GatewayMessage::MeshPeerRemove { .. } => {
+            debug!("received mesh peer remove (not implemented)");
+            Ok(None)
+        }
     }
 }
 

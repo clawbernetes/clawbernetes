@@ -28,8 +28,14 @@ pub mod resources;
 pub mod runtime;
 pub mod state;
 
+pub use docker::{AsyncContainerRuntime, FakeAsyncContainerRuntime};
+#[cfg(feature = "docker")]
+pub use docker::DockerContainerRuntime;
 pub use error::NodeError;
 pub use handlers::{get_workload_status, handle_gateway_message, HandlerContext};
+pub use handlers_async::{
+    get_workload_status_async, handle_gateway_message_async, AsyncHandlerContext,
+};
 pub use node::Node;
 pub use resources::{
     EffectiveResourceLimits, ExecutionWatchdog, NodeCapacity, ResourceAlert, ResourceLimits,
