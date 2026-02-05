@@ -1,0 +1,44 @@
+[package]
+name = "claw-discovery"
+description = "Service discovery, load balancing, and internal DNS for Clawbernetes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# Random
+rand = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+test-case = { workspace = true }
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
