@@ -367,7 +367,8 @@ fn test_anonymous_auth_context() {
 
     assert!(!ctx.is_authenticated());
     assert!(!ctx.has_role("admin"));
-    assert!(ctx.user_id.is_none());
+    // Anonymous context has anonymous user_id, but is not authenticated
+    assert_eq!(ctx.user_id().as_str(), "anonymous");
 }
 
 // ============================================================================

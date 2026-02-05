@@ -445,7 +445,7 @@ fn test_round_robin_load_balancer() {
     let mut selection_counts: HashMap<String, usize> = HashMap::new();
     for _ in 0..30 {
         let selected = lb.select(None).unwrap();
-        let key = selected.addr.to_string();
+        let key = selected.socket_addr().to_string();
         *selection_counts.entry(key).or_insert(0) += 1;
     }
 
@@ -472,7 +472,7 @@ fn test_random_load_balancer() {
     let mut selected_addresses = std::collections::HashSet::new();
     for _ in 0..100 {
         let selected = lb.select(None).unwrap();
-        selected_addresses.insert(selected.addr.to_string());
+        selected_addresses.insert(selected.socket_addr().to_string());
     }
 
     // Should have selected from multiple endpoints
