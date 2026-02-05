@@ -24,6 +24,7 @@ pub mod error;
 pub mod events;
 pub mod messages;
 pub mod scheduling;
+pub mod selector;
 pub mod types;
 pub mod validation;
 pub mod workload;
@@ -35,6 +36,7 @@ pub use scheduling::{
     CompletionMode, ConditionRequirement, ConditionStatus, GateStatus, GpuRequirement,
     NodeCondition, ParallelConfig, SchedulingGate, SchedulingRequirements,
 };
+pub use selector::{node_satisfies_requirements, GpuSelector, MatchResult};
 pub use types::{
     GpuCapability, GpuMetricsProto, NodeCapabilities, NodeId, WorkloadId, WorkloadState,
 };
