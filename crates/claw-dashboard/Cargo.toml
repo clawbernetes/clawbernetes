@@ -1,0 +1,51 @@
+[package]
+name = "claw-dashboard"
+description = "Web dashboard API for Clawbernetes cluster management"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+claw-proto = { path = "../claw-proto" }
+claw-gateway = { path = "../claw-gateway" }
+
+# HTTP/WebSocket
+axum = { version = "0.8", features = ["ws"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+hyper = { version = "1.6", features = ["full"] }
+
+# Async
+tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+test-case = { workspace = true }
+tokio-test = "0.4"
+rand = { workspace = true }
+http-body-util = "0.1"
+
+[lints]
+workspace = true
