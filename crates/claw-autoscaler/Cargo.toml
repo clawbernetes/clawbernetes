@@ -1,0 +1,40 @@
+[package]
+name = "claw-autoscaler"
+description = "Intelligent GPU cluster autoscaling for Clawbernetes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# Fast locks
+parking_lot = { workspace = true }
+
+# Internal dependencies
+claw-metrics = { path = "../claw-metrics" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+test-case = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

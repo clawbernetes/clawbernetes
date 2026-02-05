@@ -9,7 +9,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use claw_cli::cli::{Cli, Commands};
-use claw_cli::commands::{MoltCommand, NodeCommand, RunCommand, StatusCommand};
+use claw_cli::commands::{AutoscaleCommand, MoltCommand, NodeCommand, RunCommand, StatusCommand};
 use claw_cli::output::OutputFormat;
 
 fn main() -> ExitCode {
@@ -59,6 +59,10 @@ async fn run(cli: Cli) -> Result<(), claw_cli::CliError> {
         }
         Commands::Molt { command } => {
             let cmd = MoltCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &command).await?;
+        }
+        Commands::Autoscale { command } => {
+            let cmd = AutoscaleCommand::new(&cli.gateway);
             cmd.execute(&mut stdout, &format, &command).await?;
         }
     }

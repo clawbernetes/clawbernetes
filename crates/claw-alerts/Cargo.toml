@@ -1,0 +1,44 @@
+[package]
+name = "claw-alerts"
+description = "Alerting system with Prometheus Alertmanager-style rules for Clawbernetes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+# Internal crates
+claw-metrics = { path = "../claw-metrics" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Fast locks
+parking_lot = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+test-case = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

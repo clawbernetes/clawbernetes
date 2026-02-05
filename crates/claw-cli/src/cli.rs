@@ -54,6 +54,13 @@ pub enum Commands {
         #[command(subcommand)]
         command: MoltCommands,
     },
+
+    /// Autoscaling management commands.
+    Autoscale {
+        /// Autoscale subcommand to execute.
+        #[command(subcommand)]
+        command: AutoscaleCommands,
+    },
 }
 
 /// Node subcommands.
@@ -157,6 +164,93 @@ pub enum AutonomyArg {
     Moderate,
     /// Maximum autonomy. Any job within capability.
     Aggressive,
+}
+
+/// Autoscaling subcommands.
+#[derive(Subcommand, Debug, Clone)]
+pub enum AutoscaleCommands {
+    /// Show autoscaling status for all pools.
+    Status,
+
+    /// List all node pools with their scaling configuration.
+    Pools,
+
+    /// Show detailed information about a specific pool.
+    Pool {
+        /// Pool ID to inspect.
+        id: String,
+    },
+
+    /// Set or update a scaling policy for a pool.
+    SetPolicy(SetScalingPolicyArgs),
+
+    /// Enable autoscaling.
+    Enable,
+
+    /// Disable autoscaling.
+    Disable,
+
+    /// Trigger an immediate scaling evaluation.
+    Evaluate,
+}
+
+/// Arguments for setting a scaling policy.
+#[derive(Parser, Debug, Clone)]
+pub struct SetScalingPolicyArgs {
+    /// Pool ID to configure.
+    #[arg(required = true)]
+    pub pool_id: String,
+
+    /// Policy type.
+    #[arg(short = 't', long, value_enum)]
+    pub policy_type: PolicyTypeArg,
+
+    /// Minimum number of nodes.
+    #[arg(long, default_value = "1")]
+    pub min_nodes: u32,
+
+    /// Maximum number of nodes.
+    #[arg(long, default_value = "10")]
+    pub max_nodes: u32,
+
+    /// Target GPU utilization percentage (for utilization policy).
+    #[arg(long)]
+    pub target_utilization: Option<f64>,
+
+    /// Tolerance percentage around target (for utilization policy).
+    #[arg(long, default_value = "10")]
+    pub tolerance: f64,
+
+    /// Target jobs per node (for queue depth policy).
+    #[arg(long)]
+    pub target_jobs_per_node: Option<u32>,
+
+    /// Scale up threshold (for queue depth policy).
+    #[arg(long)]
+    pub scale_up_threshold: Option<u32>,
+
+    /// Scale down threshold (for queue depth policy).
+    #[arg(long)]
+    pub scale_down_threshold: Option<u32>,
+
+    /// Scale up cooldown in seconds.
+    #[arg(long, default_value = "300")]
+    pub scale_up_cooldown: u64,
+
+    /// Scale down cooldown in seconds.
+    #[arg(long, default_value = "600")]
+    pub scale_down_cooldown: u64,
+}
+
+/// Policy type argument for autoscaling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PolicyTypeArg {
+    /// Scale based on GPU utilization percentage.
+    Utilization,
+    /// Scale based on job queue depth.
+    QueueDepth,
+    /// Scale based on time schedule.
+    Schedule,
 }
 
 
@@ -446,5 +540,166 @@ mod tests {
         assert_eq!(cli.gateway, "ws://prod:8080");
         assert_eq!(cli.format, Format::Json);
         assert!(matches!(cli.command, Commands::Node { command: NodeCommands::List }));
+    }
+
+    // Test parsing autoscale status command
+    #[test]
+    fn parse_autoscale_status_command() {
+        let cli = Cli::parse_from(["clawbernetes", "autoscale", "status"]);
+        match cli.command {
+            Commands::Autoscale { command: AutoscaleCommands::Status } => {}
+            _ => panic!("expected autoscale status command"),
+        }
+    }
+
+    // Test parsing autoscale pools command
+    #[test]
+    fn parse_autoscale_pools_command() {
+        let cli = Cli::parse_from(["clawbernetes", "autoscale", "pools"]);
+        match cli.command {
+            Commands::Autoscale { command: AutoscaleCommands::Pools } => {}
+            _ => panic!("expected autoscale pools command"),
+        }
+    }
+
+    // Test parsing autoscale pool info command
+    #[test]
+    fn parse_autoscale_pool_command() {
+        let cli = Cli::parse_from(["clawbernetes", "autoscale", "pool", "gpu-pool-1"]);
+        match cli.command {
+            Commands::Autoscale { command: AutoscaleCommands::Pool { id } } => {
+                assert_eq!(id, "gpu-pool-1");
+            }
+            _ => panic!("expected autoscale pool command"),
+        }
+    }
+
+    // Test parsing autoscale set-policy with utilization
+    #[test]
+    fn parse_autoscale_set_policy_utilization() {
+        let cli = Cli::parse_from([
+            "clawbernetes", "autoscale", "set-policy",
+            "gpu-pool-1",
+            "-t", "utilization",
+            "--min-nodes", "2",
+            "--max-nodes", "20",
+            "--target-utilization", "70",
+        ]);
+        match cli.command {
+            Commands::Autoscale { command: AutoscaleCommands::SetPolicy(args) } => {
+                assert_eq!(args.pool_id, "gpu-pool-1");
+                assert_eq!(args.policy_type, PolicyTypeArg::Utilization);
+                assert_eq!(args.min_nodes, 2);
+                assert_eq!(args.max_nodes, 20);
+                assert_eq!(args.target_utilization, Some(70.0));
+            }
+            _ => panic!("expected autoscale set-policy command"),
+        }
+    }
+
+    // Test parsing autoscale set-policy with queue depth
+    #[test]
+    fn parse_autoscale_set_policy_queue_depth() {
+        let cli = Cli::parse_from([
+            "clawbernetes", "autoscale", "set-policy",
+            "gpu-pool-1",
+            "-t", "queue-depth",
+            "--target-jobs-per-node", "5",
+            "--scale-up-threshold", "20",
+            "--scale-down-threshold", "2",
+        ]);
+        match cli.command {
+            Commands::Autoscale { command: AutoscaleCommands::SetPolicy(args) } => {
+                assert_eq!(args.policy_type, PolicyTypeArg::QueueDepth);
+                assert_eq!(args.target_jobs_per_node, Some(5));
+                assert_eq!(args.scale_up_threshold, Some(20));
+                assert_eq!(args.scale_down_threshold, Some(2));
+            }
+            _ => panic!("expected autoscale set-policy command"),
+        }
+    }
+
+    // Test parsing autoscale enable command
+    #[test]
+    fn parse_autoscale_enable_command() {
+        let cli = Cli::parse_from(["clawbernetes", "autoscale", "enable"]);
+        match cli.command {
+            Commands::Autoscale { command: AutoscaleCommands::Enable } => {}
+            _ => panic!("expected autoscale enable command"),
+        }
+    }
+
+    // Test parsing autoscale disable command
+    #[test]
+    fn parse_autoscale_disable_command() {
+        let cli = Cli::parse_from(["clawbernetes", "autoscale", "disable"]);
+        match cli.command {
+            Commands::Autoscale { command: AutoscaleCommands::Disable } => {}
+            _ => panic!("expected autoscale disable command"),
+        }
+    }
+
+    // Test parsing autoscale evaluate command
+    #[test]
+    fn parse_autoscale_evaluate_command() {
+        let cli = Cli::parse_from(["clawbernetes", "autoscale", "evaluate"]);
+        match cli.command {
+            Commands::Autoscale { command: AutoscaleCommands::Evaluate } => {}
+            _ => panic!("expected autoscale evaluate command"),
+        }
+    }
+
+    // Test policy type arg values
+    #[test]
+    fn policy_type_arg_values() {
+        // Verify all values can be parsed
+        let cli = Cli::parse_from([
+            "clawbernetes", "autoscale", "set-policy",
+            "pool-1", "-t", "utilization",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Commands::Autoscale { command: AutoscaleCommands::SetPolicy(args) }
+            if args.policy_type == PolicyTypeArg::Utilization
+        ));
+
+        let cli = Cli::parse_from([
+            "clawbernetes", "autoscale", "set-policy",
+            "pool-1", "-t", "queue-depth",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Commands::Autoscale { command: AutoscaleCommands::SetPolicy(args) }
+            if args.policy_type == PolicyTypeArg::QueueDepth
+        ));
+
+        let cli = Cli::parse_from([
+            "clawbernetes", "autoscale", "set-policy",
+            "pool-1", "-t", "schedule",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Commands::Autoscale { command: AutoscaleCommands::SetPolicy(args) }
+            if args.policy_type == PolicyTypeArg::Schedule
+        ));
+    }
+
+    // Test set-policy with custom cooldowns
+    #[test]
+    fn parse_autoscale_set_policy_with_cooldowns() {
+        let cli = Cli::parse_from([
+            "clawbernetes", "autoscale", "set-policy",
+            "gpu-pool-1",
+            "-t", "utilization",
+            "--scale-up-cooldown", "120",
+            "--scale-down-cooldown", "300",
+        ]);
+        match cli.command {
+            Commands::Autoscale { command: AutoscaleCommands::SetPolicy(args) } => {
+                assert_eq!(args.scale_up_cooldown, 120);
+                assert_eq!(args.scale_down_cooldown, 300);
+            }
+            _ => panic!("expected autoscale set-policy command"),
+        }
     }
 }
