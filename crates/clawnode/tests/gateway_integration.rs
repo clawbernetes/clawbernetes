@@ -154,6 +154,7 @@ async fn test_registration_sends_correct_message() {
             name,
             capabilities: recv_caps,
             protocol_version,
+            ..
         } => {
             assert_eq!(recv_node_id, node_id);
             assert_eq!(name, "test-node");
