@@ -8,8 +8,7 @@
 //! 5. Cross-tenant isolation
 
 use claw_tenancy::{
-    BillingInfo, BillingPlan, Namespace, NamespaceId, NamespaceManager, ResourceQuota,
-    QuotaUsage, QuotaUtilization, Tenant, TenantId, TenancyError,
+    BillingInfo, BillingPlan, NamespaceManager, ResourceQuota,
     validate_namespace_name, validate_tenant_name,
 };
 
@@ -44,18 +43,19 @@ fn test_duplicate_tenant_rejected() {
 
 #[test]
 fn test_tenant_name_validation() {
-    // Valid names
+    // Valid names (start with letter, alphanumeric + hyphen/underscore, not ending with -/_)
     assert!(validate_tenant_name("acme").is_ok());
     assert!(validate_tenant_name("acme-corp").is_ok());
     assert!(validate_tenant_name("company123").is_ok());
     assert!(validate_tenant_name("my-org-name").is_ok());
+    assert!(validate_tenant_name("Acme").is_ok()); // Uppercase is allowed
 
     // Invalid names
-    assert!(validate_tenant_name("").is_err());       // Too short
-    assert!(validate_tenant_name("ab").is_err());    // Too short
+    assert!(validate_tenant_name("").is_err());       // Empty
     assert!(validate_tenant_name("-invalid").is_err()); // Starts with dash
-    assert!(validate_tenant_name("UPPERCASE").is_err()); // Uppercase not allowed
+    assert!(validate_tenant_name("1invalid").is_err()); // Starts with number
     assert!(validate_tenant_name("has space").is_err()); // Spaces not allowed
+    assert!(validate_tenant_name("invalid-").is_err()); // Ends with dash
 }
 
 #[test]
@@ -81,18 +81,21 @@ fn test_tenant_deletion() {
 fn test_tenant_with_billing_info() {
     let manager = NamespaceManager::new();
 
-    let tenant = manager.create_tenant("billing-test").unwrap();
+    let mut tenant = manager.create_tenant("billing-test").unwrap();
 
     // Add billing information
-    let billing = BillingInfo::new(BillingPlan::Enterprise)
-        .with_contact("billing@company.com");
+    let billing = BillingInfo::free()
+        .with_plan(BillingPlan::Enterprise)
+        .with_billing_email("billing@company.com");
 
-    let updated = manager.update_tenant_billing(tenant.id, billing);
+    tenant.billing = billing;
+    let updated = manager.update_tenant(tenant.clone());
     assert!(updated.is_ok());
 
     // Verify billing was set
     let retrieved = manager.get_tenant(tenant.id).unwrap();
-    assert!(retrieved.billing.is_some());
+    assert_eq!(retrieved.billing.plan, BillingPlan::Enterprise);
+    assert!(retrieved.billing.billing_email.is_some());
 }
 
 // ============================================================================
@@ -116,17 +119,18 @@ fn test_namespace_creation() {
 
 #[test]
 fn test_namespace_name_validation() {
-    // Valid names
+    // Valid names (lowercase, alphanumeric + hyphen, not ending with -)
     assert!(validate_namespace_name("default").is_ok());
     assert!(validate_namespace_name("production").is_ok());
     assert!(validate_namespace_name("staging-env").is_ok());
     assert!(validate_namespace_name("dev-1").is_ok());
+    assert!(validate_namespace_name("a").is_ok()); // Single char is allowed
 
     // Invalid names
     assert!(validate_namespace_name("").is_err());
-    assert!(validate_namespace_name("ab").is_err());  // Too short
     assert!(validate_namespace_name("-invalid").is_err());
-    assert!(validate_namespace_name("Production").is_err()); // Uppercase
+    assert!(validate_namespace_name("Production").is_err()); // Uppercase not allowed
+    assert!(validate_namespace_name("invalid-").is_err()); // Ends with hyphen
 }
 
 #[test]
@@ -198,10 +202,10 @@ fn test_resource_quota_creation() {
         .with_memory_mib(65536)  // 64 GB
         .with_gpu_hours(1000.0);
 
-    assert_eq!(quota.max_gpus(), 8);
-    assert_eq!(quota.max_workloads(), 100);
-    assert_eq!(quota.memory_mib(), 65536);
-    assert!((quota.gpu_hours() - 1000.0).abs() < f64::EPSILON);
+    assert_eq!(quota.max_gpus, Some(8));
+    assert_eq!(quota.max_workloads, Some(100));
+    assert_eq!(quota.memory_mib, Some(65536));
+    assert!((quota.gpu_hours.unwrap() - 1000.0).abs() < f64::EPSILON);
 }
 
 #[test]
@@ -223,8 +227,8 @@ fn test_namespace_with_quota() {
     assert!(namespace.is_ok());
 
     let ns = namespace.unwrap();
-    assert_eq!(ns.quota.max_gpus(), 4);
-    assert_eq!(ns.quota.max_workloads(), 10);
+    assert_eq!(ns.quota.max_gpus, Some(4));
+    assert_eq!(ns.quota.max_workloads, Some(10));
 }
 
 #[test]
@@ -312,7 +316,7 @@ fn test_usage_tracking() {
     let ns = manager.get_namespace(namespace.id).unwrap();
     assert_eq!(ns.active_workloads, 2);
     assert_eq!(ns.usage.gpus_in_use, 6);
-    assert_eq!(ns.usage.memory_in_use_mib, 12288);
+    assert_eq!(ns.usage.memory_mib_used, 12288);
 }
 
 #[test]
@@ -391,12 +395,12 @@ fn test_quota_utilization() {
     manager.record_gpu_hours(namespace.id, 50.0).unwrap();
 
     let ns = manager.get_namespace(namespace.id).unwrap();
-    let utilization = ns.quota_utilization();
+    let utilization = ns.usage.utilization(&ns.quota);
 
     // All should be around 50%
-    assert!((utilization.gpu_percent - 50.0).abs() < 1.0);
-    assert!((utilization.memory_percent - 50.0).abs() < 1.0);
-    assert!((utilization.gpu_hours_percent - 50.0).abs() < 1.0);
+    assert!((utilization.gpus_percent.unwrap() - 50.0).abs() < 1.0);
+    assert!((utilization.memory_percent.unwrap() - 50.0).abs() < 1.0);
+    assert!((utilization.gpu_hours_percent.unwrap() - 50.0).abs() < 1.0);
 }
 
 // ============================================================================
@@ -481,8 +485,8 @@ fn test_manager_stats() {
     }
 
     let stats = manager.stats();
-    assert_eq!(stats.tenant_count, 3);
-    assert_eq!(stats.namespace_count, 6);
+    assert_eq!(stats.total_tenants, 3);
+    assert_eq!(stats.total_namespaces, 6);
 }
 
 // ============================================================================
@@ -494,12 +498,14 @@ fn test_full_multi_tenancy_workflow() {
     let manager = NamespaceManager::new();
 
     // 1. Onboard a new organization
-    let tenant = manager.create_tenant("enterprise-corp").unwrap();
+    let mut tenant = manager.create_tenant("enterprise-corp").unwrap();
 
     // 2. Set up billing
-    let billing = BillingInfo::new(BillingPlan::Enterprise)
-        .with_contact("finance@enterprise-corp.com");
-    manager.update_tenant_billing(tenant.id, billing).unwrap();
+    let billing = BillingInfo::free()
+        .with_plan(BillingPlan::Enterprise)
+        .with_billing_email("finance@enterprise-corp.com");
+    tenant.billing = billing;
+    manager.update_tenant(tenant.clone()).unwrap();
 
     // 3. Create namespaces with different quotas
     let prod_quota = ResourceQuota::new()
@@ -577,8 +583,8 @@ fn test_full_multi_tenancy_workflow() {
     assert_eq!(dev.usage.gpus_in_use, 2);
 
     // 7. Check utilization
-    let prod_util = prod.quota_utilization();
-    assert!(prod_util.gpu_percent > 80.0); // 14/16 = 87.5%
+    let prod_util = prod.usage.utilization(&prod.quota);
+    assert!(prod_util.gpus_percent.unwrap() > 80.0); // 14/16 = 87.5%
 
     // 8. Try to exceed quota (should fail)
     let cannot_add = manager.check_workload_quota(prod_ns.id, 4, 16384);
@@ -593,8 +599,8 @@ fn test_full_multi_tenancy_workflow() {
 
     // 11. Verify manager stats
     let stats = manager.stats();
-    assert_eq!(stats.tenant_count, 1);
-    assert_eq!(stats.namespace_count, 3);
+    assert_eq!(stats.total_tenants, 1);
+    assert_eq!(stats.total_namespaces, 3);
 }
 
 #[test]
