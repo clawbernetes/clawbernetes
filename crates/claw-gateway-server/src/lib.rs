@@ -72,6 +72,10 @@ pub mod config;
 pub mod error;
 pub mod handlers;
 pub mod molt;
+pub mod molt_announce;
+pub mod molt_config;
+pub mod molt_escrow;
+pub mod molt_staking;
 pub mod server;
 pub mod session;
 
@@ -86,6 +90,9 @@ pub use handlers::{
 };
 pub use server::GatewayServer;
 pub use molt::MoltIntegration;
+pub use molt_config::{BootstrapNode, MoltConfig};
+pub use molt_escrow::{EscrowSummary, EscrowTracker, TrackedEscrow};
+pub use molt_staking::{StakingState, StakingTier, StakingTracker};
 pub use session::{
     gateway_msg_to_ws, process_ws_message, process_ws_message_with_limits, run_session,
     session_channel, validate_message_size, ws_message_size, NodeSession, SessionReceiver,

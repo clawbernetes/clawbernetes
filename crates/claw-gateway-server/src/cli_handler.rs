@@ -582,14 +582,14 @@ async fn handle_list_molt_peers(molt: &Option<Arc<MoltIntegration>>) -> CliRespo
 async fn handle_get_molt_balance(molt: &Option<Arc<MoltIntegration>>) -> CliResponse {
     match molt {
         Some(m) => {
-            match m.balance().await {
-                Ok(amount) => CliResponse::MoltBalance {
-                    balance: amount.lamports(),
-                    pending: 0, // Would need escrow tracking
-                    staked: 0,  // Would need staking tracking
+            match m.balance_breakdown().await {
+                Ok(breakdown) => CliResponse::MoltBalance {
+                    balance: breakdown.balance,
+                    pending: breakdown.pending,
+                    staked: breakdown.staked,
                 },
                 Err(e) => {
-                    warn!(error = %e, "Failed to get MOLT balance");
+                    warn!(error = %e, "Failed to get MOLT balance breakdown");
                     CliResponse::MoltBalance {
                         balance: 0,
                         pending: 0,

@@ -3,6 +3,9 @@
 //! This module provides integration with the MOLT compute marketplace:
 //! - P2P network for peer discovery and gossip
 //! - Token wallet for balance management
+//! - Escrow tracking for pending payments
+//! - Staking for provider eligibility
+//! - Capacity announcements for discoverability
 //!
 //! The MOLT integration is optional - if not configured, the gateway
 //! operates in standalone mode without P2P features.
@@ -12,9 +15,13 @@ use std::sync::Arc;
 use ed25519_dalek::SigningKey;
 use molt_p2p::{MoltNetwork, NetworkConfig, NetworkState, PeerId};
 use molt_token::{Address, Amount, MoltClient, Wallet};
+use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::error::{ServerError, ServerResult};
+use crate::molt_config::MoltConfig;
+use crate::molt_escrow::EscrowTracker;
+use crate::molt_staking::StakingTracker;
 
 /// MOLT integration handle.
 ///
@@ -29,6 +36,14 @@ pub struct MoltIntegration {
     wallet: Wallet,
     /// Network region (for peer info).
     region: Option<String>,
+    /// Signing key for announcements.
+    signing_key: SigningKey,
+    /// Configuration.
+    config: MoltConfig,
+    /// Escrow tracker.
+    escrow_tracker: Mutex<EscrowTracker>,
+    /// Staking tracker.
+    staking_tracker: Mutex<StakingTracker>,
 }
 
 impl MoltIntegration {
@@ -38,17 +53,35 @@ impl MoltIntegration {
     ///
     /// Returns an error if wallet creation fails.
     pub fn new(wallet: Wallet, region: Option<String>) -> ServerResult<Self> {
+        Self::with_config(wallet, MoltConfig::default().with_region(region.unwrap_or_default()))
+    }
+
+    /// Create with full configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if initialization fails.
+    pub fn with_config(wallet: Wallet, config: MoltConfig) -> ServerResult<Self> {
         // Extract signing key from wallet secret key bytes
         let signing_key = SigningKey::from_bytes(wallet.secret_key());
-        let network_config = NetworkConfig::new();
-        let network = MoltNetwork::new(network_config, signing_key);
+        let network_config = NetworkConfig::new()
+            .with_bootstrap_nodes(config.bootstrap_addresses());
+        let network = MoltNetwork::new(network_config, signing_key.clone());
         let token_client = MoltClient::devnet();
+
+        let peer_id = PeerId::from_public_key(&signing_key.verifying_key());
+        let mut escrow_tracker = EscrowTracker::new();
+        escrow_tracker.set_peer_id(peer_id.to_string());
 
         Ok(Self {
             network: Arc::new(network),
             token_client,
             wallet,
-            region,
+            region: config.region.clone(),
+            signing_key,
+            config,
+            escrow_tracker: Mutex::new(escrow_tracker),
+            staking_tracker: Mutex::new(StakingTracker::new()),
         })
     }
 
@@ -147,6 +180,113 @@ impl MoltIntegration {
     /// Check if connected to the network.
     pub async fn is_connected(&self) -> bool {
         matches!(self.network_state().await, NetworkState::Online)
+    }
+
+    /// Join with configured bootstrap nodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if joining fails.
+    pub async fn join_with_config(&self) -> ServerResult<()> {
+        let bootstrap_addrs = self.config.bootstrap_addresses();
+        if bootstrap_addrs.is_empty() {
+            info!("No bootstrap nodes configured, starting as first node");
+        }
+        self.join(&bootstrap_addrs).await
+    }
+
+    /// Get the configuration.
+    #[must_use]
+    pub fn config(&self) -> &MoltConfig {
+        &self.config
+    }
+
+    /// Get the signing key (for capacity announcements).
+    #[must_use]
+    pub fn signing_key(&self) -> &SigningKey {
+        &self.signing_key
+    }
+
+    // ========================================================================
+    // Escrow Operations
+    // ========================================================================
+
+    /// Get pending escrow balance.
+    pub async fn pending_balance(&self) -> u64 {
+        self.escrow_tracker.lock().await.pending_balance()
+    }
+
+    /// Get escrow summary.
+    pub async fn escrow_summary(&self) -> crate::molt_escrow::EscrowSummary {
+        self.escrow_tracker.lock().await.summary()
+    }
+
+    /// Add a tracked escrow.
+    pub async fn track_escrow(&self, escrow: crate::molt_escrow::TrackedEscrow) {
+        self.escrow_tracker.lock().await.add(escrow);
+    }
+
+    /// Get escrow tracker (for advanced operations).
+    pub fn escrow_tracker(&self) -> &Mutex<EscrowTracker> {
+        &self.escrow_tracker
+    }
+
+    // ========================================================================
+    // Staking Operations
+    // ========================================================================
+
+    /// Get staked amount.
+    pub async fn staked_amount(&self) -> u64 {
+        self.staking_tracker.lock().await.staked_amount()
+    }
+
+    /// Get current staking tier.
+    pub async fn staking_tier(&self) -> crate::molt_staking::StakingTier {
+        self.staking_tracker.lock().await.tier()
+    }
+
+    /// Update staked amount (from on-chain query).
+    pub async fn update_staked(&self, amount: u64) {
+        self.staking_tracker.lock().await.update_staked(amount);
+    }
+
+    /// Check if can provide compute.
+    pub async fn can_provide(&self) -> bool {
+        self.staking_tracker.lock().await.can_provide()
+    }
+
+    /// Get staking tracker (for advanced operations).
+    pub fn staking_tracker(&self) -> &Mutex<StakingTracker> {
+        &self.staking_tracker
+    }
+
+    /// Refresh staking info from on-chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query fails.
+    pub async fn refresh_staking(&self) -> ServerResult<()> {
+        // In a full implementation, this would query the staking contract
+        // For now, we just log
+        info!(peer_id = %self.peer_id(), "Would refresh staking info from chain");
+        Ok(())
+    }
+
+    // ========================================================================
+    // Combined Balance Info
+    // ========================================================================
+
+    /// Get full balance breakdown.
+    pub async fn balance_breakdown(&self) -> ServerResult<MoltBalance> {
+        let balance = self.balance().await?;
+        let pending = self.pending_balance().await;
+        let staked = self.staked_amount().await;
+
+        Ok(MoltBalance {
+            balance: balance.lamports(),
+            pending,
+            staked,
+        })
     }
 }
 

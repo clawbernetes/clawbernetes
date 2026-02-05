@@ -33,6 +33,7 @@ chrono = { workspace = true }
 proptest = { workspace = true }
 test-case = { workspace = true }
 tokio-test = "0.4"
+rand = { workspace = true }
 
 [lints]
 workspace = true
