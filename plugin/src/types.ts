@@ -13,13 +13,22 @@ export type ToolResult = {
   mimeType?: string;
 };
 
+/** JSON Schema compatible object for simpler tool definitions */
+export type JsonSchema = {
+  type: string;
+  properties?: Record<string, unknown>;
+  required?: string[];
+  items?: unknown;
+  description?: string;
+};
+
 /** OpenClaw-compatible tool interface */
 export type ClawbernnetesTool = {
   name: string;
   label?: string;
   description: string;
-  parameters: TSchema;
-  execute: (
+  parameters: TSchema | JsonSchema;
+  execute?: (
     toolCallId: string,
     args: Record<string, unknown>,
     context?: ToolContext
