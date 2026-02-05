@@ -16,6 +16,7 @@
 //! - `cuda` - NVIDIA CUDA
 //! - `wgpu` / `metal` - Apple Metal via wgpu
 //! - `hip` / `rocm` - AMD `ROCm` via HIP
+//! - `container-runtime` - Docker container runtime with GPU passthrough
 //! - `all` - All backends
 //!
 //! ## Example
@@ -32,6 +33,25 @@
 //! println!("Shape: {}", input.shape());
 //! ```
 //!
+//! ## Container Runtime
+//!
+//! With the `container-runtime` feature, you can run containerized workloads
+//! with GPU passthrough:
+//!
+//! ```rust,ignore
+//! use claw_compute::container::{
+//!     ContainerConfig, ContainerRuntime, DockerRuntime,
+//!     GpuRequirements, MemoryConfig,
+//! };
+//!
+//! let runtime = DockerRuntime::connect()?.with_gpu_runtime("nvidia");
+//! let config = ContainerConfig::new("ml-job", "nvidia/cuda:12.0-base")
+//!     .with_gpu(GpuRequirements::count(2))
+//!     .with_memory(MemoryConfig::limit_gb(32));
+//! let id = runtime.create(&config).await?;
+//! runtime.start(&id).await?;
+//! ```
+//!
 //! ## Architecture
 //!
 //! ```text
@@ -44,6 +64,10 @@
 //! │  ┌─────────┐  ┌────────┐  ┌──────────┐ │
 //! │  │ Device  │  │Kernels │  │ Tensor   │ │
 //! │  └─────────┘  └────────┘  └──────────┘ │
+//! │  ┌─────────────────────────────────────┐│
+//! │  │         Container Runtime           ││
+//! │  │  (Docker + GPU Passthrough)         ││
+//! │  └─────────────────────────────────────┘│
 //! └─────────────────────┬───────────────────┘
 //!                       │
 //! ┌─────────────────────▼───────────────────┐
@@ -59,6 +83,7 @@
 #![allow(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod container;
 pub mod device;
 pub mod error;
 #[cfg(any(feature = "cubecl-wgpu", feature = "cubecl-cuda"))]

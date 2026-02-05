@@ -16,8 +16,10 @@ cubecl-wgpu = ["dep:cubecl", "dep:cubecl-wgpu"]
 cubecl-cuda = ["dep:cubecl", "dep:cubecl-cuda"]
 # Convenience aliases
 metal = ["cubecl-wgpu"]  # Metal via wgpu on macOS
+# Container runtime support
+container-runtime = ["dep:bollard"]
 # All backends
-all = ["cpu", "cubecl-wgpu", "cubecl-cuda"]
+all = ["cpu", "cubecl-wgpu", "cubecl-cuda", "container-runtime"]
 
 [dependencies]
 # Error handling
@@ -29,6 +31,9 @@ serde = { workspace = true }
 # Logging
 tracing = { workspace = true }
 
+# Async runtime
+tokio = { workspace = true }
+
 # Math functions (for CPU kernels)
 libm = "0.2"
 
@@ -39,6 +44,12 @@ cubecl-cuda = { version = "0.9", optional = true }
 
 # Async for wgpu
 pollster = "0.4"
+
+# Docker API client
+bollard = { version = "0.18", optional = true }
+
+# Futures for async stream processing
+futures = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
