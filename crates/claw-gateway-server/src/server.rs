@@ -39,6 +39,8 @@ pub struct GatewayServer {
     workload_manager: Arc<Mutex<WorkloadManager>>,
     /// Log store for workload logs.
     log_store: Arc<Mutex<WorkloadLogStore>>,
+    /// Optional MOLT P2P integration.
+    molt: Option<Arc<crate::molt::MoltIntegration>>,
     /// Active sessions indexed by session ID.
     sessions: Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
     /// Shutdown signal sender.
@@ -56,6 +58,7 @@ impl GatewayServer {
             registry: Arc::new(Mutex::new(NodeRegistry::new())),
             workload_manager: Arc::new(Mutex::new(WorkloadManager::new())),
             log_store: Arc::new(Mutex::new(WorkloadLogStore::new())),
+            molt: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             start_time: Instant::now(),
@@ -74,6 +77,7 @@ impl GatewayServer {
             registry: Arc::new(Mutex::new(registry)),
             workload_manager: Arc::new(Mutex::new(workload_manager)),
             log_store: Arc::new(Mutex::new(WorkloadLogStore::new())),
+            molt: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             start_time: Instant::now(),
@@ -96,6 +100,19 @@ impl GatewayServer {
     #[must_use]
     pub fn workload_manager(&self) -> Arc<Mutex<WorkloadManager>> {
         self.workload_manager.clone()
+    }
+
+    /// Set the MOLT P2P integration.
+    ///
+    /// Enables MOLT network features like peer discovery and token balance.
+    pub fn set_molt(&mut self, molt: crate::molt::MoltIntegration) {
+        self.molt = Some(Arc::new(molt));
+    }
+
+    /// Get the MOLT integration, if configured.
+    #[must_use]
+    pub fn molt(&self) -> Option<Arc<crate::molt::MoltIntegration>> {
+        self.molt.clone()
     }
 
     /// Get the number of active sessions.
@@ -174,6 +191,7 @@ impl GatewayServer {
         let registry = self.registry.clone();
         let workload_mgr = self.workload_manager.clone();
         let log_store = self.log_store.clone();
+        let molt = self.molt.clone();
         let config = self.config.clone();
         let sessions = self.sessions.clone();
         let start_time = self.start_time;
@@ -185,6 +203,7 @@ impl GatewayServer {
                 registry,
                 workload_mgr,
                 log_store,
+                molt,
                 config,
                 sessions,
                 start_time,
@@ -300,6 +319,7 @@ async fn detect_and_handle_connection(
     registry: Arc<Mutex<NodeRegistry>>,
     workload_manager: Arc<Mutex<WorkloadManager>>,
     log_store: Arc<Mutex<WorkloadLogStore>>,
+    molt: Option<Arc<crate::molt::MoltIntegration>>,
     config: Arc<ServerConfig>,
     sessions: Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
     start_time: Instant,
@@ -326,6 +346,7 @@ async fn detect_and_handle_connection(
                 registry,
                 workload_manager,
                 log_store,
+                molt,
                 config,
                 start_time,
             )

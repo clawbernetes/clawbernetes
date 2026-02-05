@@ -71,6 +71,7 @@ pub mod cli_handler;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod molt;
 pub mod server;
 pub mod session;
 
@@ -84,6 +85,7 @@ pub use handlers::{
     handle_heartbeat, handle_metrics, handle_register, handle_workload_update, route_message,
 };
 pub use server::GatewayServer;
+pub use molt::MoltIntegration;
 pub use session::{
     gateway_msg_to_ws, process_ws_message, process_ws_message_with_limits, run_session,
     session_channel, validate_message_size, ws_message_size, NodeSession, SessionReceiver,

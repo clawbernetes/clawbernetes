@@ -15,6 +15,9 @@ path = "src/main.rs"
 [dependencies]
 claw-proto = { path = "../claw-proto" }
 claw-gateway = { path = "../claw-gateway" }
+molt-p2p = { path = "../molt-p2p" }
+molt-token = { path = "../molt-token" }
+ed25519-dalek = { workspace = true }
 tokio = { version = "1.43", features = ["full", "signal"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-tungstenite = { workspace = true }

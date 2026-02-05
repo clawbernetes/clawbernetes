@@ -19,6 +19,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::ServerConfig;
 use crate::error::{ServerError, ServerResult};
+use crate::molt::MoltIntegration;
 
 /// Handle a CLI WebSocket connection.
 ///
@@ -29,6 +30,7 @@ pub async fn handle_cli_connection<S>(
     registry: Arc<Mutex<NodeRegistry>>,
     workload_manager: Arc<Mutex<WorkloadManager>>,
     log_store: Arc<Mutex<WorkloadLogStore>>,
+    molt: Option<Arc<MoltIntegration>>,
     config: Arc<ServerConfig>,
     start_time: Instant,
 ) -> ServerResult<()>
@@ -91,6 +93,7 @@ where
             &registry,
             &workload_manager,
             &log_store,
+            &molt,
             &config,
             start_time,
         )
@@ -108,6 +111,7 @@ async fn handle_request(
     registry: &Arc<Mutex<NodeRegistry>>,
     workload_manager: &Arc<Mutex<WorkloadManager>>,
     log_store: &Arc<Mutex<WorkloadLogStore>>,
+    molt: &Option<Arc<MoltIntegration>>,
     _config: &Arc<ServerConfig>,
     start_time: Instant,
 ) -> CliResponse {
@@ -164,11 +168,11 @@ async fn handle_request(
             handle_drain_node(registry, node_id, drain).await
         }
 
-        CliMessage::GetMoltStatus => handle_get_molt_status().await,
+        CliMessage::GetMoltStatus => handle_get_molt_status(molt).await,
 
-        CliMessage::ListMoltPeers => handle_list_molt_peers().await,
+        CliMessage::ListMoltPeers => handle_list_molt_peers(molt).await,
 
-        CliMessage::GetMoltBalance => handle_get_molt_balance().await,
+        CliMessage::GetMoltBalance => handle_get_molt_balance(molt).await,
 
         CliMessage::Ping { timestamp } => CliResponse::pong(timestamp),
     }
@@ -524,30 +528,81 @@ async fn handle_drain_node(
 }
 
 // ============================================================================
-// MOLT Operations (Placeholder)
+// MOLT Operations
 // ============================================================================
 
-async fn handle_get_molt_status() -> CliResponse {
-    // TODO: Integrate with actual MOLT P2P network
-    CliResponse::MoltStatus {
-        connected: false,
-        peer_count: 0,
-        node_id: None,
-        region: None,
+async fn handle_get_molt_status(molt: &Option<Arc<MoltIntegration>>) -> CliResponse {
+    match molt {
+        Some(m) => {
+            let connected = m.is_connected().await;
+            let peer_count = m.peer_count().await as u32;
+            let node_id = Some(m.peer_id().to_string());
+            let region = m.region().map(String::from);
+
+            CliResponse::MoltStatus {
+                connected,
+                peer_count,
+                node_id,
+                region,
+            }
+        }
+        None => {
+            // MOLT not configured
+            CliResponse::MoltStatus {
+                connected: false,
+                peer_count: 0,
+                node_id: None,
+                region: None,
+            }
+        }
     }
 }
 
-async fn handle_list_molt_peers() -> CliResponse {
-    // TODO: Integrate with actual MOLT P2P network
-    CliResponse::MoltPeers { peers: Vec::new() }
+async fn handle_list_molt_peers(molt: &Option<Arc<MoltIntegration>>) -> CliResponse {
+    match molt {
+        Some(m) => {
+            let peer_ids = m.known_peers().await;
+            let peers: Vec<cli::MoltPeerInfo> = peer_ids
+                .into_iter()
+                .map(|peer_id| cli::MoltPeerInfo {
+                    peer_id: peer_id.to_string(),
+                    region: None,
+                    gpu_count: 0, // Would need to query gossip for capabilities
+                    available: true,
+                    latency_ms: None,
+                })
+                .collect();
+
+            CliResponse::MoltPeers { peers }
+        }
+        None => CliResponse::MoltPeers { peers: Vec::new() },
+    }
 }
 
-async fn handle_get_molt_balance() -> CliResponse {
-    // TODO: Integrate with actual MOLT wallet
-    CliResponse::MoltBalance {
-        balance: 0,
-        pending: 0,
-        staked: 0,
+async fn handle_get_molt_balance(molt: &Option<Arc<MoltIntegration>>) -> CliResponse {
+    match molt {
+        Some(m) => {
+            match m.balance().await {
+                Ok(amount) => CliResponse::MoltBalance {
+                    balance: amount.lamports(),
+                    pending: 0, // Would need escrow tracking
+                    staked: 0,  // Would need staking tracking
+                },
+                Err(e) => {
+                    warn!(error = %e, "Failed to get MOLT balance");
+                    CliResponse::MoltBalance {
+                        balance: 0,
+                        pending: 0,
+                        staked: 0,
+                    }
+                }
+            }
+        }
+        None => CliResponse::MoltBalance {
+            balance: 0,
+            pending: 0,
+            staked: 0,
+        },
     }
 }
 
