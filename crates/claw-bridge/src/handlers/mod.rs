@@ -146,6 +146,12 @@ async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
         // ─── MOLT Marketplace ───
         "molt_offers" => molt::offers(params).await,
         "molt_offer_create" => molt::offer_create(params).await,
+        "molt_order_create" => molt::order_create(params).await,
+        "molt_find_matches" => molt::find_matches(params).await,
+        "molt_escrow_create" => molt::escrow_create(params).await,
+        "molt_escrow_fund" => molt::escrow_fund(params).await,
+        "molt_escrow_release" => molt::escrow_release(params).await,
+        "molt_escrow_refund" => molt::escrow_refund(params).await,
         "molt_bid" => molt::bid(params).await,
         "molt_spot_prices" => molt::spot_prices(params).await,
 
