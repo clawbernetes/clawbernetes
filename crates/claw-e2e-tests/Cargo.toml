@@ -20,6 +20,29 @@ claw-cli = { path = "../claw-cli" }
 claw-proto = { path = "../claw-proto" }
 clawnode = { path = "../clawnode" }
 
+# Auth & RBAC
+claw-auth = { path = "../claw-auth" }
+
+# Secrets & PKI
+claw-secrets = { path = "../claw-secrets" }
+claw-pki = { path = "../claw-pki" }
+
+# Observability
+claw-metrics = { path = "../claw-metrics" }
+claw-logs = { path = "../claw-logs" }
+claw-alerts = { path = "../claw-alerts" }
+
+# Deployment
+claw-deploy = { path = "../claw-deploy" }
+claw-rollback = { path = "../claw-rollback" }
+claw-preemption = { path = "../claw-preemption" }
+
+# Multi-tenancy
+claw-tenancy = { path = "../claw-tenancy" }
+
+# Service Discovery
+claw-discovery = { path = "../claw-discovery" }
+
 # MOLT crates
 molt-p2p = { path = "../molt-p2p" }
 molt-token = { path = "../molt-token" }

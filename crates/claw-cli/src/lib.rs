@@ -29,7 +29,12 @@ pub mod commands;
 pub mod error;
 pub mod output;
 
-pub use cli::{Cli, Commands, Format, MoltCommands, NodeCommands, RunArgs};
+pub use cli::{
+    AlertCommands, ApikeyCommands, AuthCommands, AutoscaleCommands, Cli, Commands,
+    CreateAlertArgs, DashboardCommands, DeployArgs, Format, LogsArgs, MetricsCommands,
+    MoltCommands, NamespaceCommands, NodeCommands, PreemptArgs, PriorityCommands, RollbackArgs,
+    RunArgs, SecretCommands, ServiceCommands, TenantCommands,
+};
 pub use client::GatewayClient;
 pub use error::CliError;
 pub use output::OutputFormat;

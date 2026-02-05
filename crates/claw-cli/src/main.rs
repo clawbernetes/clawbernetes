@@ -9,7 +9,12 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use claw_cli::cli::{Cli, Commands};
-use claw_cli::commands::{AutoscaleCommand, MoltCommand, NodeCommand, RunCommand, StatusCommand};
+use claw_cli::commands::{
+    AlertCommand, AuthCommand, AutoscaleCommand, DashboardCommand, DeployCommand,
+    LogsCommand, MetricsCommand, MoltCommand, NamespaceCommand, NodeCommand, PreemptCommand,
+    PriorityCommand, RollbackCommand, RunCommand, SecretCommand, ServiceCommand, StatusCommand,
+    TenantCommand,
+};
 use claw_cli::output::OutputFormat;
 
 fn main() -> ExitCode {
@@ -63,6 +68,58 @@ async fn run(cli: Cli) -> Result<(), claw_cli::CliError> {
         }
         Commands::Autoscale { command } => {
             let cmd = AutoscaleCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &command).await?;
+        }
+        Commands::Secret { command } => {
+            let cmd = SecretCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &command).await?;
+        }
+        Commands::Auth { command } => {
+            let cmd = AuthCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &command).await?;
+        }
+        Commands::Alert { command } => {
+            let cmd = AlertCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &command).await?;
+        }
+        Commands::Tenant { command } => {
+            let cmd = TenantCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &command).await?;
+        }
+        Commands::Namespace { command } => {
+            let cmd = NamespaceCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &command).await?;
+        }
+        Commands::Service { command } => {
+            let cmd = ServiceCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &command).await?;
+        }
+        Commands::Deploy(args) => {
+            let cmd = DeployCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &args).await?;
+        }
+        Commands::Rollback(args) => {
+            let cmd = RollbackCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &args).await?;
+        }
+        Commands::Metrics { command } => {
+            let cmd = MetricsCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &command).await?;
+        }
+        Commands::Logs(args) => {
+            let cmd = LogsCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &args).await?;
+        }
+        Commands::Dashboard { command } => {
+            let cmd = DashboardCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &command).await?;
+        }
+        Commands::Preempt(args) => {
+            let cmd = PreemptCommand::new(&cli.gateway);
+            cmd.execute(&mut stdout, &format, &args).await?;
+        }
+        Commands::Priority { command } => {
+            let cmd = PriorityCommand::new(&cli.gateway);
             cmd.execute(&mut stdout, &format, &command).await?;
         }
     }
