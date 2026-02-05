@@ -312,6 +312,41 @@ const RollbackRecordSchema = Type.Object({
   image: Type.String({ description: "Container image" }),
 });
 
+// ─── Network Discovery Schemas ───
+
+const NetworkScanSchema = Type.Object({
+  subnet: Type.String({ description: "CIDR notation (e.g., 192.168.1.0/24)" }),
+  ports: Type.Optional(Type.Array(Type.Number(), { description: "Ports to scan (default: 22, 80, 443, 8080)" })),
+  timeout_ms: Type.Optional(Type.Number({ description: "Timeout per host in ms (default: 500)" })),
+  detect_gpus: Type.Optional(Type.Boolean({ description: "Attempt GPU detection via SSH" })),
+  credential_profile: Type.Optional(Type.String({ description: "Credential profile for SSH access" })),
+});
+
+const CredentialProfileCreateSchema = Type.Object({
+  name: Type.String({ description: "Profile name" }),
+  credential_type: Type.Optional(Type.String({ description: "Type: ssh, winrm, api" })),
+  username: Type.Optional(Type.String({ description: "Username for SSH/WinRM" })),
+  secret_ref: Type.Optional(Type.String({ description: "Secret ID containing key/password" })),
+  auth_method: Type.Optional(Type.String({ description: "Auth method: key, password, agent" })),
+  scope: Type.Optional(Type.Array(Type.String(), { description: "Subnets where profile applies" })),
+  sudo: Type.Optional(Type.Boolean({ description: "Use sudo (default: true)" })),
+});
+
+const NodeTokenCreateSchema = Type.Object({
+  hostname: Type.String({ description: "Hostname for the joining node" }),
+  ttl_minutes: Type.Optional(Type.Number({ description: "Token TTL in minutes (default: 15)" })),
+  labels: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Labels for the node" })),
+  auto_approve: Type.Optional(Type.Boolean({ description: "Auto-approve on trusted subnet (default: true)" })),
+});
+
+const TrustedSubnetAddSchema = Type.Object({
+  subnet: Type.String({ description: "CIDR notation for trusted subnet" }),
+});
+
+const CheckTrustedSchema = Type.Object({
+  address: Type.String({ description: "IP address to check" }),
+});
+
 // ─────────────────────────────────────────────────────────────
 // Plugin Registration
 // ─────────────────────────────────────────────────────────────
@@ -1225,8 +1260,115 @@ const clawbernetesPlugin = {
       },
     });
 
+    // ─── Network Discovery Tools ───
+
+    api.registerTool({
+      name: "network_scan",
+      label: "Network Scan",
+      description: "Scan a subnet to discover hosts, open ports, and potential GPU nodes",
+      parameters: NetworkScanSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("network_scan", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "credential_profile_create",
+      label: "Create Credential Profile",
+      description: "Create a reusable credential profile for SSH/WinRM access to nodes",
+      parameters: CredentialProfileCreateSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("credential_profile_create", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "credential_profile_list",
+      label: "List Credential Profiles",
+      description: "List all credential profiles",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("credential_profile_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "node_token_create",
+      label: "Create Node Token",
+      description: "Generate a one-time bootstrap token for a node to join the cluster",
+      parameters: NodeTokenCreateSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("node_token_create", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "trusted_subnet_add",
+      label: "Add Trusted Subnet",
+      description: "Add a subnet to the trusted list for auto-approval of joining nodes",
+      parameters: TrustedSubnetAddSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("trusted_subnet_add", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "trusted_subnet_list",
+      label: "List Trusted Subnets",
+      description: "List all trusted subnets for auto-approval",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("trusted_subnet_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "check_trusted",
+      label: "Check Trusted",
+      description: "Check if an IP address is in a trusted subnet",
+      parameters: CheckTrustedSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("check_trusted", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
     // Note: Client cleanup happens automatically when process exits
-    api.logger.info(`[clawbernetes] Registered 55 tools`);
+    api.logger.info(`[clawbernetes] Registered 62 tools`);
   },
 };
 

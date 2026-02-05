@@ -12,6 +12,7 @@ pub mod auth;
 pub mod cluster;
 pub mod deploy;
 pub mod molt;
+pub mod network;
 pub mod observability;
 pub mod operations;
 pub mod pki;
@@ -142,6 +143,17 @@ async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
         "claim_list" => storage::claim_list(params).await,
         "claim_bind" => storage::claim_bind(params).await,
         "reconcile_claims" => storage::reconcile_claims(params).await,
+
+        // ─── Network Discovery ───
+        "network_scan" => network::network_scan(params).await,
+        "credential_profile_create" => network::credential_profile_create(params).await,
+        "credential_profile_list" => network::credential_profile_list(params).await,
+        "credential_profile_get" => network::credential_profile_get(params).await,
+        "node_token_create" => network::node_token_create(params).await,
+        "node_token_validate" => network::node_token_validate(params).await,
+        "trusted_subnet_add" => network::trusted_subnet_add(params).await,
+        "trusted_subnet_list" => network::trusted_subnet_list(params).await,
+        "check_trusted" => network::check_trusted(params).await,
 
         // ─── MOLT Marketplace ───
         "molt_offers" => molt::offers(params).await,
