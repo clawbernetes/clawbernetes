@@ -149,11 +149,12 @@ const MoltOffersSchema = Type.Object({
 });
 
 const MoltOfferCreateSchema = Type.Object({
-  gpu_type: Type.String({ description: "GPU type being offered" }),
+  provider: Type.String({ description: "Provider identifier" }),
   gpu_count: Type.Number({ description: "Number of GPUs" }),
-  price_per_hour: Type.Number({ description: "Price per hour" }),
-  min_duration_hours: Type.Optional(Type.Number({ description: "Minimum rental duration" })),
-  max_duration_hours: Type.Optional(Type.Number({ description: "Maximum rental duration" })),
+  gpu_model: Type.String({ description: "GPU model (H100, A100, etc.)" }),
+  memory_gb: Type.Number({ description: "GPU memory in GB" }),
+  price_per_hour: Type.Number({ description: "Price per hour (integer, e.g. cents)" }),
+  reputation: Type.Optional(Type.Number({ description: "Provider reputation score (default 100)" })),
 });
 
 const MoltBidSchema = Type.Object({
@@ -163,7 +164,152 @@ const MoltBidSchema = Type.Object({
 });
 
 const MoltSpotPricesSchema = Type.Object({
-  gpu_type: Type.Optional(Type.String({ description: "GPU type filter" })),
+  gpu_model: Type.Optional(Type.String({ description: "GPU model filter" })),
+});
+
+// ─── Auth Schemas ───
+
+const UserCreateSchema = Type.Object({
+  name: Type.String({ description: "Username" }),
+  email: Type.Optional(Type.String({ description: "User email" })),
+  roles: Type.Optional(Type.Array(Type.String(), { description: "Initial roles" })),
+});
+
+const UserGetSchema = Type.Object({
+  user_id: Type.Optional(Type.String({ description: "User ID" })),
+  name: Type.Optional(Type.String({ description: "Username" })),
+});
+
+const RoleAssignSchema = Type.Object({
+  user_id: Type.String({ description: "User ID" }),
+  role_name: Type.String({ description: "Role name to assign" }),
+});
+
+const PermissionCheckSchema = Type.Object({
+  user_id: Type.String({ description: "User ID" }),
+  action: Type.String({ description: "Action (read, write, admin)" }),
+  resource: Type.String({ description: "Resource type" }),
+});
+
+const ApiKeyGenerateSchema = Type.Object({
+  user_id: Type.String({ description: "User ID" }),
+  name: Type.String({ description: "Key name" }),
+  expires_in_days: Type.Optional(Type.Number({ description: "Expiration days" })),
+});
+
+// ─── Deploy Schemas ───
+
+const DeployIntentSchema = Type.Object({
+  intent: Type.String({ description: "Natural language deployment intent" }),
+  namespace: Type.Optional(Type.String({ description: "Target namespace" })),
+  dry_run: Type.Optional(Type.Boolean({ description: "Preview without executing" })),
+});
+
+const DeployStatusSchema = Type.Object({
+  deployment_id: Type.String({ description: "Deployment ID" }),
+});
+
+// ─── Tenancy Schemas ───
+
+const TenantCreateSchema = Type.Object({
+  name: Type.String({ description: "Tenant name" }),
+});
+
+const NamespaceCreateSchema = Type.Object({
+  tenant_id: Type.String({ description: "Parent tenant ID" }),
+  name: Type.String({ description: "Namespace name" }),
+});
+
+const QuotaSetSchema = Type.Object({
+  namespace_id: Type.String({ description: "Namespace ID" }),
+  quota: Type.Object({
+    max_gpus: Type.Optional(Type.Number()),
+    gpu_hours: Type.Optional(Type.Number()),
+    memory_mib: Type.Optional(Type.Number()),
+  }),
+});
+
+// ─── Secrets Schemas ───
+
+const SecretPutSchema = Type.Object({
+  id: Type.String({ description: "Secret identifier" }),
+  value: Type.String({ description: "Secret value" }),
+  allowed_workloads: Type.Optional(Type.Array(Type.String(), { description: "Allowed workload IDs" })),
+});
+
+const SecretGetSchema = Type.Object({
+  id: Type.String({ description: "Secret identifier" }),
+  workload_id: Type.Optional(Type.String({ description: "Requesting workload" })),
+  reason: Type.Optional(Type.String({ description: "Access reason (audit)" })),
+});
+
+// ─── PKI Schemas ───
+
+const CertIssueSchema = Type.Object({
+  common_name: Type.String({ description: "Certificate CN" }),
+  dns_names: Type.Optional(Type.Array(Type.String(), { description: "DNS SANs" })),
+  ip_addresses: Type.Optional(Type.Array(Type.String(), { description: "IP SANs" })),
+  validity_days: Type.Optional(Type.Number({ description: "Validity period" })),
+  server_auth: Type.Optional(Type.Boolean({ description: "Server auth (default true)" })),
+  client_auth: Type.Optional(Type.Boolean({ description: "Client auth" })),
+});
+
+const CertGetSchema = Type.Object({
+  cert_id: Type.String({ description: "Certificate ID (UUID)" }),
+});
+
+// ─── Service Discovery Schemas ───
+
+const ServiceRegisterSchema = Type.Object({
+  name: Type.String({ description: "Service name" }),
+  namespace: Type.Optional(Type.String({ description: "Namespace" })),
+  ports: Type.Array(Type.Object({
+    port: Type.Number(),
+    name: Type.Optional(Type.String()),
+    protocol: Type.Optional(Type.String({ description: "http, tcp, grpc" })),
+  })),
+});
+
+const EndpointAddSchema = Type.Object({
+  namespace: Type.String({ description: "Namespace" }),
+  service_name: Type.String({ description: "Service name" }),
+  address: Type.String({ description: "IP address" }),
+  port: Type.Number({ description: "Port number" }),
+});
+
+// ─── Storage Schemas ───
+
+const VolumeProvisionSchema = Type.Object({
+  id: Type.String({ description: "Volume ID" }),
+  capacity_gb: Type.Number({ description: "Capacity in GB" }),
+  storage_class: Type.Optional(Type.String({ description: "Storage class" })),
+});
+
+const ClaimCreateSchema = Type.Object({
+  id: Type.String({ description: "Claim ID" }),
+  requested_gb: Type.Number({ description: "Requested capacity" }),
+});
+
+// ─── Operations Schemas ───
+
+const AutoscalePoolCreateSchema = Type.Object({
+  id: Type.String({ description: "Pool ID" }),
+  name: Type.String({ description: "Pool name" }),
+  min_nodes: Type.Number({ description: "Minimum nodes" }),
+  max_nodes: Type.Number({ description: "Maximum nodes" }),
+  target_utilization: Type.Optional(Type.Number({ description: "Target GPU %" })),
+});
+
+const PreemptionRegisterSchema = Type.Object({
+  workload_id: Type.String({ description: "Workload ID" }),
+  priority_class: Type.Optional(Type.String({ description: "Priority class" })),
+  gpus: Type.Optional(Type.Number({ description: "GPU count" })),
+});
+
+const RollbackRecordSchema = Type.Object({
+  deployment_id: Type.String({ description: "Deployment ID" }),
+  name: Type.String({ description: "Deployment name" }),
+  image: Type.String({ description: "Container image" }),
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -534,16 +680,553 @@ const clawbernetesPlugin = {
       },
     });
 
-    // ─── Shutdown ───
+    // ─── Auth Tools ───
 
-    api.onShutdown(async () => {
-      if (client) {
-        client.shutdown();
-        client = null;
-      }
+    api.registerTool({
+      name: "user_create",
+      label: "Create User",
+      description: "Create a new user with optional roles",
+      parameters: UserCreateSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("user_create", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
     });
 
-    api.logger.info(`[clawbernetes] Registered ${21} tools`);
+    api.registerTool({
+      name: "user_get",
+      label: "Get User",
+      description: "Get user details by ID or name",
+      parameters: UserGetSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("user_get", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "user_list",
+      label: "List Users",
+      description: "List all users",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("user_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "role_assign",
+      label: "Assign Role",
+      description: "Assign a role to a user",
+      parameters: RoleAssignSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("role_assign", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "role_list",
+      label: "List Roles",
+      description: "List all available roles",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("role_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "permission_check",
+      label: "Check Permission",
+      description: "Check if a user has permission for an action",
+      parameters: PermissionCheckSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("permission_check", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "api_key_generate",
+      label: "Generate API Key",
+      description: "Generate a new API key for a user",
+      parameters: ApiKeyGenerateSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("api_key_generate", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    // ─── Deploy Tools ───
+
+    api.registerTool({
+      name: "deploy_intent",
+      label: "Deploy (Intent)",
+      description: "Deploy using natural language (e.g., 'deploy pytorch:2.0 with 4 GPUs using canary')",
+      parameters: DeployIntentSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("deploy_intent", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "deploy_status",
+      label: "Deployment Status",
+      description: "Get deployment status",
+      parameters: DeployStatusSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("deploy_status", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "deploy_list",
+      label: "List Deployments",
+      description: "List all deployments",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("deploy_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    // ─── Tenancy Tools ───
+
+    api.registerTool({
+      name: "tenant_create",
+      label: "Create Tenant",
+      description: "Create a new tenant",
+      parameters: TenantCreateSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("tenant_create", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "tenant_list",
+      label: "List Tenants",
+      description: "List all tenants",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("tenant_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "namespace_create",
+      label: "Create Namespace",
+      description: "Create a namespace within a tenant",
+      parameters: NamespaceCreateSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("namespace_create", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "namespace_list",
+      label: "List Namespaces",
+      description: "List namespaces",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("namespace_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "quota_set",
+      label: "Set Quota",
+      description: "Set resource quota for a namespace",
+      parameters: QuotaSetSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("quota_set", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    // ─── Secrets Tools ───
+
+    api.registerTool({
+      name: "secret_put",
+      label: "Store Secret",
+      description: "Store an encrypted secret",
+      parameters: SecretPutSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("secret_put", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "secret_get",
+      label: "Get Secret",
+      description: "Retrieve a secret value",
+      parameters: SecretGetSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("secret_get", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "secret_list",
+      label: "List Secrets",
+      description: "List all secret IDs",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("secret_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    // ─── PKI Tools ───
+
+    api.registerTool({
+      name: "cert_issue",
+      label: "Issue Certificate",
+      description: "Issue a new TLS certificate",
+      parameters: CertIssueSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("cert_issue", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "cert_get",
+      label: "Get Certificate",
+      description: "Get certificate details",
+      parameters: CertGetSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("cert_get", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "cert_list",
+      label: "List Certificates",
+      description: "List all certificates",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("cert_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "ca_status",
+      label: "CA Status",
+      description: "Get Certificate Authority status",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("ca_status", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    // ─── Service Discovery Tools ───
+
+    api.registerTool({
+      name: "service_register",
+      label: "Register Service",
+      description: "Register a service for discovery",
+      parameters: ServiceRegisterSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("service_register", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "service_list",
+      label: "List Services",
+      description: "List registered services",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("service_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "endpoint_add",
+      label: "Add Endpoint",
+      description: "Add an endpoint to a service",
+      parameters: EndpointAddSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("endpoint_add", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    // ─── Storage Tools ───
+
+    api.registerTool({
+      name: "volume_provision",
+      label: "Provision Volume",
+      description: "Provision a new storage volume",
+      parameters: VolumeProvisionSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("volume_provision", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "volume_list",
+      label: "List Volumes",
+      description: "List storage volumes",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("volume_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "claim_create",
+      label: "Create Claim",
+      description: "Create a volume claim",
+      parameters: ClaimCreateSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("claim_create", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    // ─── Autoscaling Tools ───
+
+    api.registerTool({
+      name: "autoscale_pool_create",
+      label: "Create Autoscale Pool",
+      description: "Create an autoscaling node pool",
+      parameters: AutoscalePoolCreateSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("autoscale_pool_create", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "autoscale_status",
+      label: "Autoscaler Status",
+      description: "Get autoscaler status",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("autoscale_status", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "autoscale_evaluate",
+      label: "Evaluate Autoscaling",
+      description: "Evaluate and get scaling recommendations",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("autoscale_evaluate", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    // ─── Preemption Tools ───
+
+    api.registerTool({
+      name: "preemption_register",
+      label: "Register for Preemption",
+      description: "Register a workload for preemption tracking",
+      parameters: PreemptionRegisterSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("preemption_register", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "preemption_list",
+      label: "List Preemptible",
+      description: "List preemptible workloads",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("preemption_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    // ─── Rollback Tools ───
+
+    api.registerTool({
+      name: "rollback_record",
+      label: "Record Deployment",
+      description: "Record a deployment snapshot for rollback",
+      parameters: RollbackRecordSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("rollback_record", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "rollback_history",
+      label: "Rollback History",
+      description: "Get rollback history",
+      parameters: Type.Object({}),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("rollback_history", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    // Note: Client cleanup happens automatically when process exits
+    api.logger.info(`[clawbernetes] Registered 55 tools`);
   },
 };
 
