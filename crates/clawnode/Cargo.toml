@@ -50,6 +50,7 @@ ipnet = { version = "2.10", features = ["serde"] }
 claw-proto = { path = "../claw-proto" }
 claw-wireguard = { path = "../claw-wireguard" }
 claw-validation = { path = "../claw-validation", features = ["command"] }
+claw-compute = { path = "../claw-compute", optional = true }
 molt-core = { path = "../molt-core", optional = true }
 molt-p2p = { path = "../molt-p2p", optional = true }
 
@@ -64,6 +65,7 @@ tempfile = "3.14"
 [features]
 default = []
 molt = ["dep:molt-core", "dep:molt-p2p"]
+docker = ["dep:claw-compute", "claw-compute/container-runtime"]
 
 [[bin]]
 name = "clawnode"

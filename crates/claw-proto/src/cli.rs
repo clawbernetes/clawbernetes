@@ -144,6 +144,22 @@ pub enum CliMessage {
     },
 
     // =========================================================================
+    // WireGuard Mesh Commands
+    // =========================================================================
+
+    /// Get mesh network status.
+    GetMeshStatus,
+
+    /// List mesh peers.
+    ListMeshPeers,
+
+    /// Get mesh node info for a specific node.
+    GetMeshNode {
+        /// Node ID.
+        node_id: NodeId,
+    },
+
+    // =========================================================================
     // Advanced Scheduling Commands
     // =========================================================================
 
@@ -349,6 +365,36 @@ pub enum CliResponse {
     },
 
     // =========================================================================
+    // WireGuard Mesh Responses
+    // =========================================================================
+
+    /// Mesh network status.
+    MeshStatus {
+        /// Whether mesh networking is enabled.
+        enabled: bool,
+        /// Number of nodes in the mesh.
+        node_count: u32,
+        /// Number of active connections.
+        connection_count: u32,
+        /// Mesh network CIDR.
+        network_cidr: String,
+        /// Topology type (full_mesh, hub_spoke, custom).
+        topology_type: String,
+    },
+
+    /// List of mesh peers.
+    MeshPeers {
+        /// Peer information.
+        peers: Vec<MeshPeerInfo>,
+    },
+
+    /// Single mesh node details.
+    MeshNode {
+        /// Node information.
+        node: MeshNodeInfo,
+    },
+
+    // =========================================================================
     // Advanced Scheduling Responses
     // =========================================================================
 
@@ -497,6 +543,77 @@ pub struct MoltPeerInfo {
     pub latency_ms: Option<u32>,
 }
 
+/// Information about a mesh peer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MeshPeerInfo {
+    /// Node ID.
+    pub node_id: NodeId,
+    /// Node name.
+    pub name: String,
+    /// Mesh IP address.
+    pub mesh_ip: String,
+    /// WireGuard public key (truncated for display).
+    pub public_key: String,
+    /// External endpoint (if known).
+    pub endpoint: Option<String>,
+    /// Connection state.
+    pub state: MeshConnectionState,
+    /// Last handshake time.
+    pub last_handshake: Option<DateTime<Utc>>,
+    /// Bytes received.
+    pub rx_bytes: u64,
+    /// Bytes transmitted.
+    pub tx_bytes: u64,
+}
+
+/// Connection state of a mesh peer.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MeshConnectionState {
+    /// Connected and healthy.
+    Connected,
+    /// Connecting (no handshake yet).
+    Connecting,
+    /// Disconnected (handshake timeout).
+    Disconnected,
+    /// Unknown state.
+    Unknown,
+}
+
+impl std::fmt::Display for MeshConnectionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Connected => write!(f, "connected"),
+            Self::Connecting => write!(f, "connecting"),
+            Self::Disconnected => write!(f, "disconnected"),
+            Self::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+/// Detailed information about a mesh node.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MeshNodeInfo {
+    /// Node ID.
+    pub node_id: NodeId,
+    /// Node name.
+    pub name: String,
+    /// Mesh IP address.
+    pub mesh_ip: String,
+    /// WireGuard public key.
+    pub public_key: String,
+    /// External endpoint.
+    pub endpoint: Option<String>,
+    /// Is this node a hub (for hub-spoke topology).
+    pub is_hub: bool,
+    /// Connected peer count.
+    pub connected_peers: u32,
+    /// Total peer count.
+    pub total_peers: u32,
+    /// When the node joined the mesh.
+    pub joined_at: DateTime<Utc>,
+}
+
 /// Information about a workload waiting on scheduling gates.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GatedWorkloadInfo {
@@ -610,6 +727,9 @@ impl CliMessage {
             Self::ListMoltPeers => "list_molt_peers",
             Self::GetMoltBalance => "get_molt_balance",
             Self::Ping { .. } => "ping",
+            Self::GetMeshStatus => "get_mesh_status",
+            Self::ListMeshPeers => "list_mesh_peers",
+            Self::GetMeshNode { .. } => "get_mesh_node",
             Self::ClearGate { .. } => "clear_gate",
             Self::GetSchedulingStatus { .. } => "get_scheduling_status",
             Self::ListGatedWorkloads => "list_gated_workloads",
@@ -922,5 +1042,115 @@ mod tests {
         let json = resp.to_json().unwrap();
         assert!(json.contains("molt_balance"));
         assert!(json.contains("1000000"));
+    }
+
+    // ==================== Mesh CLI Tests ====================
+
+    #[test]
+    fn test_get_mesh_status_message() {
+        let msg = CliMessage::GetMeshStatus;
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("get_mesh_status"));
+        assert_eq!(msg.request_type(), "get_mesh_status");
+    }
+
+    #[test]
+    fn test_list_mesh_peers_message() {
+        let msg = CliMessage::ListMeshPeers;
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("list_mesh_peers"));
+        assert_eq!(msg.request_type(), "list_mesh_peers");
+    }
+
+    #[test]
+    fn test_get_mesh_node_message() {
+        let msg = CliMessage::GetMeshNode {
+            node_id: NodeId::new(),
+        };
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("get_mesh_node"));
+        assert_eq!(msg.request_type(), "get_mesh_node");
+    }
+
+    #[test]
+    fn test_mesh_status_response() {
+        let resp = CliResponse::MeshStatus {
+            enabled: true,
+            node_count: 5,
+            connection_count: 10,
+            network_cidr: "10.100.0.0/16".to_string(),
+            topology_type: "full_mesh".to_string(),
+        };
+        let json = resp.to_json().unwrap();
+        assert!(json.contains("mesh_status"));
+        assert!(json.contains("10.100.0.0/16"));
+        assert!(json.contains("full_mesh"));
+    }
+
+    #[test]
+    fn test_mesh_peers_response() {
+        let resp = CliResponse::MeshPeers {
+            peers: vec![MeshPeerInfo {
+                node_id: NodeId::new(),
+                name: "node-1".to_string(),
+                mesh_ip: "10.100.0.5".to_string(),
+                public_key: "abc123...".to_string(),
+                endpoint: Some("192.168.1.100:51820".to_string()),
+                state: MeshConnectionState::Connected,
+                last_handshake: Some(Utc::now()),
+                rx_bytes: 1024,
+                tx_bytes: 2048,
+            }],
+        };
+        let json = resp.to_json().unwrap();
+        assert!(json.contains("mesh_peers"));
+        assert!(json.contains("10.100.0.5"));
+        assert!(json.contains("connected"));
+    }
+
+    #[test]
+    fn test_mesh_node_response() {
+        let resp = CliResponse::MeshNode {
+            node: MeshNodeInfo {
+                node_id: NodeId::new(),
+                name: "node-1".to_string(),
+                mesh_ip: "10.100.0.5".to_string(),
+                public_key: "abc123...".to_string(),
+                endpoint: Some("192.168.1.100:51820".to_string()),
+                is_hub: false,
+                connected_peers: 3,
+                total_peers: 4,
+                joined_at: Utc::now(),
+            },
+        };
+        let json = resp.to_json().unwrap();
+        assert!(json.contains("mesh_node"));
+        assert!(json.contains("node-1"));
+    }
+
+    #[test]
+    fn test_mesh_connection_state_display() {
+        assert_eq!(MeshConnectionState::Connected.to_string(), "connected");
+        assert_eq!(MeshConnectionState::Connecting.to_string(), "connecting");
+        assert_eq!(MeshConnectionState::Disconnected.to_string(), "disconnected");
+        assert_eq!(MeshConnectionState::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn test_mesh_peer_info_serialization() {
+        let info = MeshPeerInfo {
+            node_id: NodeId::new(),
+            name: "test-node".to_string(),
+            mesh_ip: "10.100.0.5".to_string(),
+            public_key: "test-key".to_string(),
+            endpoint: None,
+            state: MeshConnectionState::Connecting,
+            last_handshake: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("test-node"));
+        assert!(json.contains("connecting"));
     }
 }

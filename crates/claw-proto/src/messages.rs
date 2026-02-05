@@ -24,6 +24,10 @@ pub enum NodeMessage {
         capabilities: NodeCapabilities,
         /// Protocol version.
         protocol_version: u32,
+        /// Optional WireGuard public key for mesh networking.
+        wireguard_public_key: Option<String>,
+        /// Optional external endpoint for WireGuard (IP:port).
+        wireguard_endpoint: Option<String>,
     },
     /// Heartbeat.
     Heartbeat {
@@ -60,6 +64,19 @@ pub enum NodeMessage {
         lines: Vec<String>,
         /// Is stderr.
         is_stderr: bool,
+    },
+    /// Mesh tunnel ready confirmation.
+    ///
+    /// Sent by node after configuring WireGuard mesh peers.
+    MeshReady {
+        /// Node ID.
+        node_id: NodeId,
+        /// Node's mesh IP address.
+        mesh_ip: String,
+        /// Number of peers successfully configured.
+        peer_count: u32,
+        /// Optional error message if some peers failed.
+        error: Option<String>,
     },
 }
 
@@ -117,6 +134,56 @@ impl NodeConfig {
     }
 }
 
+/// WireGuard mesh peer configuration sent to nodes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MeshPeerConfig {
+    /// Public key of the peer (base64 encoded).
+    pub public_key: String,
+    /// Mesh IP address of the peer.
+    pub mesh_ip: String,
+    /// Optional endpoint (external IP:port) for direct connection.
+    pub endpoint: Option<String>,
+    /// Persistent keepalive interval in seconds.
+    pub keepalive_secs: Option<u16>,
+    /// Allowed IPs for this peer.
+    pub allowed_ips: Vec<String>,
+}
+
+impl MeshPeerConfig {
+    /// Creates a new mesh peer config.
+    #[must_use]
+    pub fn new(public_key: impl Into<String>, mesh_ip: impl Into<String>) -> Self {
+        Self {
+            public_key: public_key.into(),
+            mesh_ip: mesh_ip.into(),
+            endpoint: None,
+            keepalive_secs: Some(25),
+            allowed_ips: Vec::new(),
+        }
+    }
+
+    /// Sets the endpoint.
+    #[must_use]
+    pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Sets the keepalive interval.
+    #[must_use]
+    pub fn with_keepalive(mut self, secs: u16) -> Self {
+        self.keepalive_secs = Some(secs);
+        self
+    }
+
+    /// Adds an allowed IP.
+    #[must_use]
+    pub fn with_allowed_ip(mut self, ip: impl Into<String>) -> Self {
+        self.allowed_ips.push(ip.into());
+        self
+    }
+}
+
 /// Messages sent from gateway to node.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -158,6 +225,26 @@ pub enum GatewayMessage {
     RequestMetrics,
     /// Request capabilities.
     RequestCapabilities,
+    /// Mesh peer configuration for WireGuard tunnel.
+    ///
+    /// Sent to nodes when they should add/update peers in their mesh.
+    MeshPeerConfig {
+        /// The node's assigned mesh IP address.
+        node_mesh_ip: String,
+        /// The node's WireGuard private key (only sent once on initial config).
+        private_key: Option<String>,
+        /// Peer configurations to add/update.
+        peers: Vec<MeshPeerConfig>,
+        /// Mesh network CIDR (e.g., "10.100.0.0/16").
+        network_cidr: String,
+        /// Listen port for WireGuard.
+        listen_port: u16,
+    },
+    /// Request to remove mesh peers.
+    MeshPeerRemove {
+        /// Public keys of peers to remove (base64 encoded).
+        peer_public_keys: Vec<String>,
+    },
     /// Error.
     Error {
         /// Code.
@@ -176,6 +263,54 @@ impl NodeMessage {
             name: name.into(),
             capabilities,
             protocol_version: 1,
+            wireguard_public_key: None,
+            wireguard_endpoint: None,
+        }
+    }
+
+    /// Create register message with WireGuard mesh info.
+    #[must_use]
+    pub fn register_with_mesh(
+        node_id: NodeId,
+        name: impl Into<String>,
+        capabilities: NodeCapabilities,
+        wireguard_public_key: impl Into<String>,
+        wireguard_endpoint: Option<String>,
+    ) -> Self {
+        Self::Register {
+            node_id,
+            name: name.into(),
+            capabilities,
+            protocol_version: 1,
+            wireguard_public_key: Some(wireguard_public_key.into()),
+            wireguard_endpoint,
+        }
+    }
+
+    /// Create mesh ready message.
+    #[must_use]
+    pub fn mesh_ready(node_id: NodeId, mesh_ip: impl Into<String>, peer_count: u32) -> Self {
+        Self::MeshReady {
+            node_id,
+            mesh_ip: mesh_ip.into(),
+            peer_count,
+            error: None,
+        }
+    }
+
+    /// Create mesh ready message with error.
+    #[must_use]
+    pub fn mesh_ready_with_error(
+        node_id: NodeId,
+        mesh_ip: impl Into<String>,
+        peer_count: u32,
+        error: impl Into<String>,
+    ) -> Self {
+        Self::MeshReady {
+            node_id,
+            mesh_ip: mesh_ip.into(),
+            peer_count,
+            error: Some(error.into()),
         }
     }
 
@@ -335,10 +470,96 @@ mod tests {
     }
 
     #[test]
+    fn test_register_with_mesh_message() {
+        let msg = NodeMessage::register_with_mesh(
+            NodeId::new(),
+            "test",
+            NodeCapabilities::default(),
+            "test-public-key",
+            Some("192.168.1.100:51820".to_string()),
+        );
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("register"));
+        assert!(json.contains("wireguard_public_key"));
+        assert!(json.contains("test-public-key"));
+    }
+
+    #[test]
+    fn test_mesh_ready_message() {
+        let msg = NodeMessage::mesh_ready(NodeId::new(), "10.100.0.5", 3);
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("mesh_ready"));
+        assert!(json.contains("10.100.0.5"));
+        assert!(json.contains("3"));
+    }
+
+    #[test]
+    fn test_mesh_ready_with_error_message() {
+        let msg = NodeMessage::mesh_ready_with_error(
+            NodeId::new(),
+            "10.100.0.5",
+            2,
+            "failed to add peer",
+        );
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("mesh_ready"));
+        assert!(json.contains("failed to add peer"));
+    }
+
+    #[test]
     fn test_gateway_message() {
         let msg = GatewayMessage::registered(NodeId::new(), 30, 10);
         let json = msg.to_json().unwrap();
         assert!(json.contains("registered"));
+    }
+
+    #[test]
+    fn test_mesh_peer_config_new() {
+        let config = MeshPeerConfig::new("test-key", "10.100.0.5");
+        assert_eq!(config.public_key, "test-key");
+        assert_eq!(config.mesh_ip, "10.100.0.5");
+        assert!(config.endpoint.is_none());
+        assert_eq!(config.keepalive_secs, Some(25));
+    }
+
+    #[test]
+    fn test_mesh_peer_config_builders() {
+        let config = MeshPeerConfig::new("test-key", "10.100.0.5")
+            .with_endpoint("192.168.1.100:51820")
+            .with_keepalive(30)
+            .with_allowed_ip("10.100.0.5/32");
+
+        assert_eq!(config.endpoint, Some("192.168.1.100:51820".to_string()));
+        assert_eq!(config.keepalive_secs, Some(30));
+        assert_eq!(config.allowed_ips, vec!["10.100.0.5/32"]);
+    }
+
+    #[test]
+    fn test_mesh_peer_config_message() {
+        let msg = GatewayMessage::MeshPeerConfig {
+            node_mesh_ip: "10.100.0.5".to_string(),
+            private_key: Some("test-private-key".to_string()),
+            peers: vec![
+                MeshPeerConfig::new("peer1-key", "10.100.0.6"),
+                MeshPeerConfig::new("peer2-key", "10.100.0.7"),
+            ],
+            network_cidr: "10.100.0.0/16".to_string(),
+            listen_port: 51820,
+        };
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("mesh_peer_config"));
+        assert!(json.contains("10.100.0.5"));
+        assert!(json.contains("peer1-key"));
+    }
+
+    #[test]
+    fn test_mesh_peer_remove_message() {
+        let msg = GatewayMessage::MeshPeerRemove {
+            peer_public_keys: vec!["key1".to_string(), "key2".to_string()],
+        };
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("mesh_peer_remove"));
+        assert!(json.contains("key1"));
     }
 
     #[test]

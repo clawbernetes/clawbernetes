@@ -15,10 +15,12 @@
 #![warn(missing_docs)]
 
 pub mod config;
+pub mod docker;
 pub mod error;
 pub mod gateway;
 pub mod gpu;
 pub mod handlers;
+pub mod handlers_async;
 pub mod metrics;
 pub mod network;
 pub mod node;

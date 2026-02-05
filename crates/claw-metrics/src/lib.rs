@@ -11,6 +11,7 @@
 //! - **GPU-optimized**: Designed for GPU metrics like utilization, memory, temperature, power
 //! - **Retention Policies**: Automatic downsampling and expiry of old data
 //! - **Fast Queries**: Optimized for recent data access (last hour)
+//! - **Prometheus Support**: Optional Prometheus-compatible metrics (with `prometheus` feature)
 //!
 //! # Example
 //!
@@ -31,20 +32,51 @@
 //! let range = TimeRange::last_minutes(5);
 //! let points = store.query(&name, range, None).unwrap();
 //! ```
+//!
+//! # Prometheus Integration
+//!
+//! Enable the `prometheus` feature to expose Prometheus-compatible metrics:
+//!
+//! ```toml
+//! [dependencies]
+//! claw-metrics = { version = "0.1", features = ["prometheus"] }
+//! ```
+//!
+//! ```rust,ignore
+//! use claw_metrics::prometheus::{PrometheusRegistry, MetricsHandler};
+//!
+//! // Create the registry
+//! let registry = PrometheusRegistry::new();
+//!
+//! // Update metrics
+//! registry.gateway_metrics().set_nodes_total(5);
+//! registry.gateway_metrics().inc_workloads_total("running");
+//!
+//! // Create a handler for HTTP endpoints
+//! let handler = MetricsHandler::new(registry.clone());
+//!
+//! // Handle /metrics requests
+//! let response = handler.handle();
+//! // response.body contains Prometheus text format
+//! // response.content_type is "text/plain; version=0.0.4; charset=utf-8"
+//! ```
 
 #![doc(html_root_url = "https://docs.rs/claw-metrics/0.1.0")]
 #![warn(missing_docs)]
 #![warn(rustdoc::missing_crate_level_docs)]
 
-pub mod error;
-pub mod types;
-pub mod storage;
-pub mod query;
 pub mod collector;
+pub mod error;
+pub mod query;
+pub mod storage;
+pub mod types;
+
+#[cfg(feature = "prometheus")]
+pub mod prometheus;
 
 // Re-export main types at crate root
+pub use collector::{GpuMetricCollector, MetricCollector, SystemMetricCollector};
 pub use error::{MetricsError, Result};
-pub use types::{Aggregation, MetricName, MetricPoint, TimeRange};
-pub use storage::MetricStore;
 pub use query::{average_over, last_value, max_over, rate};
-pub use collector::{GpuMetricCollector, SystemMetricCollector, MetricCollector};
+pub use storage::MetricStore;
+pub use types::{Aggregation, MetricName, MetricPoint, TimeRange};
