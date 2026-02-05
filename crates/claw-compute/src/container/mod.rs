@@ -12,7 +12,8 @@
 //!
 //! ## Example
 //!
-//! ```rust,no_run
+//! ```rust,ignore
+//! // Requires the `container-runtime` feature
 //! use claw_compute::container::{
 //!     ContainerConfig, ContainerRuntime, DockerRuntime,
 //!     GpuRequirements, MemoryConfig, CpuConfig,

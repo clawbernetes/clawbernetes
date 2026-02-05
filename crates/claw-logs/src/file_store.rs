@@ -92,6 +92,8 @@ pub struct FileLogStore {
     config: FileLogStoreConfig,
     state: RwLock<FileState>,
     next_id: AtomicU64,
+    /// Monotonic counter for unique filenames (avoids collisions within same millisecond).
+    file_seq: AtomicU64,
 }
 
 impl FileLogStore {
@@ -143,6 +145,7 @@ impl FileLogStore {
                 rotated_files,
             }),
             next_id: AtomicU64::new(max_id + 1),
+            file_seq: AtomicU64::new(0),
         })
     }
 
@@ -375,23 +378,33 @@ impl FileLogStore {
 
     fn generate_filename(&self) -> String {
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S_%3f");
-        format!("{}_{}.log", self.config.file_prefix, timestamp)
+        let seq = self.file_seq.fetch_add(1, Ordering::Relaxed);
+        format!("{}_{}_s{:04}.log", self.config.file_prefix, timestamp, seq)
     }
 
     fn extract_file_timestamp(&self, path: &Path) -> Option<DateTime<Utc>> {
         let filename = path.file_stem()?.to_string_lossy();
         let parts: Vec<&str> = filename.split('_').collect();
-        // Format: prefix_YYYYMMDD_HHMMSS_mmm.log -> need at least 4 parts
-        if parts.len() >= 4 {
+        // Format: prefix_YYYYMMDD_HHMMSS_mmm_sNNNN.log -> need at least 5 parts (with seq)
+        // Or legacy: prefix_YYYYMMDD_HHMMSS_mmm.log -> 4 parts
+        if parts.len() >= 5 && parts[parts.len() - 1].starts_with('s') {
+            // New format with sequence: skip the sequence part
+            let date_str = parts[parts.len() - 4];
+            let time_str = parts[parts.len() - 3];
+            let datetime_str = format!("{date_str}_{time_str}");
+            DateTime::parse_from_str(&format!("{datetime_str} +0000"), "%Y%m%d_%H%M%S %z")
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        } else if parts.len() >= 4 {
+            // Legacy format without sequence
             let date_str = parts[parts.len() - 3];
             let time_str = parts[parts.len() - 2];
-            // Ignore milliseconds for timestamp extraction (just use seconds)
             let datetime_str = format!("{date_str}_{time_str}");
             DateTime::parse_from_str(&format!("{datetime_str} +0000"), "%Y%m%d_%H%M%S %z")
                 .ok()
                 .map(|dt| dt.with_timezone(&Utc))
         } else if parts.len() >= 3 {
-            // Fallback for legacy format without milliseconds
+            // Very old format without milliseconds
             let date_str = parts[parts.len() - 2];
             let time_str = parts[parts.len() - 1];
             let datetime_str = format!("{date_str}_{time_str}");

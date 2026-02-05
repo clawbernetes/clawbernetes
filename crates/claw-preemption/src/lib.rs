@@ -154,14 +154,15 @@
 #![deny(clippy::unimplemented)]
 
 pub mod error;
+pub mod manager;
 pub mod preemptor;
 pub mod types;
 
 // Re-export main types
 pub use error::{PreemptionError, Result};
+pub use manager::PreemptionManager;
 pub use preemptor::{
-    EvictionHandler, NoOpEvictionHandler, PreemptionManager, PreemptionRequest, Preemptor,
-    VictimSet,
+    EvictionHandler, NoOpEvictionHandler, PreemptionRequest, Preemptor, VictimSet,
 };
 pub use types::{
     EvictionFailure, EvictionResult, PreemptionCandidate, PreemptionConfig, PreemptionPolicy,
@@ -171,9 +172,9 @@ pub use types::{
 /// Prelude for convenient imports.
 pub mod prelude {
     pub use crate::error::{PreemptionError, Result};
+    pub use crate::manager::PreemptionManager;
     pub use crate::preemptor::{
-        EvictionHandler, NoOpEvictionHandler, PreemptionManager, PreemptionRequest, Preemptor,
-        VictimSet,
+        EvictionHandler, NoOpEvictionHandler, PreemptionRequest, Preemptor, VictimSet,
     };
     pub use crate::types::{
         EvictionResult, PreemptionCandidate, PreemptionConfig, PreemptionPolicy, PriorityClass,

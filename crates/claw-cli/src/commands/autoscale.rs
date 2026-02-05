@@ -59,7 +59,7 @@ impl<'a> AutoscaleCommand<'a> {
             pending_actions: 1,
         };
 
-        format.output(out, &status)?;
+        format.write(out, &status)?;
         Ok(())
     }
 
@@ -69,26 +69,28 @@ impl<'a> AutoscaleCommand<'a> {
         format: &OutputFormat,
     ) -> Result<(), CliError> {
         // TODO: Connect to gateway and fetch real pool list
-        let pools = vec![
-            PoolSummary {
-                id: "gpu-pool-1".to_string(),
-                name: "GPU Pool 1".to_string(),
-                node_count: 5,
-                gpu_count: 40,
-                policy_type: "utilization".to_string(),
-                enabled: true,
-            },
-            PoolSummary {
-                id: "gpu-pool-2".to_string(),
-                name: "GPU Pool 2".to_string(),
-                node_count: 5,
-                gpu_count: 40,
-                policy_type: "queue_depth".to_string(),
-                enabled: true,
-            },
-        ];
+        let pools = PoolList {
+            pools: vec![
+                PoolSummary {
+                    id: "gpu-pool-1".to_string(),
+                    name: "GPU Pool 1".to_string(),
+                    node_count: 5,
+                    gpu_count: 40,
+                    policy_type: "utilization".to_string(),
+                    enabled: true,
+                },
+                PoolSummary {
+                    id: "gpu-pool-2".to_string(),
+                    name: "GPU Pool 2".to_string(),
+                    node_count: 5,
+                    gpu_count: 40,
+                    policy_type: "queue_depth".to_string(),
+                    enabled: true,
+                },
+            ],
+        };
 
-        format.output(out, &pools)?;
+        format.write(out, &pools)?;
         Ok(())
     }
 
@@ -119,7 +121,7 @@ impl<'a> AutoscaleCommand<'a> {
             last_scale_down: None,
         };
 
-        format.output(out, &pool)?;
+        format.write(out, &pool)?;
         Ok(())
     }
 
@@ -136,7 +138,7 @@ impl<'a> AutoscaleCommand<'a> {
             message: format!("Policy updated for pool {}", args.pool_id),
         };
 
-        format.output(out, &response)?;
+        format.write(out, &response)?;
         Ok(())
     }
 
@@ -157,7 +159,7 @@ impl<'a> AutoscaleCommand<'a> {
             },
         };
 
-        format.output(out, &response)?;
+        format.write(out, &response)?;
         Ok(())
     }
 
@@ -173,7 +175,7 @@ impl<'a> AutoscaleCommand<'a> {
             message: "Evaluation complete, 1 scaling action generated".to_string(),
         };
 
-        format.output(out, &response)?;
+        format.write(out, &response)?;
         Ok(())
     }
 }
@@ -248,6 +250,94 @@ struct EvaluateResponse {
     success: bool,
     actions_generated: usize,
     message: String,
+}
+
+/// Pool list wrapper.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PoolList {
+    pools: Vec<PoolSummary>,
+}
+
+// TableDisplay implementations
+
+impl TableDisplay for AutoscalerStatusResponse {
+    fn write_table<W: Write>(&self, writer: &mut W) -> Result<(), CliError> {
+        writeln!(writer, "Autoscaler Status")?;
+        writeln!(writer, "  Enabled:          {}", self.enabled)?;
+        writeln!(writer, "  Pool Count:       {}", self.pool_count)?;
+        writeln!(writer, "  Total Nodes:      {}", self.total_nodes)?;
+        writeln!(writer, "  Total GPUs:       {}", self.total_gpus)?;
+        if let Some(ref last) = self.last_evaluation {
+            writeln!(writer, "  Last Evaluation:  {last}")?;
+        }
+        writeln!(writer, "  Pending Actions:  {}", self.pending_actions)?;
+        Ok(())
+    }
+}
+
+impl TableDisplay for PoolList {
+    fn write_table<W: Write>(&self, writer: &mut W) -> Result<(), CliError> {
+        writeln!(writer, "{:<20} {:<30} {:>6} {:>6} {:<15} {:>8}", 
+            "ID", "NAME", "NODES", "GPUS", "POLICY", "ENABLED")?;
+        for pool in &self.pools {
+            writeln!(writer, "{:<20} {:<30} {:>6} {:>6} {:<15} {:>8}",
+                pool.id, pool.name, pool.node_count, pool.gpu_count, 
+                pool.policy_type, pool.enabled)?;
+        }
+        Ok(())
+    }
+}
+
+impl TableDisplay for PoolDetails {
+    fn write_table<W: Write>(&self, writer: &mut W) -> Result<(), CliError> {
+        writeln!(writer, "Pool: {}", self.id)?;
+        writeln!(writer, "  Name:              {}", self.name)?;
+        writeln!(writer, "  Nodes:             {} ({} ready)", self.node_count, self.ready_node_count)?;
+        writeln!(writer, "  GPUs:              {}", self.gpu_count)?;
+        writeln!(writer, "  Policy Type:       {}", self.policy.policy_type)?;
+        writeln!(writer, "  Min/Max Nodes:     {}/{}", self.policy.min_nodes, self.policy.max_nodes)?;
+        if let Some(util) = self.policy.target_utilization {
+            writeln!(writer, "  Target Util:       {util:.1}%")?;
+        }
+        writeln!(writer, "  Scale Up Cooldown: {}s", self.policy.scale_up_cooldown_secs)?;
+        writeln!(writer, "  Scale Down Cooldown: {}s", self.policy.scale_down_cooldown_secs)?;
+        writeln!(writer, "  Enabled:           {}", self.policy.enabled)?;
+        Ok(())
+    }
+}
+
+impl TableDisplay for SetPolicyResponse {
+    fn write_table<W: Write>(&self, writer: &mut W) -> Result<(), CliError> {
+        if self.success {
+            writeln!(writer, "✓ {}", self.message)?;
+        } else {
+            writeln!(writer, "✗ {}", self.message)?;
+        }
+        Ok(())
+    }
+}
+
+impl TableDisplay for EnableResponse {
+    fn write_table<W: Write>(&self, writer: &mut W) -> Result<(), CliError> {
+        if self.success {
+            writeln!(writer, "✓ {}", self.message)?;
+        } else {
+            writeln!(writer, "✗ {}", self.message)?;
+        }
+        Ok(())
+    }
+}
+
+impl TableDisplay for EvaluateResponse {
+    fn write_table<W: Write>(&self, writer: &mut W) -> Result<(), CliError> {
+        if self.success {
+            writeln!(writer, "✓ {}", self.message)?;
+            writeln!(writer, "  Actions generated: {}", self.actions_generated)?;
+        } else {
+            writeln!(writer, "✗ {}", self.message)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
