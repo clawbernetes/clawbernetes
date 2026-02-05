@@ -364,6 +364,39 @@ const GpuProbeSchema = Type.Object({
   ssh_user: Type.Optional(Type.String({ description: "SSH username (if not using profile)" })),
 });
 
+// ─── AI-Native Vault Schemas ───
+
+const VaultStoreSchema = Type.Object({
+  id: Type.String({ description: "Secret identifier" }),
+  value: Type.String({ description: "Secret value" }),
+  description: Type.Optional(Type.String({ description: "Human-readable description" })),
+  secret_type: Type.Optional(Type.String({ description: "Type: ssh_key, api_key, password, certificate, bootstrap_token, generic" })),
+  allowed_purposes: Type.Optional(Type.Array(Type.String(), { description: "Allowed purposes for access" })),
+  require_confirmation: Type.Optional(Type.Boolean({ description: "Require explicit confirmation" })),
+  max_access_count: Type.Optional(Type.Number({ description: "Maximum access count" })),
+  expires_in_minutes: Type.Optional(Type.Number({ description: "Expiration in minutes" })),
+  labels: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Labels for categorization" })),
+  custom_policy: Type.Optional(Type.String({ description: "Custom policy description for agent" })),
+});
+
+const VaultRetrieveSchema = Type.Object({
+  id: Type.String({ description: "Secret identifier" }),
+  reason: Type.String({ description: "Why the agent needs this secret" }),
+  purpose: Type.String({ description: "What it will be used for" }),
+  session_id: Type.Optional(Type.String({ description: "Current session context" })),
+  policy_acknowledged: Type.Optional(Type.Boolean({ description: "Agent acknowledges policy" })),
+});
+
+const VaultDeleteSchema = Type.Object({
+  id: Type.String({ description: "Secret identifier" }),
+  reason: Type.String({ description: "Why deleting this secret" }),
+});
+
+const VaultAuditSchema = Type.Object({
+  secret_id: Type.Optional(Type.String({ description: "Filter by secret ID" })),
+  limit: Type.Optional(Type.Number({ description: "Max entries to return" })),
+});
+
 // ─────────────────────────────────────────────────────────────
 // Plugin Registration
 // ─────────────────────────────────────────────────────────────
@@ -1414,8 +1447,87 @@ const clawbernetesPlugin = {
       },
     });
 
+    // ─── AI-Native Vault Tools ───
+
+    api.registerTool({
+      name: "vault_store",
+      label: "Store Vault Secret",
+      description: "Store a secret in the AI-native vault (no API exposure, agent-guarded)",
+      parameters: VaultStoreSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("vault_store", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "vault_retrieve",
+      label: "Retrieve Vault Secret",
+      description: "Retrieve a secret from the AI-native vault (requires justification)",
+      parameters: VaultRetrieveSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("vault_retrieve", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "vault_list",
+      label: "List Vault Secrets",
+      description: "List secrets in the AI-native vault (metadata only, no values)",
+      parameters: Type.Object({
+        include_expired: Type.Optional(Type.Boolean({ description: "Include expired secrets" })),
+      }),
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("vault_list", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "vault_delete",
+      label: "Delete Vault Secret",
+      description: "Delete a secret from the AI-native vault",
+      parameters: VaultDeleteSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("vault_delete", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "vault_audit",
+      label: "Vault Audit Log",
+      description: "Get access audit logs from the AI-native vault",
+      parameters: VaultAuditSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("vault_audit", params || {});
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
     // Note: Client cleanup happens automatically when process exits
-    api.logger.info(`[clawbernetes] Registered 64 tools`);
+    api.logger.info(`[clawbernetes] Registered 69 tools`);
   },
 };
 

@@ -20,6 +20,7 @@ pub mod secrets;
 pub mod service;
 pub mod storage;
 pub mod tenancy;
+pub mod vault;
 pub mod workload;
 
 /// Handle an incoming request
@@ -156,6 +157,13 @@ async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
         "check_trusted" => network::check_trusted(params).await,
         "node_bootstrap" => network::node_bootstrap(params).await,
         "gpu_probe" => network::gpu_probe(params).await,
+
+        // ─── AI-Native Vault ───
+        "vault_store" => vault::vault_store(params).await,
+        "vault_retrieve" => vault::vault_retrieve(params).await,
+        "vault_list" => vault::vault_list(params).await,
+        "vault_delete" => vault::vault_delete(params).await,
+        "vault_audit" => vault::vault_audit(params).await,
 
         // ─── MOLT Marketplace ───
         "molt_offers" => molt::offers(params).await,

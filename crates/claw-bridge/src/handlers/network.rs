@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -693,15 +694,80 @@ echo "clawnode configured for {hostname}"
         });
     }
     
-    // TODO: Actual SSH execution would go here
-    // For now, we simulate success and return instructions
+    // Execute SSH if we have credentials
+    let execute_ssh = params.ssh_key_secret.is_some() || params.credential_profile.is_some();
     
+    if execute_ssh {
+        steps_completed.push("Attempting SSH connection...".to_string());
+        
+        // Build SSH command
+        let mut cmd = Command::new("ssh");
+        cmd.args([
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            &format!("{}@{}", username, params.address),
+            "bash", "-s",
+        ]);
+        
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        
+        match cmd.spawn() {
+            Ok(mut child) => {
+                // Write bootstrap script to stdin
+                if let Some(stdin) = child.stdin.as_mut() {
+                    use std::io::Write;
+                    let _ = stdin.write_all(bootstrap_script.as_bytes());
+                }
+                
+                match child.wait_with_output() {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                        
+                        if output.status.success() {
+                            steps_completed.push(format!("SSH execution successful: {}", stdout.trim()));
+                            
+                            tracing::info!(
+                                address = %params.address,
+                                hostname = %hostname,
+                                "bootstrap completed via SSH"
+                            );
+                            
+                            return to_json(BootstrapResult {
+                                address: params.address,
+                                hostname: hostname.clone(),
+                                success: true,
+                                node_id: Some(hostname.clone()),
+                                token: Some(token),
+                                gpu_info: None,
+                                message: "Node bootstrapped successfully via SSH".to_string(),
+                                steps_completed,
+                            });
+                        } else {
+                            steps_completed.push(format!("SSH execution failed: {}", stderr.trim()));
+                        }
+                    }
+                    Err(e) => {
+                        steps_completed.push(format!("SSH wait failed: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                steps_completed.push(format!("SSH spawn failed: {}", e));
+            }
+        }
+    }
+    
+    // Fallback: return instructions for manual execution
     let ssh_command = format!(
         "ssh {}@{} 'bash -s' <<< '{}'",
         username, params.address, bootstrap_script.replace("'", "'\"'\"'")
     );
     
-    steps_completed.push("Generated SSH command (execution pending)".to_string());
+    steps_completed.push("Returning manual execution instructions".to_string());
     
     tracing::info!(
         address = %params.address,

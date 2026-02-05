@@ -1,44 +1,45 @@
-//! # clawnode
+//! Clawnode - GPU Node Agent for Clawbernetes
 //!
-//! Clawbernetes node agent — the worker that runs on each compute node.
-//!
-//! This crate provides:
-//!
-//! - Hardware discovery — GPUs, CPUs, memory, network
-//! - Container runtime — lifecycle management via containerd/podman
-//! - Metrics streaming — GPU utilization, thermals, memory
-//! - Gateway communication — WebSocket connection to control plane
-//! - MOLT integration — optional P2P network participation
-//! - Resource exhaustion prevention — limits, tracking, alerts
+//! This agent runs on GPU servers and connects back to the OpenClaw gateway,
+//! registering as a node with GPU capabilities.
 
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
-
+pub mod client;
+pub mod commands;
 pub mod config;
-pub mod docker;
-pub mod error;
-pub mod gateway;
 pub mod gpu;
-pub mod handlers;
-pub mod handlers_async;
-pub mod metrics;
-pub mod network;
-pub mod node;
-pub mod resources;
-pub mod runtime;
-pub mod state;
 
-pub use docker::{AsyncContainerRuntime, FakeAsyncContainerRuntime};
-#[cfg(feature = "docker")]
-pub use docker::DockerContainerRuntime;
-pub use error::NodeError;
-pub use handlers::{get_workload_status, handle_gateway_message, HandlerContext};
-pub use handlers_async::{
-    get_workload_status_async, handle_gateway_message_async, AsyncHandlerContext,
-};
-pub use node::Node;
-pub use resources::{
-    EffectiveResourceLimits, ExecutionWatchdog, NodeCapacity, ResourceAlert, ResourceLimits,
-    ResourceTracker, ResourceType, ResourceUsage,
-};
-pub use state::{GatewayConnectionState, NodeState, WorkloadInfo};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+pub use client::GatewayClient;
+pub use config::NodeConfig;
+pub use gpu::GpuManager;
+
+/// Node state shared across components
+#[derive(Debug)]
+pub struct NodeState {
+    pub config: NodeConfig,
+    pub gpu_manager: GpuManager,
+    pub connected: bool,
+    pub node_id: Option<String>,
+    pub approved: bool,
+}
+
+impl NodeState {
+    pub fn new(config: NodeConfig) -> Self {
+        Self {
+            config,
+            gpu_manager: GpuManager::new(),
+            connected: false,
+            node_id: None,
+            approved: false,
+        }
+    }
+}
+
+pub type SharedState = Arc<RwLock<NodeState>>;
+
+/// Create shared state from config
+pub fn create_state(config: NodeConfig) -> SharedState {
+    Arc::new(RwLock::new(NodeState::new(config)))
+}

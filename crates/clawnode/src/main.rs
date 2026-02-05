@@ -1,441 +1,317 @@
-#![allow(clippy::expect_used)]
-//! Clawnode binary entrypoint.
+//! clawnode - Clawbernetes GPU Node Agent
 //!
-//! The Clawbernetes node agent that runs on compute nodes.
+//! This binary runs on GPU servers and connects to the OpenClaw gateway,
+//! registering as a node with GPU capabilities.
 
+use clap::{Parser, Subcommand};
+use clawnode::{config::NodeConfig, create_state, GatewayClient, GpuManager};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use tracing::{error, info};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-use clap::Parser;
-use tracing::info;
-
-use clawnode::config::NodeConfig;
-use clawnode::error::NodeError;
-use clawnode::node::Node;
-
-/// Clawnode - Clawbernetes Node Agent
-///
-/// Runs on compute nodes to provide GPU resources to the cluster.
-#[derive(Parser, Debug, Clone, PartialEq, Eq)]
+#[derive(Parser)]
 #[command(name = "clawnode")]
-#[command(version, about, long_about = None)]
-pub struct Cli {
-    /// Gateway WebSocket URL to connect to.
-    ///
-    /// Must be a ws:// or wss:// URL.
-    #[arg(short, long, env = "CLAWNODE_GATEWAY")]
-    pub gateway: Option<String>,
-
-    /// Path to configuration file (TOML format).
-    #[arg(short, long, env = "CLAWNODE_CONFIG")]
-    pub config: Option<PathBuf>,
-
-    /// Node name (identifier for this node).
-    ///
-    /// Must be alphanumeric with hyphens and underscores only.
-    #[arg(short, long, env = "CLAWNODE_NAME")]
-    pub name: Option<String>,
-
-    /// Enable verbose logging.
-    #[arg(short, long, default_value_t = false)]
-    pub verbose: bool,
+#[command(about = "Clawbernetes GPU Node Agent")]
+#[command(version)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
 }
 
-impl Cli {
-    /// Build a `NodeConfig` from CLI arguments, optionally loading from file.
-    ///
-    /// Priority: CLI args > config file > defaults
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if required fields are missing or validation fails.
-    pub fn build_config(&self) -> Result<NodeConfig, NodeError> {
-        // Start with config from file if provided, otherwise use defaults
-        let mut config = match &self.config {
-            Some(path) => NodeConfig::from_file(path)?,
-            None => NodeConfig {
-                name: String::new(),
-                gateway_url: String::new(),
-                gpu: Default::default(),
-                network: Default::default(),
-                molt: Default::default(),
-            },
-        };
-
-        // Override with CLI arguments
-        if let Some(gateway) = &self.gateway {
-            config.gateway_url.clone_from(gateway);
-        }
-
-        if let Some(name) = &self.name {
-            config.name.clone_from(name);
-        }
-
-        // Validate required fields
-        if config.name.is_empty() {
-            return Err(NodeError::Config(
-                "node name is required (use --name or config file)".to_string(),
-            ));
-        }
-
-        if config.gateway_url.is_empty() {
-            return Err(NodeError::Config(
-                "gateway URL is required (use --gateway or config file)".to_string(),
-            ));
-        }
-
-        // Run full validation
-        config.validate()?;
-
-        Ok(config)
-    }
+#[derive(Subcommand)]
+enum Commands {
+    /// Run the node agent
+    Run {
+        /// Path to config file
+        #[arg(short, long, default_value = "/etc/clawnode/config.json")]
+        config: PathBuf,
+    },
+    
+    /// Join a cluster using a bootstrap token
+    Join {
+        /// Gateway WebSocket URL
+        #[arg(long)]
+        gateway: String,
+        
+        /// Bootstrap token
+        #[arg(long)]
+        token: String,
+        
+        /// Node hostname (defaults to system hostname)
+        #[arg(long)]
+        hostname: Option<String>,
+        
+        /// Path to save config
+        #[arg(long, default_value = "/etc/clawnode/config.json")]
+        config: PathBuf,
+    },
+    
+    /// Detect and list GPUs on this system
+    GpuList,
+    
+    /// Get GPU metrics
+    GpuMetrics,
+    
+    /// Show system information
+    Info,
+    
+    /// Generate a sample config file
+    InitConfig {
+        /// Path to write config
+        #[arg(short, long, default_value = "/etc/clawnode/config.json")]
+        output: PathBuf,
+        
+        /// Gateway URL
+        #[arg(long, default_value = "wss://localhost:18789")]
+        gateway: String,
+    },
 }
 
-/// Initialize tracing/logging based on verbosity.
-fn init_tracing(verbose: bool) {
-    use tracing_subscriber::EnvFilter;
-
-    let filter = if verbose {
-        EnvFilter::new("clawnode=debug,info")
-    } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("clawnode=info,warn"))
-    };
-
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .with_thread_ids(false)
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Initialize tracing
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env().add_directive("clawnode=info".parse()?))
         .init();
-}
-
-/// Run the node agent.
-///
-/// # Errors
-///
-/// Returns an error if the node fails to start or run.
-async fn run(cli: Cli) -> Result<(), NodeError> {
-    init_tracing(cli.verbose);
-
-    info!("clawnode starting...");
-
-    let config = cli.build_config()?;
-    info!(name = %config.name, gateway = %config.gateway_url, "configuration loaded");
-
-    let node = Node::new(config).await?;
-    info!("node initialized, starting main loop");
-
-    node.run().await
-}
-
-fn main() {
+    
     let cli = Cli::parse();
-
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("failed to create tokio runtime: {e}");
-            std::process::exit(1);
+    
+    match cli.command {
+        Commands::Run { config } => {
+            run_agent(config).await?;
         }
-    };
-
-    if let Err(e) = runtime.block_on(run(cli)) {
-        eprintln!("clawnode error: {e}");
-        std::process::exit(1);
+        
+        Commands::Join {
+            gateway,
+            token,
+            hostname,
+            config,
+        } => {
+            join_cluster(gateway, token, hostname, config).await?;
+        }
+        
+        Commands::GpuList => {
+            gpu_list()?;
+        }
+        
+        Commands::GpuMetrics => {
+            gpu_metrics()?;
+        }
+        
+        Commands::Info => {
+            system_info()?;
+        }
+        
+        Commands::InitConfig { output, gateway } => {
+            init_config(output, gateway)?;
+        }
     }
+    
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::Parser;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    // Helper to parse args without the binary name
-    fn parse_args(args: &[&str]) -> Result<Cli, clap::Error> {
-        let mut full_args = vec!["clawnode"];
-        full_args.extend(args);
-        Cli::try_parse_from(full_args)
-    }
-
-    #[test]
-    fn test_parse_no_args() {
-        let cli = parse_args(&[]).expect("should parse empty args");
-        assert!(cli.gateway.is_none());
-        assert!(cli.config.is_none());
-        assert!(cli.name.is_none());
-        assert!(!cli.verbose);
-    }
-
-    #[test]
-    fn test_parse_gateway_short() {
-        let cli = parse_args(&["-g", "wss://gateway.example.com"]).expect("should parse");
-        assert_eq!(cli.gateway, Some("wss://gateway.example.com".to_string()));
-    }
-
-    #[test]
-    fn test_parse_gateway_long() {
-        let cli = parse_args(&["--gateway", "ws://localhost:8080"]).expect("should parse");
-        assert_eq!(cli.gateway, Some("ws://localhost:8080".to_string()));
-    }
-
-    #[test]
-    fn test_parse_config_short() {
-        let cli = parse_args(&["-c", "/etc/clawnode/config.toml"]).expect("should parse");
-        assert_eq!(cli.config, Some(PathBuf::from("/etc/clawnode/config.toml")));
-    }
-
-    #[test]
-    fn test_parse_config_long() {
-        let cli = parse_args(&["--config", "./config.toml"]).expect("should parse");
-        assert_eq!(cli.config, Some(PathBuf::from("./config.toml")));
-    }
-
-    #[test]
-    fn test_parse_name_short() {
-        let cli = parse_args(&["-n", "gpu-node-01"]).expect("should parse");
-        assert_eq!(cli.name, Some("gpu-node-01".to_string()));
-    }
-
-    #[test]
-    fn test_parse_name_long() {
-        let cli = parse_args(&["--name", "my_node"]).expect("should parse");
-        assert_eq!(cli.name, Some("my_node".to_string()));
-    }
-
-    #[test]
-    fn test_parse_verbose_short() {
-        let cli = parse_args(&["-v"]).expect("should parse");
-        assert!(cli.verbose);
-    }
-
-    #[test]
-    fn test_parse_verbose_long() {
-        let cli = parse_args(&["--verbose"]).expect("should parse");
-        assert!(cli.verbose);
-    }
-
-    #[test]
-    fn test_parse_all_args() {
-        let cli = parse_args(&[
-            "--gateway",
-            "wss://gateway.example.com:8080",
-            "--config",
-            "/etc/clawnode.toml",
-            "--name",
-            "gpu-node-01",
-            "--verbose",
-        ])
-        .expect("should parse");
-
-        assert_eq!(
-            cli.gateway,
-            Some("wss://gateway.example.com:8080".to_string())
+async fn run_agent(config_path: PathBuf) -> anyhow::Result<()> {
+    info!(config = %config_path.display(), "starting clawnode");
+    
+    let config = NodeConfig::load(&config_path)?;
+    info!(
+        gateway = %config.gateway,
+        hostname = %config.hostname,
+        "loaded config"
+    );
+    
+    let state = create_state(config);
+    
+    // Log GPU info
+    {
+        let s = state.read().await;
+        info!(
+            gpu_count = s.gpu_manager.count(),
+            caps = ?s.gpu_manager.capabilities(),
+            "detected hardware"
         );
-        assert_eq!(cli.config, Some(PathBuf::from("/etc/clawnode.toml")));
-        assert_eq!(cli.name, Some("gpu-node-01".to_string()));
-        assert!(cli.verbose);
     }
-
-    #[test]
-    fn test_parse_combined_short_args() {
-        let cli = parse_args(&["-g", "ws://localhost", "-n", "node1", "-v"]).expect("should parse");
-
-        assert_eq!(cli.gateway, Some("ws://localhost".to_string()));
-        assert_eq!(cli.name, Some("node1".to_string()));
-        assert!(cli.verbose);
+    
+    let mut client = GatewayClient::new(state);
+    
+    if let Err(e) = client.run().await {
+        error!(error = %e, "agent error");
+        return Err(e);
     }
+    
+    Ok(())
+}
 
-    #[test]
-    fn test_build_config_from_cli_args() {
-        let cli = Cli {
-            gateway: Some("wss://gateway.example.com".to_string()),
-            config: None,
-            name: Some("test-node".to_string()),
-            verbose: false,
-        };
+async fn join_cluster(
+    gateway: String,
+    token: String,
+    hostname: Option<String>,
+    config_path: PathBuf,
+) -> anyhow::Result<()> {
+    let hostname = hostname.unwrap_or_else(|| {
+        hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    });
+    
+    info!(
+        gateway = %gateway,
+        hostname = %hostname,
+        "joining cluster"
+    );
+    
+    // Create config
+    let config = NodeConfig {
+        gateway,
+        token: Some(token),
+        hostname,
+        labels: HashMap::new(),
+        state_path: PathBuf::from("/var/lib/clawnode"),
+        heartbeat_interval_secs: 30,
+        reconnect_delay_secs: 5,
+        container_runtime: "docker".to_string(),
+    };
+    
+    // Save config
+    config.save(&config_path)?;
+    info!(path = %config_path.display(), "saved config");
+    
+    println!("Configuration saved to {}", config_path.display());
+    println!();
+    println!("To start the agent:");
+    println!("  clawnode run --config {}", config_path.display());
+    println!();
+    println!("Or install as a systemd service:");
+    println!("  sudo systemctl enable clawnode");
+    println!("  sudo systemctl start clawnode");
+    
+    Ok(())
+}
 
-        let config = cli.build_config().expect("should build config");
-
-        assert_eq!(config.name, "test-node");
-        assert_eq!(config.gateway_url, "wss://gateway.example.com");
+fn gpu_list() -> anyhow::Result<()> {
+    let manager = GpuManager::new();
+    let gpus = manager.list();
+    
+    if gpus.is_empty() {
+        println!("No GPUs detected");
+        if !manager.has_nvidia() {
+            println!("nvidia-smi not found - ensure NVIDIA drivers are installed");
+        }
+        return Ok(());
     }
-
-    #[test]
-    fn test_build_config_missing_name() {
-        let cli = Cli {
-            gateway: Some("wss://gateway.example.com".to_string()),
-            config: None,
-            name: None,
-            verbose: false,
-        };
-
-        let result = cli.build_config();
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("node name is required"));
+    
+    println!("Detected {} GPU(s):", gpus.len());
+    println!();
+    
+    for gpu in &gpus {
+        println!("  GPU {}: {}", gpu.index, gpu.name);
+        println!("    UUID: {}", gpu.uuid);
+        println!("    Memory: {} MB", gpu.memory_total_mb);
+        if let Some(pci) = &gpu.pci_bus_id {
+            println!("    PCI Bus: {}", pci);
+        }
+        println!();
     }
+    
+    println!("Total VRAM: {} GB", manager.total_memory_gb());
+    
+    Ok(())
+}
 
-    #[test]
-    fn test_build_config_missing_gateway() {
-        let cli = Cli {
-            gateway: None,
-            config: None,
-            name: Some("test-node".to_string()),
-            verbose: false,
-        };
-
-        let result = cli.build_config();
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("gateway URL is required"));
+fn gpu_metrics() -> anyhow::Result<()> {
+    let manager = GpuManager::new();
+    
+    if !manager.has_nvidia() {
+        println!("nvidia-smi not found - ensure NVIDIA drivers are installed");
+        return Ok(());
     }
-
-    #[test]
-    fn test_build_config_from_file() {
-        let toml = r#"
-            name = "file-node"
-            gateway_url = "wss://file-gateway.example.com"
-        "#;
-
-        let mut file = NamedTempFile::new().expect("create temp file");
-        file.write_all(toml.as_bytes()).expect("write temp file");
-
-        let cli = Cli {
-            gateway: None,
-            config: Some(file.path().to_path_buf()),
-            name: None,
-            verbose: false,
-        };
-
-        let config = cli.build_config().expect("should build config");
-
-        assert_eq!(config.name, "file-node");
-        assert_eq!(config.gateway_url, "wss://file-gateway.example.com");
+    
+    let metrics = manager.get_metrics()?;
+    
+    if metrics.is_empty() {
+        println!("No GPU metrics available");
+        return Ok(());
     }
-
-    #[test]
-    fn test_build_config_cli_overrides_file() {
-        let toml = r#"
-            name = "file-node"
-            gateway_url = "wss://file-gateway.example.com"
-        "#;
-
-        let mut file = NamedTempFile::new().expect("create temp file");
-        file.write_all(toml.as_bytes()).expect("write temp file");
-
-        let cli = Cli {
-            gateway: Some("wss://cli-gateway.example.com".to_string()),
-            config: Some(file.path().to_path_buf()),
-            name: Some("cli-node".to_string()),
-            verbose: false,
-        };
-
-        let config = cli.build_config().expect("should build config");
-
-        // CLI args should override file values
-        assert_eq!(config.name, "cli-node");
-        assert_eq!(config.gateway_url, "wss://cli-gateway.example.com");
+    
+    println!("GPU Metrics:");
+    println!();
+    
+    for m in &metrics {
+        println!("  GPU {}: ", m.index);
+        println!("    Utilization: {}%", m.utilization_percent);
+        println!("    Memory: {} / {} MB ({:.1}%)", 
+            m.memory_used_mb, 
+            m.memory_total_mb,
+            (m.memory_used_mb as f64 / m.memory_total_mb as f64) * 100.0
+        );
+        println!("    Temperature: {}°C", m.temperature_c);
+        if let Some(power) = m.power_draw_w {
+            print!("    Power: {:.1}W", power);
+            if let Some(limit) = m.power_limit_w {
+                print!(" / {:.1}W", limit);
+            }
+            println!();
+        }
+        println!();
     }
+    
+    Ok(())
+}
 
-    #[test]
-    fn test_build_config_partial_cli_override() {
-        let toml = r#"
-            name = "file-node"
-            gateway_url = "wss://file-gateway.example.com"
-        "#;
+fn system_info() -> anyhow::Result<()> {
+    use sysinfo::System;
+    
+    let mut sys = System::new_all();
+    sys.refresh_all();
+    
+    let gpu_manager = GpuManager::new();
+    
+    println!("System Information:");
+    println!();
+    println!("  Hostname: {}", hostname::get()?.to_string_lossy());
+    println!("  OS: {} {}", 
+        System::name().unwrap_or_default(),
+        System::os_version().unwrap_or_default()
+    );
+    println!("  Kernel: {}", System::kernel_version().unwrap_or_default());
+    println!();
+    println!("  CPUs: {}", sys.cpus().len());
+    println!("  Memory: {} / {} MB", 
+        sys.used_memory() / 1024 / 1024,
+        sys.total_memory() / 1024 / 1024
+    );
+    println!();
+    println!("  GPUs: {}", gpu_manager.count());
+    println!("  GPU Memory: {} GB", gpu_manager.total_memory_gb());
+    println!();
+    println!("  Capabilities: {:?}", gpu_manager.capabilities());
+    println!("  Commands: {:?}", gpu_manager.commands());
+    
+    Ok(())
+}
 
-        let mut file = NamedTempFile::new().expect("create temp file");
-        file.write_all(toml.as_bytes()).expect("write temp file");
-
-        let cli = Cli {
-            gateway: None,
-            config: Some(file.path().to_path_buf()),
-            name: Some("cli-node".to_string()), // Only override name
-            verbose: false,
-        };
-
-        let config = cli.build_config().expect("should build config");
-
-        assert_eq!(config.name, "cli-node"); // From CLI
-        assert_eq!(config.gateway_url, "wss://file-gateway.example.com"); // From file
-    }
-
-    #[test]
-    fn test_build_config_invalid_name() {
-        let cli = Cli {
-            gateway: Some("wss://gateway.example.com".to_string()),
-            config: None,
-            name: Some("node with spaces".to_string()),
-            verbose: false,
-        };
-
-        let result = cli.build_config();
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("alphanumeric"));
-    }
-
-    #[test]
-    fn test_build_config_invalid_gateway_scheme() {
-        let cli = Cli {
-            gateway: Some("http://gateway.example.com".to_string()),
-            config: None,
-            name: Some("test-node".to_string()),
-            verbose: false,
-        };
-
-        let result = cli.build_config();
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("ws://"));
-    }
-
-    #[test]
-    fn test_build_config_nonexistent_file() {
-        let cli = Cli {
-            gateway: None,
-            config: Some(PathBuf::from("/nonexistent/path/config.toml")),
-            name: None,
-            verbose: false,
-        };
-
-        let result = cli.build_config();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_cli_equality() {
-        let cli1 = Cli {
-            gateway: Some("ws://test".to_string()),
-            config: None,
-            name: Some("node1".to_string()),
-            verbose: true,
-        };
-
-        let cli2 = Cli {
-            gateway: Some("ws://test".to_string()),
-            config: None,
-            name: Some("node1".to_string()),
-            verbose: true,
-        };
-
-        assert_eq!(cli1, cli2);
-    }
-
-    #[test]
-    fn test_cli_debug() {
-        let cli = Cli {
-            gateway: Some("ws://test".to_string()),
-            config: None,
-            name: Some("node1".to_string()),
-            verbose: false,
-        };
-
-        let debug_str = format!("{cli:?}");
-        assert!(debug_str.contains("gateway"));
-        assert!(debug_str.contains("ws://test"));
-    }
+fn init_config(output: PathBuf, gateway: String) -> anyhow::Result<()> {
+    let config = NodeConfig {
+        gateway,
+        token: None,
+        hostname: hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string()),
+        labels: HashMap::new(),
+        state_path: PathBuf::from("/var/lib/clawnode"),
+        heartbeat_interval_secs: 30,
+        reconnect_delay_secs: 5,
+        container_runtime: "docker".to_string(),
+    };
+    
+    config.save(&output)?;
+    
+    println!("Config written to {}", output.display());
+    println!();
+    println!("Edit the file to add your bootstrap token, then run:");
+    println!("  clawnode run --config {}", output.display());
+    
+    Ok(())
 }

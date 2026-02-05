@@ -1,82 +1,47 @@
 [package]
 name = "clawnode"
-description = "Clawbernetes node agent — GPU detection, container runtime, metrics streaming"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-repository.workspace = true
-authors.workspace = true
-
-[dependencies]
-# Core
-tokio = { workspace = true }
-tokio-util = { workspace = true }
-futures = { workspace = true }
-
-# Serialization
-serde = { workspace = true }
-serde_json = { workspace = true }
-prost = { workspace = true }
-toml = "0.8"
-
-# Networking
-tokio-tungstenite = { workspace = true }
-
-# Crypto
-ed25519-dalek = { workspace = true }
-blake3 = { workspace = true }
-rand = { workspace = true }
-
-# Error handling
-thiserror = { workspace = true }
-anyhow = { workspace = true }
-
-# Logging
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-
-# CLI
-clap = { workspace = true }
-
-# Time
-chrono = { workspace = true }
-uuid = { workspace = true }
-
-# IP/Network types
-ipnet = { version = "2.10", features = ["serde"] }
-
-# Internal
-claw-proto = { path = "../claw-proto" }
-claw-wireguard = { path = "../claw-wireguard" }
-claw-validation = { path = "../claw-validation", features = ["command"] }
-claw-compute = { path = "../claw-compute", optional = true }
-molt-core = { path = "../molt-core", optional = true }
-molt-p2p = { path = "../molt-p2p", optional = true }
-
-[dev-dependencies]
-proptest = { workspace = true }
-criterion = { workspace = true }
-test-case = { workspace = true }
-tokio = { workspace = true, features = ["full", "test-util"] }
-tokio-test = "0.4"
-tempfile = "3.14"
-
-[features]
-default = []
-molt = ["dep:molt-core", "dep:molt-p2p"]
-docker = ["dep:claw-compute", "claw-compute/container-runtime"]
+version = "0.1.0"
+edition = "2024"
+description = "Clawbernetes GPU node agent - connects to OpenClaw gateway"
+license = "Apache-2.0"
+repository = "https://github.com/clawbernetes/clawbernetes"
 
 [[bin]]
 name = "clawnode"
 path = "src/main.rs"
 
-[lib]
-path = "src/lib.rs"
+[dependencies]
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
 
-[[bench]]
-name = "node_benchmarks"
-harness = false
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
-[lints]
-workspace = true
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Utilities
+uuid = { version = "1.11", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2.0"
+anyhow = "1.0"
+
+# System info
+sysinfo = "0.33"
+
+# HTTP client (for initial registration)
+reqwest = { version = "0.12", features = ["json", "native-tls"] }
+
+# URL parsing
+url = "2.5"
+
+# Hostname detection
+hostname = "0.4"
+
+[dev-dependencies]
+tokio-test = "0.4"

