@@ -71,6 +71,7 @@ pub mod cli_handler;
 pub mod config;
 pub mod error;
 pub mod handlers;
+pub mod mesh;
 pub mod molt;
 pub mod molt_announce;
 pub mod molt_config;
@@ -89,6 +90,7 @@ pub use handlers::{
     handle_heartbeat, handle_metrics, handle_register, handle_workload_update, route_message,
 };
 pub use server::GatewayServer;
+pub use mesh::{MeshConfig, MeshIntegration, MeshNodeState, MeshStatus, MeshTopologyType};
 pub use molt::MoltIntegration;
 pub use molt_config::{BootstrapNode, MoltConfig};
 pub use molt_escrow::{EscrowSummary, EscrowTracker, TrackedEscrow};

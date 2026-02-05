@@ -173,6 +173,8 @@ pub fn route_message(
             name,
             capabilities,
             protocol_version: _,
+            wireguard_public_key: _,
+            wireguard_endpoint: _,
         } => {
             let response = handle_register(*node_id, name, capabilities.clone(), registry, config)?;
             Ok(Some(response))
@@ -206,6 +208,40 @@ pub fn route_message(
             handle_workload_logs(*workload_id, lines, *is_stderr, log_store);
             Ok(None)
         }
+        NodeMessage::MeshReady {
+            node_id,
+            mesh_ip,
+            peer_count,
+            error,
+        } => {
+            handle_mesh_ready(*node_id, mesh_ip, *peer_count, error.as_deref());
+            Ok(None)
+        }
+    }
+}
+
+/// Handle mesh ready notification from a node.
+fn handle_mesh_ready(
+    node_id: NodeId,
+    mesh_ip: &str,
+    peer_count: u32,
+    error: Option<&str>,
+) {
+    if let Some(err) = error {
+        warn!(
+            node_id = %node_id,
+            mesh_ip = %mesh_ip,
+            peer_count = peer_count,
+            error = %err,
+            "Node mesh ready with errors"
+        );
+    } else {
+        info!(
+            node_id = %node_id,
+            mesh_ip = %mesh_ip,
+            peer_count = peer_count,
+            "Node mesh ready"
+        );
     }
 }
 

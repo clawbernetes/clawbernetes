@@ -28,6 +28,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+ipnet = "2.10"
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -43,6 +43,8 @@ pub struct GatewayServer {
     scheduler: Arc<Mutex<claw_gateway::AdvancedScheduler>>,
     /// Optional MOLT P2P integration.
     molt: Option<Arc<crate::molt::MoltIntegration>>,
+    /// Optional WireGuard mesh integration.
+    mesh: Option<Arc<crate::mesh::MeshIntegration>>,
     /// Active sessions indexed by session ID.
     sessions: Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
     /// Shutdown signal sender.
@@ -62,6 +64,7 @@ impl GatewayServer {
             log_store: Arc::new(Mutex::new(WorkloadLogStore::new())),
             scheduler: Arc::new(Mutex::new(claw_gateway::AdvancedScheduler::new())),
             molt: None,
+            mesh: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             start_time: Instant::now(),
@@ -82,6 +85,7 @@ impl GatewayServer {
             log_store: Arc::new(Mutex::new(WorkloadLogStore::new())),
             scheduler: Arc::new(Mutex::new(claw_gateway::AdvancedScheduler::new())),
             molt: None,
+            mesh: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             start_time: Instant::now(),
@@ -117,6 +121,19 @@ impl GatewayServer {
     #[must_use]
     pub fn molt(&self) -> Option<Arc<crate::molt::MoltIntegration>> {
         self.molt.clone()
+    }
+
+    /// Set the WireGuard mesh integration.
+    ///
+    /// Enables automatic mesh networking between nodes.
+    pub fn set_mesh(&mut self, mesh: crate::mesh::MeshIntegration) {
+        self.mesh = Some(Arc::new(mesh));
+    }
+
+    /// Get the mesh integration, if configured.
+    #[must_use]
+    pub fn mesh(&self) -> Option<Arc<crate::mesh::MeshIntegration>> {
+        self.mesh.clone()
     }
 
     /// Get the number of active sessions.
@@ -197,6 +214,7 @@ impl GatewayServer {
         let log_store = self.log_store.clone();
         let scheduler = self.scheduler.clone();
         let molt = self.molt.clone();
+        let mesh = self.mesh.clone();
         let config = self.config.clone();
         let sessions = self.sessions.clone();
         let start_time = self.start_time;
@@ -210,6 +228,7 @@ impl GatewayServer {
                 log_store,
                 scheduler,
                 molt,
+                mesh,
                 config,
                 sessions,
                 start_time,
@@ -320,6 +339,7 @@ enum ConnectionType {
 /// Detect connection type from first message and route to appropriate handler.
 ///
 /// CLI clients send a `Hello` message first, while nodes send `Register`.
+#[allow(clippy::too_many_arguments)]
 async fn detect_and_handle_connection(
     mut ws_stream: WebSocketStream<TcpStream>,
     registry: Arc<Mutex<NodeRegistry>>,
@@ -327,6 +347,7 @@ async fn detect_and_handle_connection(
     log_store: Arc<Mutex<WorkloadLogStore>>,
     scheduler: Arc<Mutex<claw_gateway::AdvancedScheduler>>,
     molt: Option<Arc<crate::molt::MoltIntegration>>,
+    mesh: Option<Arc<crate::mesh::MeshIntegration>>,
     config: Arc<ServerConfig>,
     sessions: Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
     start_time: Instant,
@@ -355,6 +376,7 @@ async fn detect_and_handle_connection(
                 log_store,
                 scheduler,
                 molt,
+                mesh,
                 config,
                 start_time,
             )

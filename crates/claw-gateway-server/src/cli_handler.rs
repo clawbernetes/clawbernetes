@@ -29,6 +29,7 @@ use crate::molt::MoltIntegration;
 ///
 /// This function takes over after the initial Hello message identifies
 /// the connection as a CLI client.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_cli_connection<S>(
     mut ws: S,
     registry: Arc<Mutex<NodeRegistry>>,
@@ -36,6 +37,7 @@ pub async fn handle_cli_connection<S>(
     log_store: Arc<Mutex<WorkloadLogStore>>,
     scheduler: Arc<Mutex<AdvancedScheduler>>,
     molt: Option<Arc<MoltIntegration>>,
+    mesh: Option<Arc<crate::mesh::MeshIntegration>>,
     config: Arc<ServerConfig>,
     start_time: Instant,
 ) -> ServerResult<()>
@@ -100,6 +102,7 @@ where
             &log_store,
             &scheduler,
             &molt,
+            &mesh,
             &config,
             start_time,
         )
@@ -112,6 +115,7 @@ where
 }
 
 /// Handle a single CLI request.
+#[allow(clippy::too_many_arguments)]
 async fn handle_request(
     request: CliMessage,
     registry: &Arc<Mutex<NodeRegistry>>,
@@ -119,6 +123,7 @@ async fn handle_request(
     log_store: &Arc<Mutex<WorkloadLogStore>>,
     scheduler: &Arc<Mutex<AdvancedScheduler>>,
     molt: &Option<Arc<MoltIntegration>>,
+    mesh: &Option<Arc<crate::mesh::MeshIntegration>>,
     _config: &Arc<ServerConfig>,
     start_time: Instant,
 ) -> CliResponse {
@@ -182,6 +187,16 @@ async fn handle_request(
         CliMessage::GetMoltBalance => handle_get_molt_balance(molt).await,
 
         CliMessage::Ping { timestamp } => CliResponse::pong(timestamp),
+
+        // =====================================================================
+        // WireGuard Mesh Commands
+        // =====================================================================
+
+        CliMessage::GetMeshStatus => handle_get_mesh_status(mesh).await,
+
+        CliMessage::ListMeshPeers => handle_list_mesh_peers(mesh).await,
+
+        CliMessage::GetMeshNode { node_id } => handle_get_mesh_node(mesh, node_id).await,
 
         // =====================================================================
         // Advanced Scheduling Commands
@@ -659,6 +674,106 @@ async fn handle_get_molt_balance(molt: &Option<Arc<MoltIntegration>>) -> CliResp
             pending: 0,
             staked: 0,
         },
+    }
+}
+
+// ============================================================================
+// WireGuard Mesh Operations
+// ============================================================================
+
+async fn handle_get_mesh_status(
+    mesh: &Option<Arc<crate::mesh::MeshIntegration>>,
+) -> CliResponse {
+    match mesh {
+        Some(m) => {
+            let status = m.status().await;
+            CliResponse::MeshStatus {
+                enabled: status.enabled,
+                node_count: status.node_count,
+                connection_count: status.connection_count,
+                network_cidr: status.network_cidr,
+                topology_type: status.topology_type,
+            }
+        }
+        None => CliResponse::MeshStatus {
+            enabled: false,
+            node_count: 0,
+            connection_count: 0,
+            network_cidr: String::new(),
+            topology_type: "none".to_string(),
+        },
+    }
+}
+
+async fn handle_list_mesh_peers(
+    mesh: &Option<Arc<crate::mesh::MeshIntegration>>,
+) -> CliResponse {
+    match mesh {
+        Some(m) => {
+            let nodes = m.list_nodes().await;
+            let peers: Vec<cli::MeshPeerInfo> = nodes
+                .into_iter()
+                .map(|n| cli::MeshPeerInfo {
+                    node_id: n.node_id,
+                    name: n.name,
+                    mesh_ip: n.mesh_ip.to_string(),
+                    public_key: truncate_key(&n.public_key),
+                    endpoint: n.endpoint,
+                    state: if n.last_mesh_ready.is_some() {
+                        cli::MeshConnectionState::Connected
+                    } else {
+                        cli::MeshConnectionState::Connecting
+                    },
+                    last_handshake: n.last_mesh_ready,
+                    rx_bytes: 0, // Would need WireGuard stats
+                    tx_bytes: 0,
+                })
+                .collect();
+            CliResponse::MeshPeers { peers }
+        }
+        None => CliResponse::MeshPeers { peers: Vec::new() },
+    }
+}
+
+async fn handle_get_mesh_node(
+    mesh: &Option<Arc<crate::mesh::MeshIntegration>>,
+    node_id: NodeId,
+) -> CliResponse {
+    match mesh {
+        Some(m) => {
+            match m.get_node(node_id).await {
+                Some(n) => CliResponse::MeshNode {
+                    node: cli::MeshNodeInfo {
+                        node_id: n.node_id,
+                        name: n.name,
+                        mesh_ip: n.mesh_ip.to_string(),
+                        public_key: n.public_key,
+                        endpoint: n.endpoint,
+                        is_hub: n.is_hub,
+                        connected_peers: n.connected_peers,
+                        total_peers: m.node_count().await.saturating_sub(1) as u32,
+                        joined_at: n.joined_at,
+                    },
+                },
+                None => CliResponse::error(
+                    cli::error_codes::NODE_NOT_FOUND,
+                    format!("node {node_id} not in mesh"),
+                ),
+            }
+        }
+        None => CliResponse::error(
+            cli::error_codes::INTERNAL_ERROR,
+            "mesh networking not enabled",
+        ),
+    }
+}
+
+/// Truncates a public key for display.
+fn truncate_key(key: &str) -> String {
+    if key.len() > 12 {
+        format!("{}...", &key[..12])
+    } else {
+        key.to_string()
     }
 }
 
