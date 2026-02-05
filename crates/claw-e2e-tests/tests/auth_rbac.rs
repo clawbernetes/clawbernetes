@@ -229,7 +229,7 @@ fn test_rbac_default_roles() {
     let viewer = User::new("viewer-user").unwrap();
     let viewer_id = viewer.id.clone();
     policy.add_user(viewer);
-    policy.assign_role(&viewer_id, "viewer").unwrap();
+    policy.assign_role(&viewer_id, "readonly").unwrap();
 
     // Admin can do everything
     assert!(policy.check_permission(&admin_id, "workloads", Action::Create));
@@ -289,12 +289,12 @@ fn test_rbac_multiple_roles() {
 
     // Assign both operator and viewer roles
     policy.assign_role(&user_id, "operator").unwrap();
-    policy.assign_role(&user_id, "viewer").unwrap();
+    policy.assign_role(&user_id, "readonly").unwrap();
 
     // Should have combined permissions
     let user = policy.get_user(&user_id).unwrap();
     assert!(user.roles.contains(&"operator".to_string()));
-    assert!(user.roles.contains(&"viewer".to_string()));
+    assert!(user.roles.contains(&"readonly".to_string()));
 
     // Can do operator things
     assert!(policy.check_permission(&user_id, "workloads", Action::Create));
