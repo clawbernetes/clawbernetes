@@ -1,11 +1,11 @@
-//! Error types for WireGuard operations.
+//! Error types for `WireGuard` operations.
 
 use thiserror::Error;
 
-/// Result type alias for WireGuard operations.
+/// Result type alias for `WireGuard` operations.
 pub type Result<T> = std::result::Result<T, WireGuardError>;
 
-/// Errors that can occur during WireGuard operations.
+/// Errors that can occur during `WireGuard` operations.
 #[derive(Debug, Error)]
 pub enum WireGuardError {
     /// Invalid key format.

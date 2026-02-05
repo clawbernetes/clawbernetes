@@ -1,6 +1,6 @@
-//! WireGuard key types.
+//! `WireGuard` key types.
 //!
-//! WireGuard uses Curve25519 for key exchange. Keys are 32 bytes.
+//! `WireGuard` uses Curve25519 for key exchange. Keys are 32 bytes.
 
 use crate::error::WireGuardError;
 use base64::Engine;
@@ -10,10 +10,10 @@ use std::fmt;
 use subtle::ConstantTimeEq;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
-/// WireGuard key size in bytes (256-bit Curve25519 keys).
+/// `WireGuard` key size in bytes (256-bit Curve25519 keys).
 pub const KEY_SIZE: usize = 32;
 
-/// A WireGuard public key (Curve25519, 32 bytes).
+/// A `WireGuard` public key (Curve25519, 32 bytes).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PublicKey([u8; KEY_SIZE]);
 
@@ -126,7 +126,7 @@ impl From<X25519PublicKey> for PublicKey {
     }
 }
 
-/// A WireGuard private key (Curve25519, 32 bytes).
+/// A `WireGuard` private key (Curve25519, 32 bytes).
 #[derive(Clone)]
 pub struct PrivateKey([u8; KEY_SIZE]);
 
@@ -229,7 +229,7 @@ impl PartialEq for PrivateKey {
 
 impl Eq for PrivateKey {}
 
-/// A WireGuard key pair (private + public).
+/// A `WireGuard` key pair (private + public).
 #[derive(Clone)]
 pub struct KeyPair {
     private: PrivateKey,
@@ -280,7 +280,7 @@ impl fmt::Debug for KeyPair {
     }
 }
 
-/// Generates a new WireGuard keypair.
+/// Generates a new `WireGuard` keypair.
 #[must_use]
 pub fn generate_keypair() -> (PrivateKey, PublicKey) {
     let private = PrivateKey::generate();

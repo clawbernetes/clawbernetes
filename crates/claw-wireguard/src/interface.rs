@@ -1,6 +1,6 @@
-//! WireGuard interface management.
+//! `WireGuard` interface management.
 //!
-//! This module provides traits and implementations for managing WireGuard
+//! This module provides traits and implementations for managing `WireGuard`
 //! network interfaces.
 
 use std::collections::HashMap;
@@ -13,13 +13,13 @@ use crate::error::{Result, WireGuardError};
 use crate::keys::PublicKey;
 use crate::types::{InterfaceStatus, PeerStatus};
 
-/// Trait for managing WireGuard interfaces.
+/// Trait for managing `WireGuard` interfaces.
 #[allow(async_fn_in_trait)]
 pub trait WireGuardInterface {
-    /// Creates a new WireGuard interface.
+    /// Creates a new `WireGuard` interface.
     async fn create(&mut self, name: &str, config: &InterfaceConfig) -> Result<()>;
 
-    /// Destroys a WireGuard interface.
+    /// Destroys a `WireGuard` interface.
     async fn destroy(&mut self, name: &str) -> Result<()>;
 
     /// Adds a peer to an existing interface.
@@ -65,14 +65,14 @@ pub struct InterfaceState {
     pub peer_count: usize,
 }
 
-/// A fake WireGuard interface for testing.
+/// A fake `WireGuard` interface for testing.
 #[derive(Clone)]
 pub struct FakeWireGuardInterface {
     interfaces: Arc<RwLock<HashMap<String, FakeInterfaceData>>>,
 }
 
 impl FakeWireGuardInterface {
-    /// Creates a new fake WireGuard interface manager.
+    /// Creates a new fake `WireGuard` interface manager.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -97,7 +97,7 @@ impl FakeWireGuardInterface {
         let peer_data = interface
             .peers
             .get_mut(&key_b64)
-            .ok_or_else(|| WireGuardError::PeerNotFound(key_b64))?;
+            .ok_or(WireGuardError::PeerNotFound(key_b64))?;
 
         peer_data.rx_bytes = peer_data.rx_bytes.saturating_add(rx_bytes);
         peer_data.tx_bytes = peer_data.tx_bytes.saturating_add(tx_bytes);
@@ -121,7 +121,7 @@ impl FakeWireGuardInterface {
         let peer_data = interface
             .peers
             .get_mut(&key_b64)
-            .ok_or_else(|| WireGuardError::PeerNotFound(key_b64))?;
+            .ok_or(WireGuardError::PeerNotFound(key_b64))?;
 
         peer_data.last_handshake = Some(timestamp);
 

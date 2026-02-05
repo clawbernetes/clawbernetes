@@ -1,15 +1,15 @@
-//! WireGuard configuration file generation and parsing.
+//! `WireGuard` configuration file generation and parsing.
 //!
-//! This module handles the INI-style configuration format used by WireGuard.
+//! This module handles the INI-style configuration format used by `WireGuard`.
 
 use std::fmt::Write as FmtWrite;
 use std::net::IpAddr;
 
 use crate::error::{Result, WireGuardError};
-use crate::keys::{PrivateKey, PublicKey, KEY_SIZE};
+use crate::keys::{PrivateKey, PublicKey};
 use crate::types::{AllowedIp, Endpoint, PresharedKey};
 
-/// Configuration for a WireGuard interface.
+/// Configuration for a `WireGuard` interface.
 #[derive(Clone, Debug)]
 pub struct InterfaceConfig {
     /// The interface's private key.
@@ -160,7 +160,7 @@ impl InterfaceConfigBuilder {
     }
 }
 
-/// Configuration for a WireGuard peer.
+/// Configuration for a `WireGuard` peer.
 #[derive(Clone, Debug)]
 pub struct PeerConfig {
     /// The peer's public key.
@@ -255,7 +255,7 @@ impl PeerConfigBuilder {
     }
 }
 
-/// Generates a WireGuard configuration file from an `InterfaceConfig`.
+/// Generates a `WireGuard` configuration file from an `InterfaceConfig`.
 #[must_use]
 pub fn generate_wg_config(config: &InterfaceConfig) -> String {
     let mut output = String::new();
@@ -314,7 +314,7 @@ enum Section {
     Peer,
 }
 
-/// Parses a WireGuard configuration file.
+/// Parses a `WireGuard` configuration file.
 pub fn parse_wg_config(config_str: &str) -> Result<InterfaceConfig> {
     let mut section = Section::None;
     let mut private_key: Option<PrivateKey> = None;
@@ -412,6 +412,7 @@ pub fn parse_wg_config(config_str: &str) -> Result<InterfaceConfig> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parse_interface_key(
     key: &str,
     value: &str,
@@ -546,7 +547,7 @@ impl ParsedPeer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::generate_keypair;
+    use crate::keys::{generate_keypair, KEY_SIZE};
 
     fn test_private_key() -> PrivateKey {
         PrivateKey::from_bytes(&[1u8; KEY_SIZE]).expect("valid key")
