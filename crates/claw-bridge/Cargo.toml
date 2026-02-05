@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 # Core crates
+claw-proto = { path = "../claw-proto" }
+claw-gateway = { path = "../claw-gateway" }
 claw-discovery = { path = "../claw-discovery" }
 claw-metrics = { path = "../claw-metrics" }
 claw-logs = { path = "../claw-logs" }

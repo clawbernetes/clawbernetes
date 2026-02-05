@@ -27,7 +27,7 @@ pub async fn handle_request(id: u64, method: &str, params: Value) -> Response {
 async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
     match method {
         // Cluster operations
-        "cluster_status" => cluster::status(params).await,
+        "cluster_status" => cluster::cluster_status(params).await,
         "node_list" => cluster::node_list(params).await,
         "node_get" => cluster::node_get(params).await,
         "node_drain" => cluster::node_drain(params).await,
@@ -35,12 +35,12 @@ async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
         "node_uncordon" => cluster::node_uncordon(params).await,
 
         // Workload operations
-        "workload_submit" => workload::submit(params).await,
-        "workload_get" => workload::get(params).await,
-        "workload_list" => workload::list(params).await,
-        "workload_stop" => workload::stop(params).await,
-        "workload_scale" => workload::scale(params).await,
-        "workload_logs" => workload::logs(params).await,
+        "workload_submit" => workload::workload_submit(params).await,
+        "workload_get" => workload::workload_get(params).await,
+        "workload_list" => workload::workload_list(params).await,
+        "workload_stop" => workload::workload_stop(params).await,
+        "workload_scale" => workload::workload_scale(params).await,
+        "workload_logs" => workload::workload_logs(params).await,
 
         // Observability
         "metrics_query" => observability::metrics_query(params).await,
