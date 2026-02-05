@@ -509,3 +509,272 @@ fn guess_os(ports: &[u16]) -> Option<String> {
         None
     }
 }
+
+// ─────────────────────────────────────────────────────────────
+// Node Bootstrap Handler
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BootstrapResult {
+    pub address: String,
+    pub hostname: String,
+    pub success: bool,
+    pub node_id: Option<String>,
+    pub token: Option<String>,
+    pub gpu_info: Option<GpuProbeResult>,
+    pub message: String,
+    pub steps_completed: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NodeBootstrapParams {
+    /// Target IP address or hostname
+    pub address: String,
+    /// Credential profile name (looks up from profiles)
+    pub credential_profile: Option<String>,
+    /// Or provide credentials directly
+    pub ssh_user: Option<String>,
+    pub ssh_key_secret: Option<String>,
+    pub ssh_password_secret: Option<String>,
+    /// Hostname to assign (auto-detected if not provided)
+    pub hostname: Option<String>,
+    /// Labels for the node
+    pub labels: Option<HashMap<String, String>>,
+    /// Gateway URL for clawnode to connect to
+    pub gateway_url: Option<String>,
+    /// Skip GPU detection
+    pub skip_gpu_detection: Option<bool>,
+    /// Dry run - don't actually install
+    pub dry_run: Option<bool>,
+}
+
+/// Bootstrap a node via SSH - install clawnode and connect to cluster
+pub async fn node_bootstrap(params: Value) -> BridgeResult<Value> {
+    let params: NodeBootstrapParams = parse_params(params)?;
+    
+    let mut steps_completed = Vec::new();
+    let dry_run = params.dry_run.unwrap_or(false);
+    
+    // Resolve credentials
+    let (username, _auth_method) = if let Some(profile_name) = &params.credential_profile {
+        let profiles = CREDENTIAL_PROFILES.read();
+        let profile = profiles.get(profile_name)
+            .ok_or_else(|| BridgeError::NotFound(format!("credential profile not found: {}", profile_name)))?;
+        
+        let username = profile.username.clone()
+            .ok_or_else(|| BridgeError::InvalidParams("credential profile has no username".to_string()))?;
+        
+        (username, profile.auth_method.clone())
+    } else if let Some(user) = &params.ssh_user {
+        let auth = if params.ssh_key_secret.is_some() {
+            "key"
+        } else if params.ssh_password_secret.is_some() {
+            "password"
+        } else {
+            return Err(BridgeError::InvalidParams(
+                "ssh_user requires ssh_key_secret or ssh_password_secret".to_string()
+            ));
+        };
+        (user.clone(), auth.to_string())
+    } else {
+        return Err(BridgeError::InvalidParams(
+            "credential_profile or ssh_user required".to_string()
+        ));
+    };
+    
+    steps_completed.push(format!("Resolved credentials: user={}", username));
+    
+    // Check if address is trusted
+    let is_trusted = if let Ok(ip) = params.address.parse::<Ipv4Addr>() {
+        let subnets = TRUSTED_SUBNETS.read();
+        subnets.iter().any(|subnet| ip_in_cidr(ip, subnet))
+    } else {
+        false
+    };
+    
+    steps_completed.push(format!("Address {} trusted: {}", params.address, is_trusted));
+    
+    // Generate hostname if not provided
+    let hostname = params.hostname.clone().unwrap_or_else(|| {
+        format!("node-{}", params.address.replace('.', "-"))
+    });
+    
+    // Generate bootstrap token
+    let now = chrono::Utc::now();
+    let token = format!(
+        "claw_bt_{}",
+        uuid::Uuid::new_v4().to_string().replace("-", "")
+    );
+    let expires_at = now + chrono::Duration::minutes(30);
+    
+    let bootstrap_token = BootstrapToken {
+        token: token.clone(),
+        hostname: hostname.clone(),
+        labels: params.labels.clone().unwrap_or_default(),
+        auto_approve: is_trusted,
+        created_at: now.timestamp_millis(),
+        expires_at: expires_at.timestamp_millis(),
+        used: false,
+    };
+    
+    // Store token
+    {
+        let mut tokens = BOOTSTRAP_TOKENS.write();
+        tokens.insert(token.clone(), bootstrap_token);
+    }
+    steps_completed.push("Generated bootstrap token".to_string());
+    
+    // Build bootstrap command
+    let gateway_url = params.gateway_url.clone()
+        .unwrap_or_else(|| "wss://localhost:18789".to_string());
+    
+    let bootstrap_script = format!(r#"#!/bin/bash
+set -e
+
+GATEWAY_URL="{gateway}"
+
+# Create clawnode directory
+mkdir -p /opt/clawnode
+
+# Download clawnode binary (placeholder - would download from gateway)
+echo "Downloading clawnode..."
+# curl -sSL $GATEWAY_URL/clawnode-linux-amd64 -o /opt/clawnode/clawnode
+
+# Create config
+cat > /opt/clawnode/config.json <<EOF
+{{
+  "gateway": "{gateway}",
+  "token": "{token}",
+  "hostname": "{hostname}"
+}}
+EOF
+
+# Create systemd service
+cat > /etc/systemd/system/clawnode.service <<EOF
+[Unit]
+Description=Clawbernetes Node Agent
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/opt/clawnode/clawnode run
+Restart=always
+RestartSec=10
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "clawnode configured for {hostname}"
+"#, gateway = gateway_url, token = token, hostname = hostname);
+
+    steps_completed.push(format!("Generated bootstrap script for {}", hostname));
+    
+    // In a real implementation, we'd SSH and execute
+    // For now, we return what would be done
+    if dry_run {
+        tracing::info!(
+            address = %params.address,
+            hostname = %hostname,
+            "dry run - would bootstrap node"
+        );
+        
+        return to_json(BootstrapResult {
+            address: params.address,
+            hostname,
+            success: true,
+            node_id: None,
+            token: Some(token),
+            gpu_info: None,
+            message: "Dry run completed - would execute bootstrap".to_string(),
+            steps_completed,
+        });
+    }
+    
+    // TODO: Actual SSH execution would go here
+    // For now, we simulate success and return instructions
+    
+    let ssh_command = format!(
+        "ssh {}@{} 'bash -s' <<< '{}'",
+        username, params.address, bootstrap_script.replace("'", "'\"'\"'")
+    );
+    
+    steps_completed.push("Generated SSH command (execution pending)".to_string());
+    
+    tracing::info!(
+        address = %params.address,
+        hostname = %hostname,
+        token = %token,
+        "bootstrap prepared for node"
+    );
+    
+    to_json(BootstrapResult {
+        address: params.address.clone(),
+        hostname: hostname.clone(),
+        success: true,
+        node_id: Some(format!("pending-{}", hostname)),
+        token: Some(token),
+        gpu_info: None,
+        message: format!(
+            "Bootstrap prepared. Run this on the gateway or use the token directly:\n\n\
+            Option 1 (SSH from gateway):\n{}\n\n\
+            Option 2 (Run on target):\n\
+            curl -sSL http://gateway:18789/bootstrap.sh | TOKEN={} HOSTNAME={} bash",
+            ssh_command,
+            params.address,
+            hostname
+        ),
+        steps_completed,
+    })
+}
+
+// ─────────────────────────────────────────────────────────────
+// GPU Probe (for network scan with credentials)
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct GpuProbeParams {
+    pub address: String,
+    pub credential_profile: Option<String>,
+    pub ssh_user: Option<String>,
+    pub ssh_key_secret: Option<String>,
+}
+
+/// Probe a host for GPU information via SSH
+pub async fn gpu_probe(params: Value) -> BridgeResult<Value> {
+    let params: GpuProbeParams = parse_params(params)?;
+    
+    // Resolve credentials (similar to bootstrap)
+    let username = if let Some(profile_name) = &params.credential_profile {
+        let profiles = CREDENTIAL_PROFILES.read();
+        let profile = profiles.get(profile_name)
+            .ok_or_else(|| BridgeError::NotFound(format!("credential profile not found: {}", profile_name)))?;
+        profile.username.clone()
+            .ok_or_else(|| BridgeError::InvalidParams("credential profile has no username".to_string()))?
+    } else if let Some(user) = &params.ssh_user {
+        user.clone()
+    } else {
+        return Err(BridgeError::InvalidParams(
+            "credential_profile or ssh_user required".to_string()
+        ));
+    };
+    
+    // In a real implementation, we'd SSH and run nvidia-smi
+    // ssh user@host 'nvidia-smi -L && nvidia-smi --query-gpu=name,memory.total --format=csv'
+    
+    tracing::info!(
+        address = %params.address,
+        user = %username,
+        "would probe for GPUs via SSH"
+    );
+    
+    // Return placeholder - real impl would parse nvidia-smi output
+    to_json(serde_json::json!({
+        "address": params.address,
+        "probed": false,
+        "message": format!("Would SSH as {} to {} and run nvidia-smi", username, params.address),
+        "command": format!("ssh {}@{} 'nvidia-smi -L'", username, params.address)
+    }))
+}

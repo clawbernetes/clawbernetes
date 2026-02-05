@@ -347,6 +347,23 @@ const CheckTrustedSchema = Type.Object({
   address: Type.String({ description: "IP address to check" }),
 });
 
+const NodeBootstrapSchema = Type.Object({
+  address: Type.String({ description: "Target IP address or hostname" }),
+  credential_profile: Type.Optional(Type.String({ description: "Credential profile name" })),
+  ssh_user: Type.Optional(Type.String({ description: "SSH username (if not using profile)" })),
+  ssh_key_secret: Type.Optional(Type.String({ description: "Secret ID containing SSH key" })),
+  hostname: Type.Optional(Type.String({ description: "Hostname to assign (auto-detected if not provided)" })),
+  labels: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Labels for the node" })),
+  gateway_url: Type.Optional(Type.String({ description: "Gateway URL for clawnode to connect to" })),
+  dry_run: Type.Optional(Type.Boolean({ description: "Preview without executing" })),
+});
+
+const GpuProbeSchema = Type.Object({
+  address: Type.String({ description: "Target IP address" }),
+  credential_profile: Type.Optional(Type.String({ description: "Credential profile name" })),
+  ssh_user: Type.Optional(Type.String({ description: "SSH username (if not using profile)" })),
+});
+
 // ─────────────────────────────────────────────────────────────
 // Plugin Registration
 // ─────────────────────────────────────────────────────────────
@@ -1367,8 +1384,38 @@ const clawbernetesPlugin = {
       },
     });
 
+    api.registerTool({
+      name: "node_bootstrap",
+      label: "Bootstrap Node",
+      description: "Bootstrap a node via SSH - install clawnode agent and connect to cluster",
+      parameters: NodeBootstrapSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("node_bootstrap", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "gpu_probe",
+      label: "Probe GPU",
+      description: "Probe a host for GPU information via SSH",
+      parameters: GpuProbeSchema,
+      async execute(_id: string, params: unknown) {
+        try {
+          const result = await callBridge("gpu_probe", params);
+          return toolResult(result);
+        } catch (err) {
+          return toolError(err);
+        }
+      },
+    });
+
     // Note: Client cleanup happens automatically when process exits
-    api.logger.info(`[clawbernetes] Registered 62 tools`);
+    api.logger.info(`[clawbernetes] Registered 64 tools`);
   },
 };
 

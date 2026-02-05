@@ -154,6 +154,8 @@ async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
         "trusted_subnet_add" => network::trusted_subnet_add(params).await,
         "trusted_subnet_list" => network::trusted_subnet_list(params).await,
         "check_trusted" => network::check_trusted(params).await,
+        "node_bootstrap" => network::node_bootstrap(params).await,
+        "gpu_probe" => network::gpu_probe(params).await,
 
         // ─── MOLT Marketplace ───
         "molt_offers" => molt::offers(params).await,
