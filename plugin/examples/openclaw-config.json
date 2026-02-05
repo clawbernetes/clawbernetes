@@ -1,0 +1,114 @@
+{
+  "$schema": "https://docs.openclaw.ai/schema.json",
+  
+  "agent": {
+    "model": "anthropic/claude-sonnet-4"
+  },
+  
+  "plugins": {
+    "clawbernetes": {
+      "enabled": true,
+      "bridgePath": "${HOME}/Projects/clawbernetes/target/release/claw-bridge",
+      "defaultCluster": "default"
+    }
+  },
+  
+  "tools": {
+    "alsoAllow": ["clawbernetes", "group:clawbernetes"]
+  },
+  
+  "skills": {
+    "managed": {
+      "clawbernetes": {
+        "source": "local",
+        "path": "${HOME}/Projects/clawbernetes/skills"
+      }
+    }
+  },
+  
+  "agents": {
+    "list": [
+      {
+        "id": "default",
+        "default": true,
+        "tools": {
+          "allow": ["*"]
+        }
+      },
+      {
+        "id": "k8s-ops",
+        "name": "Clawbernetes Operator",
+        "workspace": "~/.openclaw/workspace/k8s",
+        "model": "anthropic/claude-sonnet-4",
+        "tools": {
+          "allow": [
+            "cluster_status",
+            "node_list",
+            "node_get",
+            "node_drain",
+            "node_cordon",
+            "node_uncordon",
+            "workload_submit",
+            "workload_get",
+            "workload_list",
+            "workload_stop",
+            "workload_scale",
+            "workload_logs",
+            "metrics_query",
+            "logs_search",
+            "alert_create",
+            "alert_list",
+            "alert_silence"
+          ]
+        },
+        "subagents": {
+          "allowAgents": ["k8s-monitor", "k8s-deploy"]
+        }
+      },
+      {
+        "id": "k8s-monitor",
+        "name": "Cluster Monitor",
+        "model": "anthropic/claude-sonnet-4",
+        "tools": {
+          "allow": [
+            "cluster_status",
+            "node_list",
+            "metrics_query",
+            "logs_search",
+            "alert_create",
+            "alert_list"
+          ]
+        }
+      },
+      {
+        "id": "k8s-deploy",
+        "name": "Deployment Agent",
+        "model": "anthropic/claude-sonnet-4",
+        "tools": {
+          "allow": [
+            "workload_submit",
+            "workload_get",
+            "workload_list",
+            "workload_stop",
+            "workload_scale",
+            "metrics_query"
+          ]
+        }
+      },
+      {
+        "id": "molt-trader",
+        "name": "MOLT Marketplace Trader",
+        "model": "anthropic/claude-sonnet-4",
+        "tools": {
+          "allow": [
+            "molt_offers",
+            "molt_offer_create",
+            "molt_bid",
+            "molt_spot_prices",
+            "cluster_status"
+          ]
+        }
+      }
+    ]
+  }
+}
