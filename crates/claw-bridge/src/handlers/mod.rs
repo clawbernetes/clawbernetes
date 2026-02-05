@@ -13,6 +13,7 @@ pub mod cluster;
 pub mod deploy;
 pub mod molt;
 pub mod observability;
+pub mod operations;
 pub mod pki;
 pub mod secrets;
 pub mod tenancy;
@@ -102,6 +103,23 @@ async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
         "cert_revoke" => pki::cert_revoke(params).await,
         "cert_rotate" => pki::cert_rotate(params).await,
         "ca_status" => pki::ca_status(params).await,
+
+        // ─── Autoscaling ───
+        "autoscale_pool_create" => operations::autoscale_pool_create(params).await,
+        "autoscale_pool_list" => operations::autoscale_pool_list(params).await,
+        "autoscale_evaluate" => operations::autoscale_evaluate(params).await,
+        "autoscale_status" => operations::autoscale_status(params).await,
+
+        // ─── Preemption ───
+        "preemption_register" => operations::preemption_register(params).await,
+        "preemption_request" => operations::preemption_request(params).await,
+        "preemption_list" => operations::preemption_list(params).await,
+
+        // ─── Rollback ───
+        "rollback_record" => operations::rollback_record(params).await,
+        "rollback_plan" => operations::rollback_plan(params).await,
+        "rollback_history" => operations::rollback_history(params).await,
+        "rollback_trigger_check" => operations::rollback_trigger_check(params).await,
 
         // ─── MOLT Marketplace ───
         "molt_offers" => molt::offers(params).await,

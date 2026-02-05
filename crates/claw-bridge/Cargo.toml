@@ -24,9 +24,14 @@ claw-auth = { path = "../claw-auth" }
 claw-deploy = { path = "../claw-deploy" }
 claw-tenancy = { path = "../claw-tenancy" }
 
-# Phase 2: Secrets, PKI (prep)
+# Phase 2: Secrets, PKI
 claw-secrets = { path = "../claw-secrets" }
 claw-pki = { path = "../claw-pki" }
+
+# Phase 3: Operations
+claw-autoscaler = { path = "../claw-autoscaler" }
+claw-preemption = { path = "../claw-preemption" }
+claw-rollback = { path = "../claw-rollback" }
 
 # MOLT
 molt-core = { path = "../molt-core" }
