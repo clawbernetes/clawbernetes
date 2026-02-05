@@ -36,6 +36,8 @@ export type ToolContext = {
 
 /** Plugin configuration */
 export type ClawbernetesConfig = {
+  /** Path to the claw-bridge binary */
+  bridgePath?: string;
   /** Gateway connection mode */
   mode?: "embedded" | "remote";
   /** Remote gateway URL (when mode=remote) */

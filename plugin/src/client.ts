@@ -199,7 +199,7 @@ export class ClawbernetesClient {
 
   constructor(config: ClawbernetesConfig = {}) {
     this.config = config;
-    this.bridge = new BridgeProcess();
+    this.bridge = new BridgeProcess(config.bridgePath);
   }
 
   async initialize(): Promise<void> {
@@ -208,6 +208,14 @@ export class ClawbernetesClient {
 
   shutdown(): void {
     this.bridge.stop();
+  }
+
+  /**
+   * Raw RPC call to the bridge.
+   * Use this for direct method invocation.
+   */
+  async rpc<T = unknown>(method: string, params: unknown): Promise<T> {
+    return this.bridge.call(method, params);
   }
 
   // ─────────────────────────────────────────────────────────────
