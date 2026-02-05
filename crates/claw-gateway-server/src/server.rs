@@ -39,6 +39,8 @@ pub struct GatewayServer {
     workload_manager: Arc<Mutex<WorkloadManager>>,
     /// Log store for workload logs.
     log_store: Arc<Mutex<WorkloadLogStore>>,
+    /// Advanced scheduler with K8s-inspired features.
+    scheduler: Arc<Mutex<claw_gateway::AdvancedScheduler>>,
     /// Optional MOLT P2P integration.
     molt: Option<Arc<crate::molt::MoltIntegration>>,
     /// Active sessions indexed by session ID.
@@ -58,6 +60,7 @@ impl GatewayServer {
             registry: Arc::new(Mutex::new(NodeRegistry::new())),
             workload_manager: Arc::new(Mutex::new(WorkloadManager::new())),
             log_store: Arc::new(Mutex::new(WorkloadLogStore::new())),
+            scheduler: Arc::new(Mutex::new(claw_gateway::AdvancedScheduler::new())),
             molt: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
@@ -77,6 +80,7 @@ impl GatewayServer {
             registry: Arc::new(Mutex::new(registry)),
             workload_manager: Arc::new(Mutex::new(workload_manager)),
             log_store: Arc::new(Mutex::new(WorkloadLogStore::new())),
+            scheduler: Arc::new(Mutex::new(claw_gateway::AdvancedScheduler::new())),
             molt: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
@@ -191,6 +195,7 @@ impl GatewayServer {
         let registry = self.registry.clone();
         let workload_mgr = self.workload_manager.clone();
         let log_store = self.log_store.clone();
+        let scheduler = self.scheduler.clone();
         let molt = self.molt.clone();
         let config = self.config.clone();
         let sessions = self.sessions.clone();
@@ -203,6 +208,7 @@ impl GatewayServer {
                 registry,
                 workload_mgr,
                 log_store,
+                scheduler,
                 molt,
                 config,
                 sessions,
@@ -319,6 +325,7 @@ async fn detect_and_handle_connection(
     registry: Arc<Mutex<NodeRegistry>>,
     workload_manager: Arc<Mutex<WorkloadManager>>,
     log_store: Arc<Mutex<WorkloadLogStore>>,
+    scheduler: Arc<Mutex<claw_gateway::AdvancedScheduler>>,
     molt: Option<Arc<crate::molt::MoltIntegration>>,
     config: Arc<ServerConfig>,
     sessions: Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
@@ -346,6 +353,7 @@ async fn detect_and_handle_connection(
                 registry,
                 workload_manager,
                 log_store,
+                scheduler,
                 molt,
                 config,
                 start_time,

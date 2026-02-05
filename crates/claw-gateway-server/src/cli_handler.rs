@@ -7,10 +7,14 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use claw_gateway::{NodeHealthStatus, NodeRegistry, WorkloadLogStore, WorkloadManager};
-use claw_proto::cli::{
-    self, CliMessage, CliResponse, NodeInfo, NodeState, WorkloadInfo, CLI_PROTOCOL_VERSION,
+use claw_gateway::{
+    AdvancedScheduler, NodeHealthStatus, NodeRegistry, WorkloadLogStore, WorkloadManager,
 };
+use claw_proto::cli::{
+    self, CliMessage, CliResponse, GatedWorkloadInfo, NodeConditionInfo, NodeInfo, NodeLabelInfo,
+    NodeState, WorkloadInfo, CLI_PROTOCOL_VERSION,
+};
+use claw_proto::scheduling::{ConditionStatus, NodeCondition};
 use claw_proto::{NodeId, WorkloadId, WorkloadSpec, WorkloadState};
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use tokio::sync::Mutex;
@@ -30,6 +34,7 @@ pub async fn handle_cli_connection<S>(
     registry: Arc<Mutex<NodeRegistry>>,
     workload_manager: Arc<Mutex<WorkloadManager>>,
     log_store: Arc<Mutex<WorkloadLogStore>>,
+    scheduler: Arc<Mutex<AdvancedScheduler>>,
     molt: Option<Arc<MoltIntegration>>,
     config: Arc<ServerConfig>,
     start_time: Instant,
@@ -93,6 +98,7 @@ where
             &registry,
             &workload_manager,
             &log_store,
+            &scheduler,
             &molt,
             &config,
             start_time,
@@ -111,6 +117,7 @@ async fn handle_request(
     registry: &Arc<Mutex<NodeRegistry>>,
     workload_manager: &Arc<Mutex<WorkloadManager>>,
     log_store: &Arc<Mutex<WorkloadLogStore>>,
+    scheduler: &Arc<Mutex<AdvancedScheduler>>,
     molt: &Option<Arc<MoltIntegration>>,
     _config: &Arc<ServerConfig>,
     start_time: Instant,
@@ -151,7 +158,7 @@ async fn handle_request(
         }
 
         CliMessage::StartWorkload { node_id, spec } => {
-            handle_start_workload(workload_manager, registry, node_id, spec).await
+            handle_start_workload(workload_manager, registry, scheduler, node_id, spec).await
         }
 
         CliMessage::StopWorkload { workload_id, force } => {
@@ -175,6 +182,47 @@ async fn handle_request(
         CliMessage::GetMoltBalance => handle_get_molt_balance(molt).await,
 
         CliMessage::Ping { timestamp } => CliResponse::pong(timestamp),
+
+        // =====================================================================
+        // Advanced Scheduling Commands
+        // =====================================================================
+
+        CliMessage::ClearGate {
+            workload_id,
+            gate_name,
+        } => handle_clear_gate(scheduler, workload_manager, workload_id, &gate_name).await,
+
+        CliMessage::GetSchedulingStatus { workload_id } => {
+            handle_get_scheduling_status(workload_manager, scheduler, workload_id).await
+        }
+
+        CliMessage::ListGatedWorkloads => {
+            handle_list_gated_workloads(workload_manager, scheduler).await
+        }
+
+        CliMessage::UpdateNodeCondition {
+            node_id,
+            condition_type,
+            satisfied,
+            reason,
+        } => {
+            handle_update_node_condition(registry, node_id, &condition_type, satisfied, reason)
+                .await
+        }
+
+        CliMessage::SetNodeLabel {
+            node_id,
+            key,
+            value,
+        } => handle_set_node_label(registry, node_id, &key, &value).await,
+
+        CliMessage::RemoveNodeLabel { node_id, key } => {
+            handle_remove_node_label(registry, node_id, &key).await
+        }
+
+        CliMessage::GetNodeConditions { node_id } => {
+            handle_get_node_conditions(registry, node_id).await
+        }
     }
 }
 
@@ -377,53 +425,14 @@ async fn handle_get_workload(
 async fn handle_start_workload(
     workload_manager: &Arc<Mutex<WorkloadManager>>,
     registry: &Arc<Mutex<NodeRegistry>>,
+    scheduler: &Arc<Mutex<AdvancedScheduler>>,
     target_node: Option<NodeId>,
     spec: WorkloadSpec,
 ) -> CliResponse {
     let mut mgr = workload_manager.lock().await;
-    let registry = registry.lock().await;
 
-    // Find a node to run the workload
-    let node_id = if let Some(id) = target_node {
-        // Verify the node exists and is available
-        match registry.get_node(id) {
-            Some(node) => {
-                if !node.is_available() {
-                    return CliResponse::error(
-                        cli::error_codes::NO_CAPACITY,
-                        format!("node {id} is not available (status: {})", node.health_status()),
-                    );
-                }
-                id
-            }
-            None => {
-                return CliResponse::error(
-                    cli::error_codes::NODE_NOT_FOUND,
-                    format!("target node not found: {id}"),
-                );
-            }
-        }
-    } else {
-        // Auto-select an available node with capacity
-        let candidates: Vec<_> = registry
-            .available_nodes()
-            .into_iter()
-            .filter(|n| n.capabilities.gpus.len() as u32 >= spec.gpu_count)
-            .collect();
-
-        if candidates.is_empty() {
-            return CliResponse::error(
-                cli::error_codes::NO_CAPACITY,
-                "no available nodes with sufficient capacity",
-            );
-        }
-
-        // Pick first available (could be smarter)
-        candidates[0].id
-    };
-
-    // Submit the workload
-    let workload_id = match mgr.submit(spec) {
+    // Submit the workload first to get an ID
+    let workload_id = match mgr.submit(spec.clone()) {
         Ok(id) => id,
         Err(e) => {
             return CliResponse::error(
@@ -433,17 +442,64 @@ async fn handle_start_workload(
         }
     };
 
-    // Assign to node
-    if let Err(e) = mgr.assign_to_node(workload_id, node_id) {
-        return CliResponse::error(
-            cli::error_codes::INTERNAL_ERROR,
-            format!("failed to assign workload to node: {e}"),
-        );
-    }
+    // Use the advanced scheduler
+    let scheduler = scheduler.lock().await;
+    let registry = registry.lock().await;
 
-    CliResponse::WorkloadStarted {
-        workload_id,
-        node_id,
+    let schedule_result = if let Some(target_id) = target_node {
+        scheduler.schedule_to_node(workload_id, &spec, target_id, &registry)
+    } else {
+        scheduler.schedule(workload_id, &spec, &registry)
+    };
+
+    drop(scheduler);
+    drop(registry);
+
+    match schedule_result {
+        Ok(result) => {
+            // Assign to node
+            if let Err(e) = mgr.assign_to_node(workload_id, result.node_id) {
+                return CliResponse::error(
+                    cli::error_codes::INTERNAL_ERROR,
+                    format!("failed to assign workload to node: {e}"),
+                );
+            }
+
+            CliResponse::WorkloadStarted {
+                workload_id,
+                node_id: result.node_id,
+            }
+        }
+        Err(claw_gateway::AdvancedSchedulerError::Gated { pending_gates }) => {
+            // Workload is gated - keep it pending
+            CliResponse::SchedulingStatus {
+                workload_id,
+                state: WorkloadState::Pending,
+                pending_gates,
+                assigned_node: None,
+                assigned_gpus: vec![],
+                worker_index: None,
+                schedule_failure_reason: Some("workload is gated".to_string()),
+            }
+        }
+        Err(claw_gateway::AdvancedSchedulerError::NoNodes) => {
+            CliResponse::error(cli::error_codes::NO_CAPACITY, "no nodes registered")
+        }
+        Err(claw_gateway::AdvancedSchedulerError::NodeNotFound(id)) => {
+            CliResponse::error(
+                cli::error_codes::NODE_NOT_FOUND,
+                format!("target node not found: {id}"),
+            )
+        }
+        Err(claw_gateway::AdvancedSchedulerError::NodeNotAvailable { node_id, reason }) => {
+            CliResponse::error(
+                cli::error_codes::NO_CAPACITY,
+                format!("node {node_id} not available: {reason}"),
+            )
+        }
+        Err(claw_gateway::AdvancedSchedulerError::NoSuitableNode { reason, .. }) => {
+            CliResponse::error(cli::error_codes::NO_CAPACITY, reason)
+        }
     }
 }
 
@@ -603,6 +659,293 @@ async fn handle_get_molt_balance(molt: &Option<Arc<MoltIntegration>>) -> CliResp
             pending: 0,
             staked: 0,
         },
+    }
+}
+
+// ============================================================================
+// Advanced Scheduling Operations
+// ============================================================================
+
+async fn handle_clear_gate(
+    scheduler: &Arc<Mutex<AdvancedScheduler>>,
+    workload_manager: &Arc<Mutex<WorkloadManager>>,
+    workload_id: WorkloadId,
+    gate_name: &str,
+) -> CliResponse {
+    // Verify workload exists
+    let mgr = workload_manager.lock().await;
+    let workload = match mgr.get_workload(workload_id) {
+        Some(w) => w,
+        None => {
+            return CliResponse::error(
+                cli::error_codes::WORKLOAD_NOT_FOUND,
+                format!("workload not found: {workload_id}"),
+            )
+        }
+    };
+
+    // Get pending gates
+    let pending_gates: Vec<String> = workload
+        .workload
+        .spec
+        .scheduling
+        .scheduling_gates
+        .iter()
+        .map(|g| g.name.clone())
+        .collect();
+
+    drop(mgr);
+
+    // Clear the gate
+    let mut scheduler = scheduler.lock().await;
+    scheduler.clear_gate(workload_id, gate_name);
+
+    // Calculate remaining pending gates
+    let remaining: Vec<String> = pending_gates
+        .into_iter()
+        .filter(|g| g != gate_name && !scheduler.is_gate_cleared(workload_id, g))
+        .collect();
+
+    CliResponse::GateCleared {
+        workload_id,
+        gate_name: gate_name.to_string(),
+        pending_gates: remaining,
+    }
+}
+
+async fn handle_get_scheduling_status(
+    workload_manager: &Arc<Mutex<WorkloadManager>>,
+    scheduler: &Arc<Mutex<AdvancedScheduler>>,
+    workload_id: WorkloadId,
+) -> CliResponse {
+    let mgr = workload_manager.lock().await;
+    let workload = match mgr.get_workload(workload_id) {
+        Some(w) => w,
+        None => {
+            return CliResponse::error(
+                cli::error_codes::WORKLOAD_NOT_FOUND,
+                format!("workload not found: {workload_id}"),
+            )
+        }
+    };
+
+    let scheduler = scheduler.lock().await;
+
+    // Get pending gates (those not yet cleared)
+    let pending_gates: Vec<String> = workload
+        .workload
+        .spec
+        .scheduling
+        .scheduling_gates
+        .iter()
+        .filter(|g| !scheduler.is_gate_cleared(workload_id, &g.name))
+        .map(|g| g.name.clone())
+        .collect();
+
+    CliResponse::SchedulingStatus {
+        workload_id,
+        state: workload.state(),
+        pending_gates,
+        assigned_node: workload.assigned_node,
+        assigned_gpus: workload.assigned_gpus.clone(),
+        worker_index: workload.worker_index,
+        schedule_failure_reason: workload.schedule_failure.clone(),
+    }
+}
+
+async fn handle_list_gated_workloads(
+    workload_manager: &Arc<Mutex<WorkloadManager>>,
+    scheduler: &Arc<Mutex<AdvancedScheduler>>,
+) -> CliResponse {
+    let mgr = workload_manager.lock().await;
+    let scheduler = scheduler.lock().await;
+    let now = chrono::Utc::now();
+
+    let gated: Vec<GatedWorkloadInfo> = mgr
+        .list_workloads()
+        .into_iter()
+        .filter(|w| {
+            // Check if workload has any pending gates
+            w.workload
+                .spec
+                .scheduling
+                .scheduling_gates
+                .iter()
+                .any(|g| !scheduler.is_gate_cleared(w.id(), &g.name))
+        })
+        .map(|w| {
+            let pending: Vec<String> = w
+                .workload
+                .spec
+                .scheduling
+                .scheduling_gates
+                .iter()
+                .filter(|g| !scheduler.is_gate_cleared(w.id(), &g.name))
+                .map(|g| g.name.clone())
+                .collect();
+
+            let waiting_secs = (now - w.submitted_at).num_seconds().max(0) as u64;
+
+            GatedWorkloadInfo {
+                workload_id: w.id(),
+                image: w.workload.spec.image.clone(),
+                pending_gates: pending,
+                submitted_at: w.submitted_at,
+                waiting_secs,
+            }
+        })
+        .collect();
+
+    CliResponse::GatedWorkloads { workloads: gated }
+}
+
+async fn handle_update_node_condition(
+    registry: &Arc<Mutex<NodeRegistry>>,
+    node_id: NodeId,
+    condition_type: &str,
+    satisfied: bool,
+    reason: Option<String>,
+) -> CliResponse {
+    let mut reg = registry.lock().await;
+
+    let node = match reg.get_node_mut(node_id) {
+        Some(n) => n,
+        None => {
+            return CliResponse::error(
+                cli::error_codes::NODE_NOT_FOUND,
+                format!("node not found: {node_id}"),
+            )
+        }
+    };
+
+    // Update or add the condition
+    let status = if satisfied {
+        ConditionStatus::True
+    } else {
+        ConditionStatus::False
+    };
+
+    let mut condition = NodeCondition::new(condition_type, status);
+    if let Some(r) = reason {
+        condition = condition.with_reason(r);
+    }
+
+    // Find existing condition or add new one
+    if let Some(existing) = node
+        .capabilities
+        .conditions
+        .iter_mut()
+        .find(|c| c.condition_type == condition_type)
+    {
+        existing.update_status(status);
+        if condition.reason.is_some() {
+            existing.reason = condition.reason;
+        }
+    } else {
+        node.capabilities.conditions.push(condition);
+    }
+
+    CliResponse::NodeConditionUpdated {
+        node_id,
+        condition_type: condition_type.to_string(),
+        satisfied,
+    }
+}
+
+async fn handle_set_node_label(
+    registry: &Arc<Mutex<NodeRegistry>>,
+    node_id: NodeId,
+    key: &str,
+    value: &str,
+) -> CliResponse {
+    let mut reg = registry.lock().await;
+
+    let node = match reg.get_node_mut(node_id) {
+        Some(n) => n,
+        None => {
+            return CliResponse::error(
+                cli::error_codes::NODE_NOT_FOUND,
+                format!("node not found: {node_id}"),
+            )
+        }
+    };
+
+    node.capabilities.labels.insert(key.to_string(), value.to_string());
+
+    CliResponse::NodeLabelSet {
+        node_id,
+        key: key.to_string(),
+        value: value.to_string(),
+    }
+}
+
+async fn handle_remove_node_label(
+    registry: &Arc<Mutex<NodeRegistry>>,
+    node_id: NodeId,
+    key: &str,
+) -> CliResponse {
+    let mut reg = registry.lock().await;
+
+    let node = match reg.get_node_mut(node_id) {
+        Some(n) => n,
+        None => {
+            return CliResponse::error(
+                cli::error_codes::NODE_NOT_FOUND,
+                format!("node not found: {node_id}"),
+            )
+        }
+    };
+
+    node.capabilities.labels.remove(key);
+
+    CliResponse::NodeLabelRemoved {
+        node_id,
+        key: key.to_string(),
+    }
+}
+
+async fn handle_get_node_conditions(
+    registry: &Arc<Mutex<NodeRegistry>>,
+    node_id: NodeId,
+) -> CliResponse {
+    let reg = registry.lock().await;
+
+    let node = match reg.get_node(node_id) {
+        Some(n) => n,
+        None => {
+            return CliResponse::error(
+                cli::error_codes::NODE_NOT_FOUND,
+                format!("node not found: {node_id}"),
+            )
+        }
+    };
+
+    let conditions: Vec<NodeConditionInfo> = node
+        .capabilities
+        .conditions
+        .iter()
+        .map(|c| NodeConditionInfo {
+            condition_type: c.condition_type.clone(),
+            satisfied: c.is_satisfied(),
+            reason: c.reason.clone(),
+            last_updated: c.last_probe_time,
+        })
+        .collect();
+
+    let labels: Vec<NodeLabelInfo> = node
+        .capabilities
+        .labels
+        .iter()
+        .map(|(k, v)| NodeLabelInfo {
+            key: k.clone(),
+            value: v.clone(),
+        })
+        .collect();
+
+    CliResponse::NodeConditions {
+        node_id,
+        conditions,
+        labels,
     }
 }
 

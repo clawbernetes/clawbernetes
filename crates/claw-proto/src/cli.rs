@@ -142,6 +142,63 @@ pub enum CliMessage {
         /// Timestamp for latency measurement.
         timestamp: DateTime<Utc>,
     },
+
+    // =========================================================================
+    // Advanced Scheduling Commands
+    // =========================================================================
+
+    /// Clear a scheduling gate for a workload.
+    ClearGate {
+        /// Workload ID.
+        workload_id: WorkloadId,
+        /// Gate name to clear.
+        gate_name: String,
+    },
+
+    /// Get scheduling status for a workload.
+    GetSchedulingStatus {
+        /// Workload ID.
+        workload_id: WorkloadId,
+    },
+
+    /// List workloads that are gated (waiting for conditions).
+    ListGatedWorkloads,
+
+    /// Update a node's conditions.
+    UpdateNodeCondition {
+        /// Node ID.
+        node_id: NodeId,
+        /// Condition type (e.g., "cuda-12-ready", "model-cached").
+        condition_type: String,
+        /// Whether the condition is satisfied.
+        satisfied: bool,
+        /// Optional reason.
+        reason: Option<String>,
+    },
+
+    /// Set a node label.
+    SetNodeLabel {
+        /// Node ID.
+        node_id: NodeId,
+        /// Label key.
+        key: String,
+        /// Label value.
+        value: String,
+    },
+
+    /// Remove a node label.
+    RemoveNodeLabel {
+        /// Node ID.
+        node_id: NodeId,
+        /// Label key to remove.
+        key: String,
+    },
+
+    /// Get node conditions and labels.
+    GetNodeConditions {
+        /// Node ID.
+        node_id: NodeId,
+    },
 }
 
 /// State of a node.
@@ -291,6 +348,82 @@ pub enum CliResponse {
         server_timestamp: DateTime<Utc>,
     },
 
+    // =========================================================================
+    // Advanced Scheduling Responses
+    // =========================================================================
+
+    /// Gate cleared successfully.
+    GateCleared {
+        /// Workload ID.
+        workload_id: WorkloadId,
+        /// Gate that was cleared.
+        gate_name: String,
+        /// Remaining pending gates.
+        pending_gates: Vec<String>,
+    },
+
+    /// Scheduling status for a workload.
+    SchedulingStatus {
+        /// Workload ID.
+        workload_id: WorkloadId,
+        /// Current workload state.
+        state: WorkloadState,
+        /// Pending scheduling gates.
+        pending_gates: Vec<String>,
+        /// Assigned node (if scheduled).
+        assigned_node: Option<NodeId>,
+        /// Assigned GPU indices (if scheduled).
+        assigned_gpus: Vec<u32>,
+        /// Worker index for parallel workloads.
+        worker_index: Option<u32>,
+        /// Why scheduling failed (if applicable).
+        schedule_failure_reason: Option<String>,
+    },
+
+    /// List of gated workloads.
+    GatedWorkloads {
+        /// Workloads waiting on gates.
+        workloads: Vec<GatedWorkloadInfo>,
+    },
+
+    /// Node condition updated.
+    NodeConditionUpdated {
+        /// Node ID.
+        node_id: NodeId,
+        /// Condition type.
+        condition_type: String,
+        /// New status.
+        satisfied: bool,
+    },
+
+    /// Node label set.
+    NodeLabelSet {
+        /// Node ID.
+        node_id: NodeId,
+        /// Label key.
+        key: String,
+        /// Label value.
+        value: String,
+    },
+
+    /// Node label removed.
+    NodeLabelRemoved {
+        /// Node ID.
+        node_id: NodeId,
+        /// Label key that was removed.
+        key: String,
+    },
+
+    /// Node conditions and labels.
+    NodeConditions {
+        /// Node ID.
+        node_id: NodeId,
+        /// Current conditions.
+        conditions: Vec<NodeConditionInfo>,
+        /// Current labels.
+        labels: Vec<NodeLabelInfo>,
+    },
+
     /// Error response.
     Error {
         /// Error code.
@@ -362,6 +495,43 @@ pub struct MoltPeerInfo {
     pub available: bool,
     /// Latency in milliseconds.
     pub latency_ms: Option<u32>,
+}
+
+/// Information about a workload waiting on scheduling gates.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GatedWorkloadInfo {
+    /// Workload ID.
+    pub workload_id: WorkloadId,
+    /// Container image.
+    pub image: String,
+    /// Pending gates.
+    pub pending_gates: Vec<String>,
+    /// When the workload was submitted.
+    pub submitted_at: DateTime<Utc>,
+    /// How long it's been waiting.
+    pub waiting_secs: u64,
+}
+
+/// Information about a node condition.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeConditionInfo {
+    /// Condition type (e.g., "cuda-12-ready").
+    pub condition_type: String,
+    /// Whether the condition is satisfied.
+    pub satisfied: bool,
+    /// Reason for the status.
+    pub reason: Option<String>,
+    /// When the condition was last updated.
+    pub last_updated: DateTime<Utc>,
+}
+
+/// Information about a node label.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeLabelInfo {
+    /// Label key.
+    pub key: String,
+    /// Label value.
+    pub value: String,
 }
 
 // === Error codes ===
@@ -440,6 +610,13 @@ impl CliMessage {
             Self::ListMoltPeers => "list_molt_peers",
             Self::GetMoltBalance => "get_molt_balance",
             Self::Ping { .. } => "ping",
+            Self::ClearGate { .. } => "clear_gate",
+            Self::GetSchedulingStatus { .. } => "get_scheduling_status",
+            Self::ListGatedWorkloads => "list_gated_workloads",
+            Self::UpdateNodeCondition { .. } => "update_node_condition",
+            Self::SetNodeLabel { .. } => "set_node_label",
+            Self::RemoveNodeLabel { .. } => "remove_node_label",
+            Self::GetNodeConditions { .. } => "get_node_conditions",
         }
     }
 }

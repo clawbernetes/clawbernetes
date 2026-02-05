@@ -35,6 +35,12 @@ pub struct TrackedWorkload {
     pub assigned_node: Option<NodeId>,
     /// When the workload was submitted to the gateway.
     pub submitted_at: DateTime<Utc>,
+    /// Assigned GPU indices (from scheduler).
+    pub assigned_gpus: Vec<u32>,
+    /// Worker index for parallel workloads.
+    pub worker_index: Option<u32>,
+    /// Reason for scheduling failure (if any).
+    pub schedule_failure: Option<String>,
 }
 
 impl TrackedWorkload {
@@ -44,6 +50,9 @@ impl TrackedWorkload {
             workload,
             assigned_node: None,
             submitted_at: Utc::now(),
+            assigned_gpus: Vec::new(),
+            worker_index: None,
+            schedule_failure: None,
         }
     }
 
