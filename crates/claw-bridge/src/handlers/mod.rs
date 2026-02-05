@@ -8,9 +8,12 @@ use serde_json::Value;
 use crate::error::{BridgeError, BridgeResult};
 use crate::protocol::Response;
 
+pub mod auth;
 pub mod cluster;
+pub mod deploy;
 pub mod molt;
 pub mod observability;
+pub mod tenancy;
 pub mod workload;
 
 /// Handle an incoming request
@@ -26,7 +29,7 @@ pub async fn handle_request(id: u64, method: &str, params: Value) -> Response {
 /// Dispatch a method call to the appropriate handler
 async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
     match method {
-        // Cluster operations
+        // ─── Cluster Operations ───
         "cluster_status" => cluster::cluster_status(params).await,
         "node_list" => cluster::node_list(params).await,
         "node_get" => cluster::node_get(params).await,
@@ -34,7 +37,7 @@ async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
         "node_cordon" => cluster::node_cordon(params).await,
         "node_uncordon" => cluster::node_uncordon(params).await,
 
-        // Workload operations
+        // ─── Workload Operations ───
         "workload_submit" => workload::workload_submit(params).await,
         "workload_get" => workload::workload_get(params).await,
         "workload_list" => workload::workload_list(params).await,
@@ -42,14 +45,47 @@ async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
         "workload_scale" => workload::workload_scale(params).await,
         "workload_logs" => workload::workload_logs(params).await,
 
-        // Observability
+        // ─── Observability ───
         "metrics_query" => observability::metrics_query(params).await,
         "logs_search" => observability::logs_search(params).await,
         "alert_create" => observability::alert_create(params).await,
         "alert_list" => observability::alert_list(params).await,
         "alert_silence" => observability::alert_silence(params).await,
 
-        // MOLT marketplace
+        // ─── Auth & RBAC ───
+        "user_create" => auth::user_create(params).await,
+        "user_get" => auth::user_get(params).await,
+        "user_list" => auth::user_list(params).await,
+        "user_delete" => auth::user_delete(params).await,
+        "role_assign" => auth::role_assign(params).await,
+        "role_revoke" => auth::role_revoke(params).await,
+        "role_list" => auth::role_list(params).await,
+        "permission_check" => auth::permission_check(params).await,
+        "api_key_generate" => auth::api_key_generate(params).await,
+        "api_key_list" => auth::api_key_list(params).await,
+        "api_key_revoke" => auth::api_key_revoke(params).await,
+
+        // ─── Deployments ───
+        "deploy_intent" => deploy::deploy_intent(params).await,
+        "deploy_status" => deploy::deploy_status(params).await,
+        "deploy_list" => deploy::deploy_list(params).await,
+        "deploy_promote" => deploy::deploy_promote(params).await,
+        "deploy_rollback" => deploy::deploy_rollback(params).await,
+        "deploy_abort" => deploy::deploy_abort(params).await,
+
+        // ─── Multi-Tenancy ───
+        "tenant_create" => tenancy::tenant_create(params).await,
+        "tenant_get" => tenancy::tenant_get(params).await,
+        "tenant_list" => tenancy::tenant_list(params).await,
+        "tenant_delete" => tenancy::tenant_delete(params).await,
+        "namespace_create" => tenancy::namespace_create(params).await,
+        "namespace_get" => tenancy::namespace_get(params).await,
+        "namespace_list" => tenancy::namespace_list(params).await,
+        "namespace_delete" => tenancy::namespace_delete(params).await,
+        "quota_set" => tenancy::quota_set(params).await,
+        "usage_report" => tenancy::usage_report(params).await,
+
+        // ─── MOLT Marketplace ───
         "molt_offers" => molt::offers(params).await,
         "molt_offer_create" => molt::offer_create(params).await,
         "molt_bid" => molt::bid(params).await,

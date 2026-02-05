@@ -18,6 +18,17 @@ claw-metrics = { path = "../claw-metrics" }
 claw-logs = { path = "../claw-logs" }
 claw-alerts = { path = "../claw-alerts" }
 claw-compute = { path = "../claw-compute", default-features = false, features = ["cpu"] }
+
+# Phase 1: Auth, Deploy, Tenancy
+claw-auth = { path = "../claw-auth" }
+claw-deploy = { path = "../claw-deploy" }
+claw-tenancy = { path = "../claw-tenancy" }
+
+# Phase 2: Secrets, PKI (prep)
+claw-secrets = { path = "../claw-secrets" }
+claw-pki = { path = "../claw-pki" }
+
+# MOLT
 molt-core = { path = "../molt-core" }
 molt-market = { path = "../molt-market" }
 
