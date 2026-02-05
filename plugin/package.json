@@ -1,0 +1,48 @@
+{
+  "name": "@clawbernetes/openclaw-plugin",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin for Clawbernetes GPU orchestration",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": [
+    "dist",
+    "skills"
+  ],
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "clawbernetes",
+    "gpu",
+    "kubernetes",
+    "orchestration",
+    "ai-native"
+  ],
+  "author": "Clawbernetes",
+  "license": "MIT",
+  "peerDependencies": {
+    "@sinclair/typebox": ">=0.32.0"
+  },
+  "devDependencies": {
+    "@sinclair/typebox": "^0.32.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "openclaw": {
+    "plugin": true,
+    "tools": true,
+    "skills": "./skills"
+  }
+}
