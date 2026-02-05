@@ -18,8 +18,8 @@
   <a href="https://www.rust-lang.org/">
     <img src="https://img.shields.io/badge/rust-1.85%2B%20(2024%20Edition)-orange.svg" alt="Rust">
   </a>
-  <img src="https://img.shields.io/badge/tests-2%2C100%2B-green.svg" alt="Tests">
-  <img src="https://img.shields.io/badge/lines-66K%2B-informational.svg" alt="Lines of Code">
+  <img src="https://img.shields.io/badge/tests-4%2C600%2B-green.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/lines-160K%2B-informational.svg" alt="Lines of Code">
 </p>
 
 <p align="center">
@@ -202,7 +202,7 @@ cargo install --path crates/clawnode
 
 ## 📦 Crate Overview
 
-Clawbernetes is organized into **23 crates** across three domains:
+Clawbernetes is organized into **35 crates** across six domains:
 
 ### Core Infrastructure
 
@@ -319,9 +319,15 @@ tls_key = "/etc/clawbernetes/node.key"
 | Document | Description |
 |----------|-------------|
 | [QUICKSTART.md](QUICKSTART.md) | 5-minute getting started guide |
+| [docs/user-guide.md](docs/user-guide.md) | Complete operator guide |
+| [docs/cli-reference.md](docs/cli-reference.md) | CLI command reference |
 | [docs/architecture.md](docs/architecture.md) | System design deep-dive |
+| [docs/molt-network.md](docs/molt-network.md) | MOLT P2P marketplace guide |
+| [docs/security.md](docs/security.md) | Security & RBAC setup |
+| [docs/api/README.md](docs/api/README.md) | API documentation index |
 | [docs/ecosystem-replacement.md](docs/ecosystem-replacement.md) | How we replace K8s tooling |
 | [docs/cubecl-integration.md](docs/cubecl-integration.md) | Multi-platform GPU support |
+| [docs/wireguard-integration.md](docs/wireguard-integration.md) | Self-hosted mesh networking |
 | [docs/tailscale-integration.md](docs/tailscale-integration.md) | Managed networking setup |
 
 ## 🧪 Testing
@@ -364,9 +370,9 @@ cargo build --workspace --all-features
 ### Project Stats
 
 ```
-📊 66,000+ lines of Rust
-📦 23 crates
-🧪 2,100+ tests
+📊 160,000+ lines of Rust
+📦 35 crates
+🧪 4,600+ tests
 🎯 0 unsafe in core (GPU crate allows for CubeCL)
 ```
 
