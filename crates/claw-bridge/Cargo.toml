@@ -13,7 +13,6 @@ path = "src/main.rs"
 # Core crates
 claw-proto = { path = "../claw-proto" }
 claw-gateway = { path = "../claw-gateway" }
-claw-discovery = { path = "../claw-discovery" }
 claw-metrics = { path = "../claw-metrics" }
 claw-logs = { path = "../claw-logs" }
 claw-alerts = { path = "../claw-alerts" }
@@ -32,6 +31,10 @@ claw-pki = { path = "../claw-pki" }
 claw-autoscaler = { path = "../claw-autoscaler" }
 claw-preemption = { path = "../claw-preemption" }
 claw-rollback = { path = "../claw-rollback" }
+
+# Phase 4: Service Mesh
+claw-discovery = { path = "../claw-discovery" }
+claw-storage = { path = "../claw-storage" }
 
 # MOLT
 molt-core = { path = "../molt-core" }

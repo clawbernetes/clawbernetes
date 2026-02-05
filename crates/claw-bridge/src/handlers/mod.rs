@@ -16,6 +16,8 @@ pub mod observability;
 pub mod operations;
 pub mod pki;
 pub mod secrets;
+pub mod service;
+pub mod storage;
 pub mod tenancy;
 pub mod workload;
 
@@ -120,6 +122,26 @@ async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
         "rollback_plan" => operations::rollback_plan(params).await,
         "rollback_history" => operations::rollback_history(params).await,
         "rollback_trigger_check" => operations::rollback_trigger_check(params).await,
+
+        // ─── Service Discovery ───
+        "service_register" => service::service_register(params).await,
+        "service_get" => service::service_get(params).await,
+        "service_list" => service::service_list(params).await,
+        "service_deregister" => service::service_deregister(params).await,
+        "endpoint_add" => service::endpoint_add(params).await,
+        "endpoint_list" => service::endpoint_list(params).await,
+        "endpoint_select" => service::endpoint_select(params).await,
+
+        // ─── Storage ───
+        "storage_class_create" => storage::storage_class_create(params).await,
+        "storage_class_list" => storage::storage_class_list(params).await,
+        "volume_provision" => storage::volume_provision(params).await,
+        "volume_get" => storage::volume_get(params).await,
+        "volume_list" => storage::volume_list(params).await,
+        "claim_create" => storage::claim_create(params).await,
+        "claim_list" => storage::claim_list(params).await,
+        "claim_bind" => storage::claim_bind(params).await,
+        "reconcile_claims" => storage::reconcile_claims(params).await,
 
         // ─── MOLT Marketplace ───
         "molt_offers" => molt::offers(params).await,
