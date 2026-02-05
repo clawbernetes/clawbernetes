@@ -1,0 +1,44 @@
+[package]
+name = "claw-tui"
+version = "0.1.0"
+edition = "2024"
+description = "Clawbernetes Terminal UI - Read-only cluster visualization"
+license = "Apache-2.0"
+repository = "https://github.com/clawbernetes/clawbernetes"
+
+[[bin]]
+name = "claw-tui"
+path = "src/main.rs"
+
+[dependencies]
+# TUI framework
+ratatui = "0.30"
+crossterm = "0.28"
+
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+url = "2.5"
+
+# Colors and styling
+palette = "0.7"
+
+# Random for demo mode
+rand = "0.8"
+
+[dev-dependencies]
+tokio-test = "0.4"

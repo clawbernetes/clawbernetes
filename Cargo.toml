@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/clawnode",
+    "crates/claw-tui",
     "crates/claw-alerts",
     "crates/claw-audit",
     "crates/claw-auth",
