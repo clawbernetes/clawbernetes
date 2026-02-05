@@ -13,6 +13,8 @@ pub mod cluster;
 pub mod deploy;
 pub mod molt;
 pub mod observability;
+pub mod pki;
+pub mod secrets;
 pub mod tenancy;
 pub mod workload;
 
@@ -84,6 +86,22 @@ async fn dispatch(method: &str, params: Value) -> BridgeResult<Value> {
         "namespace_delete" => tenancy::namespace_delete(params).await,
         "quota_set" => tenancy::quota_set(params).await,
         "usage_report" => tenancy::usage_report(params).await,
+
+        // ─── Secrets ───
+        "secret_put" => secrets::secret_put(params).await,
+        "secret_get" => secrets::secret_get(params).await,
+        "secret_delete" => secrets::secret_delete(params).await,
+        "secret_list" => secrets::secret_list(params).await,
+        "secret_rotate" => secrets::secret_rotate(params).await,
+        "secret_metadata" => secrets::secret_metadata(params).await,
+
+        // ─── PKI / Certificates ───
+        "cert_issue" => pki::cert_issue(params).await,
+        "cert_get" => pki::cert_get(params).await,
+        "cert_list" => pki::cert_list(params).await,
+        "cert_revoke" => pki::cert_revoke(params).await,
+        "cert_rotate" => pki::cert_rotate(params).await,
+        "ca_status" => pki::ca_status(params).await,
 
         // ─── MOLT Marketplace ───
         "molt_offers" => molt::offers(params).await,
