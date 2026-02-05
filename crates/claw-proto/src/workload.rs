@@ -6,13 +6,17 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ProtoError;
+use crate::scheduling::{
+    CompletionMode, ConditionRequirement, GpuRequirement, ParallelConfig, SchedulingGate,
+    SchedulingRequirements,
+};
 use crate::types::{WorkloadId, WorkloadState};
 use crate::validation::{
     validate_env_key, validate_image, validate_resources, ValidationError, ValidationResult,
 };
 
 /// Full workload specification for scheduling and execution.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkloadSpec {
     /// Container image reference (e.g., "nginx:latest", "gcr.io/project/image:v1").
     pub image: String,
@@ -20,12 +24,23 @@ pub struct WorkloadSpec {
     pub command: Vec<String>,
     /// Environment variables.
     pub env: HashMap<String, String>,
-    /// Number of GPUs required.
+    /// Number of GPUs required (simple mode, use `scheduling.gpu_requirement` for advanced).
     pub gpu_count: u32,
     /// Memory limit in megabytes.
     pub memory_mb: u64,
     /// Number of CPU cores.
     pub cpu_cores: u32,
+    /// Advanced scheduling requirements (gates, CEL GPU selection, parallel config).
+    #[serde(default, skip_serializing_if = "is_default_scheduling")]
+    pub scheduling: SchedulingRequirements,
+}
+
+fn is_default_scheduling(s: &SchedulingRequirements) -> bool {
+    s.scheduling_gates.is_empty()
+        && s.gpu_requirement.is_none()
+        && s.required_conditions.is_empty()
+        && s.parallel.is_none()
+        && s.node_selector.is_empty()
 }
 
 impl WorkloadSpec {
@@ -39,6 +54,7 @@ impl WorkloadSpec {
             gpu_count: 0,
             memory_mb: 512,
             cpu_cores: 1,
+            scheduling: SchedulingRequirements::default(),
         }
     }
 
@@ -56,7 +72,7 @@ impl WorkloadSpec {
         self
     }
 
-    /// Set GPU count.
+    /// Set GPU count (simple mode).
     #[must_use]
     pub const fn with_gpu_count(mut self, count: u32) -> Self {
         self.gpu_count = count;
@@ -77,6 +93,90 @@ impl WorkloadSpec {
         self
     }
 
+    /// Add a scheduling gate (workload won't schedule until gate is cleared).
+    #[must_use]
+    pub fn with_scheduling_gate(mut self, gate: SchedulingGate) -> Self {
+        self.scheduling.scheduling_gates.push(gate);
+        self
+    }
+
+    /// Set advanced GPU requirement with CEL selector and fallback.
+    #[must_use]
+    pub fn with_gpu_requirement(mut self, requirement: GpuRequirement) -> Self {
+        self.scheduling.gpu_requirement = Some(requirement);
+        self
+    }
+
+    /// Add a required node condition.
+    #[must_use]
+    pub fn with_required_condition(mut self, condition: ConditionRequirement) -> Self {
+        self.scheduling.required_conditions.push(condition);
+        self
+    }
+
+    /// Configure as a parallel workload.
+    #[must_use]
+    pub fn with_parallel(mut self, config: ParallelConfig) -> Self {
+        self.scheduling.parallel = Some(config);
+        self
+    }
+
+    /// Configure as an indexed parallel workload (for distributed training).
+    #[must_use]
+    pub fn with_indexed_workers(mut self, workers: u32) -> Self {
+        self.scheduling.parallel = Some(ParallelConfig::indexed(workers));
+        self
+    }
+
+    /// Add a node selector label.
+    #[must_use]
+    pub fn with_node_selector(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.scheduling.node_selector.insert(key.into(), value.into());
+        self
+    }
+
+    /// Check if this workload has scheduling gates.
+    #[must_use]
+    pub fn is_gated(&self) -> bool {
+        self.scheduling.is_gated()
+    }
+
+    /// Check if this is a parallel workload.
+    #[must_use]
+    pub fn is_parallel(&self) -> bool {
+        self.scheduling.is_parallel()
+    }
+
+    /// Check if this is an indexed parallel workload.
+    #[must_use]
+    pub fn is_indexed(&self) -> bool {
+        self.scheduling.is_indexed()
+    }
+
+    /// Get the effective GPU count (from advanced requirement or simple field).
+    #[must_use]
+    pub fn effective_gpu_count(&self) -> u32 {
+        self.scheduling
+            .gpu_requirement
+            .as_ref()
+            .map_or(self.gpu_count, |req| req.count)
+    }
+
+    /// Get parallel config if set.
+    #[must_use]
+    pub fn parallel_config(&self) -> Option<&ParallelConfig> {
+        self.scheduling.parallel.as_ref()
+    }
+
+    /// Get completion mode (defaults to NonIndexed).
+    #[must_use]
+    pub fn completion_mode(&self) -> CompletionMode {
+        self.scheduling
+            .parallel
+            .as_ref()
+            .map_or(CompletionMode::NonIndexed, |p| p.completion_mode)
+    }
+
     /// Validate the workload spec.
     ///
     /// # Errors
@@ -90,8 +190,8 @@ impl WorkloadSpec {
             result.add_error(e);
         }
 
-        // Validate resources
-        if let Err(e) = validate_resources(self.memory_mb, self.cpu_cores, self.gpu_count) {
+        // Validate resources (use effective GPU count)
+        if let Err(e) = validate_resources(self.memory_mb, self.cpu_cores, self.effective_gpu_count()) {
             result.add_error(e);
         }
 
@@ -99,6 +199,16 @@ impl WorkloadSpec {
         for key in self.env.keys() {
             if let Err(e) = validate_env_key(key) {
                 result.add_error(e);
+            }
+        }
+
+        // Validate parallel config
+        if let Some(parallel) = &self.scheduling.parallel {
+            if parallel.parallelism == 0 {
+                result.add_error(ValidationError::new("scheduling.parallel.parallelism", "parallelism must be > 0"));
+            }
+            if parallel.completions == 0 {
+                result.add_error(ValidationError::new("scheduling.parallel.completions", "completions must be > 0"));
             }
         }
 
@@ -251,7 +361,7 @@ pub const fn is_valid_transition(from: WorkloadState, to: WorkloadState) -> bool
 }
 
 /// Full workload record combining ID, spec, and status.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Workload {
     /// Unique workload identifier.
     pub id: WorkloadId,

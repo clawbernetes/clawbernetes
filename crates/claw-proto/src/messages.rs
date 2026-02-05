@@ -118,7 +118,7 @@ impl NodeConfig {
 }
 
 /// Messages sent from gateway to node.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GatewayMessage {
     /// Registered.

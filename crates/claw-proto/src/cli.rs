@@ -674,14 +674,11 @@ mod tests {
 
     #[test]
     fn test_start_workload_message() {
-        let spec = WorkloadSpec {
-            image: "nvidia/cuda:12.0".into(),
-            command: vec!["nvidia-smi".into()],
-            env: Default::default(),
-            gpu_count: 1,
-            memory_mb: 8192,
-            cpu_cores: 2,
-        };
+        let spec = WorkloadSpec::new("nvidia/cuda:12.0")
+            .with_command(vec!["nvidia-smi".into()])
+            .with_gpu_count(1)
+            .with_memory_mb(8192)
+            .with_cpu_cores(2);
         let msg = CliMessage::StartWorkload {
             node_id: None,
             spec,
