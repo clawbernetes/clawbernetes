@@ -12,12 +12,16 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod advanced_scheduler;
 pub mod dispatch;
 pub mod logs;
 pub mod registry;
 pub mod scheduler;
 pub mod workload;
 
+pub use advanced_scheduler::{
+    AdvancedScheduler, AdvancedSchedulerError, RejectedNode, ScheduleResult,
+};
 pub use dispatch::{DispatchError, WorkloadDispatcher};
 pub use logs::{WorkloadLogStore, WorkloadLogs, DEFAULT_MAX_LINES};
 pub use registry::{
