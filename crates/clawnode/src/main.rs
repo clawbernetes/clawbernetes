@@ -123,6 +123,7 @@ async fn run_agent(config_path: PathBuf) -> anyhow::Result<()> {
     );
     
     let state = create_state(config.clone());
+    let identity_path = config.state_path.join("device.json");
     
     // Log capabilities
     info!(
@@ -131,7 +132,7 @@ async fn run_agent(config_path: PathBuf) -> anyhow::Result<()> {
         "node capabilities"
     );
     
-    let mut client = GatewayClient::new(state);
+    let mut client = GatewayClient::new(state, identity_path);
     
     // Connect with token if available
     let token = config.token.as_deref();
@@ -157,19 +158,27 @@ async fn join_cluster(gateway: String, token: String) -> anyhow::Result<()> {
         "joining cluster"
     );
     
+    // Use home directory for state on join
+    let state_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".clawnode");
+    
+    std::fs::create_dir_all(&state_path)?;
+    
     // Create minimal config for joining
     let config = NodeConfig {
         gateway: gateway.clone(),
         token: Some(token.clone()),
         hostname,
         labels: HashMap::new(),
-        state_path: PathBuf::from("/var/lib/clawnode"),
+        state_path: state_path.clone(),
         heartbeat_interval_secs: 30,
         reconnect_delay_secs: 5,
         container_runtime: "docker".to_string(),
     };
     
     let state = create_state(config);
+    let identity_path = state_path.join("device.json");
     
     // Log capabilities
     info!(
@@ -178,7 +187,7 @@ async fn join_cluster(gateway: String, token: String) -> anyhow::Result<()> {
         "node capabilities"
     );
     
-    let mut client = GatewayClient::new(state);
+    let mut client = GatewayClient::new(state, identity_path);
     
     // Try to connect
     match client.connect(&gateway, Some(&token)).await {

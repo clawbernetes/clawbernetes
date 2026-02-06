@@ -3,10 +3,12 @@
 //! Implements OpenClaw's node protocol for GPU node integration.
 
 use crate::commands::{handle_command, CommandRequest};
+use crate::identity::{DeviceIdentity, DeviceParams};
 use crate::SharedState;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::{interval, timeout};
@@ -70,6 +72,12 @@ pub struct ConnectParams {
     pub commands: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthParams>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceParams>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,13 +149,31 @@ pub struct NodeInvokeRequestEvent {
 /// Gateway WebSocket client
 pub struct GatewayClient {
     state: SharedState,
+    identity: DeviceIdentity,
     outgoing_tx: Option<mpsc::Sender<RequestFrame>>,
 }
 
 impl GatewayClient {
-    pub fn new(state: SharedState) -> Self {
+    pub fn new(state: SharedState, identity_path: PathBuf) -> Self {
+        let identity = DeviceIdentity::load_or_create(&identity_path)
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "failed to load identity, generating new one");
+                DeviceIdentity::generate()
+            });
+        
+        info!(device_id = %identity.device_id, "using device identity");
+        
         Self {
             state,
+            identity,
+            outgoing_tx: None,
+        }
+    }
+    
+    pub fn with_identity(state: SharedState, identity: DeviceIdentity) -> Self {
+        Self {
+            state,
+            identity,
             outgoing_tx: None,
         }
     }
@@ -162,12 +188,14 @@ impl GatewayClient {
             .await
             .map_err(|_| "connection timeout")??;
 
-        let (mut write, mut read) = ws_stream.split();
+        // These may be reassigned if we need to reconnect after challenge
+        let (write, read) = ws_stream.split();
+        let mut write = write;
+        let mut read = read;
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<RequestFrame>(32);
         self.outgoing_tx = Some(outgoing_tx.clone());
 
         // Generate node identity
-        let node_id = self.generate_node_id();
         let hostname = hostname::get()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
@@ -175,8 +203,48 @@ impl GatewayClient {
         
         let caps = self.state.capabilities.clone();
         let commands = self.state.commands.clone();
+        let node_id = self.identity.device_id.clone();
 
-        // Send connect frame
+        // For remote connections, gateway sends a challenge first
+        // We need to: 1) wait for challenge, 2) sign with challenge nonce, 3) send connect
+        
+        // Wait for challenge (gateway sends this immediately on connection)
+        let challenge_response = timeout(Duration::from_secs(10), read.next())
+            .await
+            .map_err(|_| "challenge timeout")?
+            .ok_or("connection closed waiting for challenge")??;
+
+        let challenge_nonce = if let Message::Text(text) = challenge_response {
+            let frame: Value = serde_json::from_str(&text)?;
+            debug!("received initial frame: {}", text);
+            
+            if let Some(event) = frame.get("event").and_then(|e| e.as_str()) {
+                if event == "connect.challenge" {
+                    frame.get("payload")
+                        .and_then(|p| p.get("nonce"))
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                }
+            } else {
+                // No challenge - maybe local connection?
+                None
+            }
+        } else {
+            None
+        };
+        
+        // Build device params with the challenge nonce
+        let device_params = self.identity.device_params(
+            "clawnode",
+            "node",
+            "node",
+            &["node".to_string()],
+            auth_token,
+            challenge_nonce.as_deref(),
+        );
+        
         let connect_params = ConnectParams {
             min_protocol: PROTOCOL_VERSION,
             max_protocol: PROTOCOL_VERSION,
@@ -191,43 +259,38 @@ impl GatewayClient {
             caps: caps.clone(),
             commands: commands.clone(),
             auth: auth_token.map(|t| AuthParams { token: Some(t.to_string()) }),
+            device: Some(device_params),
+            role: Some("node".to_string()),
+            scopes: Some(vec!["node".to_string()]),
         };
 
-        let connect_frame = json!({
-            "connect": connect_params,
-        });
-        
-        debug!("sending connect frame");
+        // Send connect with device signature
+        let connect_frame = json!({ "connect": &connect_params });
+        info!("sending signed connect with nonce: {:?}", challenge_nonce);
         write.send(Message::Text(connect_frame.to_string().into())).await?;
 
-        // Wait for response (could be hello, challenge, or error)
+        // Wait for hello response
         let response = timeout(Duration::from_secs(10), read.next())
             .await
             .map_err(|_| "hello timeout")?
-            .ok_or("connection closed")??;
+            .ok_or("connection closed waiting for hello")??;
 
         if let Message::Text(text) = response {
             let frame: Value = serde_json::from_str(&text)?;
-            debug!("received initial frame: {}", text);
+            info!("received after connect: {}", text);
             
-            // Handle different response types
             if frame.get("hello").is_some() {
-                info!("connected to gateway, received hello");
-            } else if let Some(event) = frame.get("event").and_then(|e| e.as_str()) {
-                // Gateway may send a challenge event
-                if event == "connect.challenge" {
-                    debug!("received connect.challenge, continuing with pairing");
-                    // We don't have device signing, so we'll just proceed
-                } else {
-                    debug!("received event: {}", event);
-                }
+                info!("connected to gateway with device signature");
             } else if let Some(error) = frame.get("error") {
                 let msg = error.get("message")
                     .and_then(|m| m.as_str())
                     .unwrap_or("unknown error");
                 return Err(format!("gateway error: {}", msg).into());
+            } else if frame.get("event").is_some() {
+                warn!("gateway sent another challenge - signature rejected");
+                return Err("device signature rejected".into());
             } else {
-                debug!("received frame: {}", text);
+                warn!("unexpected response: {}", text);
             }
         }
 

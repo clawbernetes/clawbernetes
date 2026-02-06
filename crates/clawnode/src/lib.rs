@@ -7,6 +7,7 @@ pub mod client;
 pub mod commands;
 pub mod config;
 pub mod gpu;
+pub mod identity;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;

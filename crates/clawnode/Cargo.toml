@@ -43,5 +43,16 @@ url = "2.5"
 # Hostname detection
 hostname = "0.4"
 
+# Directories
+dirs = "6.0"
+
+# Cryptography for device signing
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile = "3.14"
