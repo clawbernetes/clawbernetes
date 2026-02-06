@@ -3,52 +3,26 @@
 //! Handles commands sent from the gateway like gpu.list, workload.run, etc.
 
 use crate::SharedState;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::process::Command;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 /// Command request from gateway
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CommandRequest {
     pub command: String,
     pub params: Value,
-    #[serde(rename = "idempotencyKey")]
-    pub idempotency_key: Option<String>,
 }
 
-/// Command response to gateway
-#[derive(Debug, Clone, Serialize)]
-pub struct CommandResponse {
-    pub success: bool,
-    pub payload: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-impl CommandResponse {
-    pub fn success(payload: Value) -> Self {
-        Self {
-            success: true,
-            payload,
-            error: None,
-        }
-    }
-    
-    pub fn error(message: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            payload: Value::Null,
-            error: Some(message.into()),
-        }
-    }
-}
+/// Command error type
+pub type CommandError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Handle an incoming command
 pub async fn handle_command(
-    state: SharedState,
+    state: &SharedState,
     request: CommandRequest,
-) -> CommandResponse {
+) -> Result<Value, CommandError> {
     debug!(command = %request.command, "handling command");
     
     match request.command.as_str() {
@@ -60,7 +34,7 @@ pub async fn handle_command(
         "workload.stop" => handle_workload_stop(state, request.params).await,
         "workload.logs" => handle_workload_logs(state, request.params).await,
         "container.exec" => handle_container_exec(state, request.params).await,
-        _ => CommandResponse::error(format!("unknown command: {}", request.command)),
+        _ => Err(format!("unknown command: {}", request.command).into()),
     }
 }
 
@@ -68,34 +42,32 @@ pub async fn handle_command(
 // GPU Commands
 // ─────────────────────────────────────────────────────────────
 
-async fn handle_gpu_list(state: SharedState) -> CommandResponse {
+async fn handle_gpu_list(state: &SharedState) -> Result<Value, CommandError> {
     let state = state.read().await;
     let gpus = state.gpu_manager.list();
     
-    CommandResponse::success(json!({
+    Ok(json!({
         "count": gpus.len(),
         "gpus": gpus,
         "total_memory_gb": state.gpu_manager.total_memory_gb(),
     }))
 }
 
-async fn handle_gpu_metrics(state: SharedState) -> CommandResponse {
+async fn handle_gpu_metrics(state: &SharedState) -> Result<Value, CommandError> {
     let state = state.read().await;
+    let metrics = state.gpu_manager.get_metrics()?;
     
-    match state.gpu_manager.get_metrics() {
-        Ok(metrics) => CommandResponse::success(json!({
-            "count": metrics.len(),
-            "metrics": metrics,
-        })),
-        Err(e) => CommandResponse::error(format!("failed to get GPU metrics: {}", e)),
-    }
+    Ok(json!({
+        "count": metrics.len(),
+        "metrics": metrics,
+    }))
 }
 
 // ─────────────────────────────────────────────────────────────
 // System Commands
 // ─────────────────────────────────────────────────────────────
 
-async fn handle_system_info(state: SharedState) -> CommandResponse {
+async fn handle_system_info(state: &SharedState) -> Result<Value, CommandError> {
     use sysinfo::System;
     
     let mut sys = System::new_all();
@@ -103,7 +75,7 @@ async fn handle_system_info(state: SharedState) -> CommandResponse {
     
     let state = state.read().await;
     
-    CommandResponse::success(json!({
+    Ok(json!({
         "hostname": state.config.hostname,
         "os": System::name().unwrap_or_default(),
         "os_version": System::os_version().unwrap_or_default(),
@@ -128,14 +100,11 @@ struct SystemRunParams {
     timeout_ms: Option<u64>,
 }
 
-async fn handle_system_run(_state: SharedState, params: Value) -> CommandResponse {
-    let params: SystemRunParams = match serde_json::from_value(params) {
-        Ok(p) => p,
-        Err(e) => return CommandResponse::error(format!("invalid params: {}", e)),
-    };
+async fn handle_system_run(_state: &SharedState, params: Value) -> Result<Value, CommandError> {
+    let params: SystemRunParams = serde_json::from_value(params)?;
     
     if params.command.is_empty() {
-        return CommandResponse::error("command required");
+        return Err("command required".into());
     }
     
     info!(cmd = ?params.command, "executing system.run");
@@ -155,20 +124,16 @@ async fn handle_system_run(_state: SharedState, params: Value) -> CommandRespons
         }
     }
     
-    match cmd.output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            
-            CommandResponse::success(json!({
-                "exitCode": output.status.code().unwrap_or(-1),
-                "stdout": stdout,
-                "stderr": stderr,
-                "success": output.status.success(),
-            }))
-        }
-        Err(e) => CommandResponse::error(format!("failed to execute: {}", e)),
-    }
+    let output = cmd.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    
+    Ok(json!({
+        "exitCode": output.status.code().unwrap_or(-1),
+        "stdout": stdout,
+        "stderr": stderr,
+        "success": output.status.success(),
+    }))
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -186,11 +151,8 @@ struct WorkloadRunParams {
     detach: Option<bool>,
 }
 
-async fn handle_workload_run(state: SharedState, params: Value) -> CommandResponse {
-    let params: WorkloadRunParams = match serde_json::from_value(params) {
-        Ok(p) => p,
-        Err(e) => return CommandResponse::error(format!("invalid params: {}", e)),
-    };
+async fn handle_workload_run(state: &SharedState, params: Value) -> Result<Value, CommandError> {
+    let params: WorkloadRunParams = serde_json::from_value(params)?;
     
     let runtime = {
         let s = state.read().await;
@@ -249,23 +211,19 @@ async fn handle_workload_run(state: SharedState, params: Value) -> CommandRespon
     
     debug!(cmd = ?cmd, "executing container run");
     
-    match cmd.output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string().trim().to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            
-            if output.status.success() {
-                CommandResponse::success(json!({
-                    "containerId": stdout,
-                    "image": params.image,
-                    "name": params.name,
-                    "success": true,
-                }))
-            } else {
-                CommandResponse::error(format!("container run failed: {}", stderr))
-            }
-        }
-        Err(e) => CommandResponse::error(format!("failed to execute: {}", e)),
+    let output = cmd.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string().trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    
+    if output.status.success() {
+        Ok(json!({
+            "containerId": stdout,
+            "image": params.image,
+            "name": params.name,
+            "success": true,
+        }))
+    } else {
+        Err(format!("container run failed: {}", stderr).into())
     }
 }
 
@@ -277,19 +235,11 @@ struct WorkloadStopParams {
     force: Option<bool>,
 }
 
-async fn handle_workload_stop(state: SharedState, params: Value) -> CommandResponse {
-    let params: WorkloadStopParams = match serde_json::from_value(params) {
-        Ok(p) => p,
-        Err(e) => return CommandResponse::error(format!("invalid params: {}", e)),
-    };
+async fn handle_workload_stop(state: &SharedState, params: Value) -> Result<Value, CommandError> {
+    let params: WorkloadStopParams = serde_json::from_value(params)?;
     
     let target = params.container_id.or(params.name)
-        .ok_or_else(|| "containerId or name required");
-    
-    let target = match target {
-        Ok(t) => t,
-        Err(e) => return CommandResponse::error(e),
-    };
+        .ok_or("containerId or name required")?;
     
     let runtime = {
         let s = state.read().await;
@@ -306,19 +256,16 @@ async fn handle_workload_stop(state: SharedState, params: Value) -> CommandRespo
         cmd.args(["stop", &target]);
     }
     
-    match cmd.output() {
-        Ok(output) => {
-            if output.status.success() {
-                CommandResponse::success(json!({
-                    "stopped": target,
-                    "success": true,
-                }))
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                CommandResponse::error(format!("stop failed: {}", stderr))
-            }
-        }
-        Err(e) => CommandResponse::error(format!("failed to execute: {}", e)),
+    let output = cmd.output()?;
+    
+    if output.status.success() {
+        Ok(json!({
+            "stopped": target,
+            "success": true,
+        }))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        Err(format!("stop failed: {}", stderr).into())
     }
 }
 
@@ -331,19 +278,11 @@ struct WorkloadLogsParams {
     follow: Option<bool>,
 }
 
-async fn handle_workload_logs(state: SharedState, params: Value) -> CommandResponse {
-    let params: WorkloadLogsParams = match serde_json::from_value(params) {
-        Ok(p) => p,
-        Err(e) => return CommandResponse::error(format!("invalid params: {}", e)),
-    };
+async fn handle_workload_logs(state: &SharedState, params: Value) -> Result<Value, CommandError> {
+    let params: WorkloadLogsParams = serde_json::from_value(params)?;
     
     let target = params.container_id.or(params.name)
-        .ok_or_else(|| "containerId or name required");
-    
-    let target = match target {
-        Ok(t) => t,
-        Err(e) => return CommandResponse::error(e),
-    };
+        .ok_or("containerId or name required")?;
     
     let runtime = {
         let s = state.read().await;
@@ -360,19 +299,15 @@ async fn handle_workload_logs(state: SharedState, params: Value) -> CommandRespo
     // Note: follow=true would need streaming support
     cmd.arg(&target);
     
-    match cmd.output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            
-            CommandResponse::success(json!({
-                "logs": stdout,
-                "stderr": stderr,
-                "container": target,
-            }))
-        }
-        Err(e) => CommandResponse::error(format!("failed to execute: {}", e)),
-    }
+    let output = cmd.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    
+    Ok(json!({
+        "logs": stdout,
+        "stderr": stderr,
+        "container": target,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,22 +319,14 @@ struct ContainerExecParams {
     workdir: Option<String>,
 }
 
-async fn handle_container_exec(state: SharedState, params: Value) -> CommandResponse {
-    let params: ContainerExecParams = match serde_json::from_value(params) {
-        Ok(p) => p,
-        Err(e) => return CommandResponse::error(format!("invalid params: {}", e)),
-    };
+async fn handle_container_exec(state: &SharedState, params: Value) -> Result<Value, CommandError> {
+    let params: ContainerExecParams = serde_json::from_value(params)?;
     
     let target = params.container_id.or(params.name)
-        .ok_or_else(|| "containerId or name required");
-    
-    let target = match target {
-        Ok(t) => t,
-        Err(e) => return CommandResponse::error(e),
-    };
+        .ok_or("containerId or name required")?;
     
     if params.command.is_empty() {
-        return CommandResponse::error("command required");
+        return Err("command required".into());
     }
     
     let runtime = {
@@ -417,18 +344,14 @@ async fn handle_container_exec(state: SharedState, params: Value) -> CommandResp
     cmd.arg(&target);
     cmd.args(&params.command);
     
-    match cmd.output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            
-            CommandResponse::success(json!({
-                "exitCode": output.status.code().unwrap_or(-1),
-                "stdout": stdout,
-                "stderr": stderr,
-                "success": output.status.success(),
-            }))
-        }
-        Err(e) => CommandResponse::error(format!("failed to execute: {}", e)),
-    }
+    let output = cmd.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    
+    Ok(json!({
+        "exitCode": output.status.code().unwrap_or(-1),
+        "stdout": stdout,
+        "stderr": stderr,
+        "success": output.status.success(),
+    }))
 }

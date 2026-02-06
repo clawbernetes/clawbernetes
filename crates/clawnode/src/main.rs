@@ -34,7 +34,7 @@ enum Commands {
         #[arg(long)]
         gateway: String,
         
-        /// Bootstrap token
+        /// Bootstrap token or auth token
         #[arg(long)]
         token: String,
         
@@ -86,10 +86,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::Join {
             gateway,
             token,
-            hostname,
-            config,
+            hostname: _hostname,
+            config: _config,
         } => {
-            join_cluster(gateway, token, hostname, config).await?;
+            join_cluster(gateway, token).await?;
         }
         
         Commands::GpuList => {
@@ -122,39 +122,34 @@ async fn run_agent(config_path: PathBuf) -> anyhow::Result<()> {
         "loaded config"
     );
     
-    let state = create_state(config);
+    let state = create_state(config.clone());
     
-    // Log GPU info
-    {
-        let s = state.read().await;
-        info!(
-            gpu_count = s.gpu_manager.count(),
-            caps = ?s.gpu_manager.capabilities(),
-            "detected hardware"
-        );
-    }
+    // Log capabilities
+    info!(
+        caps = ?state.capabilities,
+        commands = ?state.commands,
+        "node capabilities"
+    );
     
     let mut client = GatewayClient::new(state);
     
-    if let Err(e) = client.run().await {
-        error!(error = %e, "agent error");
-        return Err(e);
-    }
+    // Connect with token if available
+    let token = config.token.as_deref();
     
-    Ok(())
+    loop {
+        if let Err(e) = client.connect(&config.gateway, token).await {
+            error!(error = %e, "connection error");
+        }
+        
+        info!(delay = config.reconnect_delay_secs, "reconnecting in {} seconds", config.reconnect_delay_secs);
+        tokio::time::sleep(std::time::Duration::from_secs(config.reconnect_delay_secs)).await;
+    }
 }
 
-async fn join_cluster(
-    gateway: String,
-    token: String,
-    hostname: Option<String>,
-    config_path: PathBuf,
-) -> anyhow::Result<()> {
-    let hostname = hostname.unwrap_or_else(|| {
-        hostname::get()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_string())
-    });
+async fn join_cluster(gateway: String, token: String) -> anyhow::Result<()> {
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
     
     info!(
         gateway = %gateway,
@@ -162,10 +157,10 @@ async fn join_cluster(
         "joining cluster"
     );
     
-    // Create config
+    // Create minimal config for joining
     let config = NodeConfig {
-        gateway,
-        token: Some(token),
+        gateway: gateway.clone(),
+        token: Some(token.clone()),
         hostname,
         labels: HashMap::new(),
         state_path: PathBuf::from("/var/lib/clawnode"),
@@ -174,20 +169,28 @@ async fn join_cluster(
         container_runtime: "docker".to_string(),
     };
     
-    // Save config
-    config.save(&config_path)?;
-    info!(path = %config_path.display(), "saved config");
+    let state = create_state(config);
     
-    println!("Configuration saved to {}", config_path.display());
-    println!();
-    println!("To start the agent:");
-    println!("  clawnode run --config {}", config_path.display());
-    println!();
-    println!("Or install as a systemd service:");
-    println!("  sudo systemctl enable clawnode");
-    println!("  sudo systemctl start clawnode");
+    // Log capabilities
+    info!(
+        caps = ?state.capabilities,
+        commands = ?state.commands,
+        "node capabilities"
+    );
     
-    Ok(())
+    let mut client = GatewayClient::new(state);
+    
+    // Try to connect
+    match client.connect(&gateway, Some(&token)).await {
+        Ok(_) => {
+            info!("joined cluster successfully");
+            Ok(())
+        }
+        Err(e) => {
+            error!(error = %e, "failed to join cluster");
+            anyhow::bail!("{}", e)
+        }
+    }
 }
 
 fn gpu_list() -> anyhow::Result<()> {
