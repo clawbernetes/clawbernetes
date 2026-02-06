@@ -17,7 +17,7 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
-const PROTOCOL_VERSION: u32 = 1;
+const PROTOCOL_VERSION: u32 = 3;  // Must match gateway's PROTOCOL_VERSION
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// OpenClaw gateway frame types
@@ -31,10 +31,23 @@ pub enum GatewayFrame {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestFrame {
+    #[serde(rename = "type")]
+    pub frame_type: String,  // Always "req"
     pub id: String,
     pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
+}
+
+impl RequestFrame {
+    pub fn new(id: String, method: String, params: Option<Value>) -> Self {
+        Self {
+            frame_type: "req".to_string(),
+            id,
+            method,
+            params,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,7 +151,7 @@ pub struct NodeInvokeRequestEvent {
     pub id: String,
     pub node_id: String,
     pub command: String,
-    #[serde(default)]
+    #[serde(default, rename = "paramsJSON")]
     pub params_json: Option<String>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
@@ -209,47 +222,63 @@ impl GatewayClient {
         // We need to: 1) wait for challenge, 2) sign with challenge nonce, 3) send connect
         
         // Wait for challenge (gateway sends this immediately on connection)
+        info!("waiting for challenge from gateway...");
         let challenge_response = timeout(Duration::from_secs(10), read.next())
             .await
             .map_err(|_| "challenge timeout")?
             .ok_or("connection closed waiting for challenge")??;
 
-        let challenge_nonce = if let Message::Text(text) = challenge_response {
-            let frame: Value = serde_json::from_str(&text)?;
-            debug!("received initial frame: {}", text);
-            
-            if let Some(event) = frame.get("event").and_then(|e| e.as_str()) {
-                if event == "connect.challenge" {
-                    frame.get("payload")
-                        .and_then(|p| p.get("nonce"))
-                        .and_then(|n| n.as_str())
-                        .map(|s| s.to_string())
+        let challenge_nonce = match &challenge_response {
+            Message::Text(text) => {
+                let frame: Value = serde_json::from_str(text)?;
+                info!("received from gateway: {}", text);
+                
+                if let Some(event) = frame.get("event").and_then(|e| e.as_str()) {
+                    if event == "connect.challenge" {
+                        frame.get("payload")
+                            .and_then(|p| p.get("nonce"))
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string())
+                    } else {
+                        warn!("unexpected event: {}", event);
+                        None
+                    }
+                } else if let Some(error) = frame.get("error") {
+                    let msg = error.get("message").and_then(|m| m.as_str()).unwrap_or("unknown");
+                    return Err(format!("gateway error on connect: {}", msg).into());
                 } else {
+                    warn!("unexpected frame type");
                     None
                 }
-            } else {
-                // No challenge - maybe local connection?
+            }
+            Message::Close(frame) => {
+                let reason = frame.as_ref().map(|f| f.reason.to_string()).unwrap_or_default();
+                return Err(format!("gateway closed connection: {}", reason).into());
+            }
+            other => {
+                warn!("unexpected message type: {:?}", other);
                 None
             }
-        } else {
-            None
         };
+        
+        let challenge_nonce = challenge_nonce.ok_or("no challenge nonce received")?;
+        info!("got challenge nonce: {}", challenge_nonce);
         
         // Build device params with the challenge nonce
         let device_params = self.identity.device_params(
-            "clawnode",
+            "node-host",
             "node",
             "node",
             &["node".to_string()],
             auth_token,
-            challenge_nonce.as_deref(),
+            Some(&challenge_nonce),
         );
         
         let connect_params = ConnectParams {
             min_protocol: PROTOCOL_VERSION,
             max_protocol: PROTOCOL_VERSION,
             client: ClientInfo {
-                id: "clawnode".to_string(),
+                id: "node-host".to_string(),  // Must match GATEWAY_CLIENT_IDS.NODE_HOST
                 display_name: hostname.clone(),
                 version: CLIENT_VERSION.to_string(),
                 platform: platform.clone(),
@@ -264,23 +293,72 @@ impl GatewayClient {
             scopes: Some(vec!["node".to_string()]),
         };
 
-        // Send connect with device signature
-        let connect_frame = json!({ "connect": &connect_params });
-        info!("sending signed connect with nonce: {:?}", challenge_nonce);
-        write.send(Message::Text(connect_frame.to_string().into())).await?;
+        // Send connect with device signature - must be a proper RequestFrame
+        let connect_frame = json!({
+            "type": "req",
+            "id": Uuid::new_v4().to_string(),
+            "method": "connect",
+            "params": &connect_params
+        });
+        info!("sending signed connect...");
+        debug!("connect frame: {}", connect_frame);
+        
+        match write.send(Message::Text(connect_frame.to_string().into())).await {
+            Ok(_) => info!("sent connect frame successfully"),
+            Err(e) => {
+                error!("failed to send connect: {}", e);
+                return Err(format!("failed to send connect: {}", e).into());
+            }
+        }
+        
+        // Flush to ensure message is sent
+        if let Err(e) = write.flush().await {
+            warn!("flush error (may be ok): {}", e);
+        }
 
         // Wait for hello response
-        let response = timeout(Duration::from_secs(10), read.next())
-            .await
-            .map_err(|_| "hello timeout")?
-            .ok_or("connection closed waiting for hello")??;
+        info!("waiting for hello response...");
+        let response = match timeout(Duration::from_secs(10), read.next()).await {
+            Ok(Some(Ok(msg))) => msg,
+            Ok(Some(Err(e))) => {
+                error!("websocket read error: {}", e);
+                return Err(format!("websocket error: {}", e).into());
+            }
+            Ok(None) => {
+                error!("connection closed while waiting for hello");
+                return Err("connection closed by gateway".into());
+            }
+            Err(_) => {
+                error!("hello timeout");
+                return Err("hello timeout".into());
+            }
+        };
 
+        let mut already_paired = false;
         if let Message::Text(text) = response {
             let frame: Value = serde_json::from_str(&text)?;
-            info!("received after connect: {}", text);
+            debug!("received after connect: {}", text);
             
-            if frame.get("hello").is_some() {
-                info!("connected to gateway with device signature");
+            // Check for hello-ok in payload.type
+            let is_hello_ok = frame.get("ok").and_then(|v| v.as_bool()).unwrap_or(false)
+                && frame.get("payload")
+                    .and_then(|p| p.get("type"))
+                    .and_then(|t| t.as_str())
+                    .map(|t| t == "hello-ok")
+                    .unwrap_or(false);
+            
+            if is_hello_ok {
+                info!("connected to gateway successfully!");
+                already_paired = true;  // We got hello-ok, so we're already paired
+                // Extract device token if provided
+                if let Some(token) = frame.get("payload")
+                    .and_then(|p| p.get("auth"))
+                    .and_then(|a| a.get("deviceToken"))
+                    .and_then(|t| t.as_str())
+                {
+                    info!("received device token");
+                    debug!("device token: {}", token);
+                }
             } else if let Some(error) = frame.get("error") {
                 let msg = error.get("message")
                     .and_then(|m| m.as_str())
@@ -290,11 +368,15 @@ impl GatewayClient {
                 warn!("gateway sent another challenge - signature rejected");
                 return Err("device signature rejected".into());
             } else {
-                warn!("unexpected response: {}", text);
+                warn!("unexpected response format");
             }
         }
 
-        // Request pairing
+        // Skip pairing request if we're already paired (got hello-ok)
+        if already_paired {
+            info!("already paired, skipping pairing request");
+        } else {
+            // Request pairing
         let pair_request = NodePairRequestParams {
             node_id: node_id.clone(),
             display_name: hostname.clone(),
@@ -306,11 +388,11 @@ impl GatewayClient {
         };
 
         let request_id = Uuid::new_v4().to_string();
-        let pair_frame = RequestFrame {
-            id: request_id.clone(),
-            method: "node.pair.request".to_string(),
-            params: Some(serde_json::to_value(&pair_request)?),
-        };
+        let pair_frame = RequestFrame::new(
+            request_id.clone(),
+            "node.pair.request".to_string(),
+            Some(serde_json::to_value(&pair_request)?),
+        );
 
         debug!("sending node.pair.request");
         write.send(Message::Text(serde_json::to_string(&pair_frame)?.into())).await?;
@@ -370,6 +452,7 @@ impl GatewayClient {
                 _ => {}
             }
         }
+        }  // end else (not already_paired)
 
         info!("node registered as {} ({})", hostname, node_id);
 
@@ -418,16 +501,16 @@ impl GatewayClient {
 
                 // Send heartbeat
                 _ = heartbeat_interval.tick() => {
-                    let heartbeat = RequestFrame {
-                        id: Uuid::new_v4().to_string(),
-                        method: "node.event".to_string(),
-                        params: Some(json!({
+                    let heartbeat = RequestFrame::new(
+                        Uuid::new_v4().to_string(),
+                        "node.event".to_string(),
+                        Some(json!({
                             "event": "heartbeat",
                             "payload": {
                                 "nodeId": node_id_clone,
                             }
                         })),
-                    };
+                    );
                     if let Err(e) = outgoing_tx.send(heartbeat).await {
                         error!("heartbeat send error: {}", e);
                         break;
@@ -528,11 +611,11 @@ impl GatewayClient {
             },
         };
 
-        let response = RequestFrame {
-            id: Uuid::new_v4().to_string(),
-            method: "node.invoke.result".to_string(),
-            params: Some(serde_json::to_value(&result_params)?),
-        };
+        let response = RequestFrame::new(
+            Uuid::new_v4().to_string(),
+            "node.invoke.result".to_string(),
+            Some(serde_json::to_value(&result_params)?),
+        );
 
         outgoing_tx.send(response).await?;
         Ok(())
@@ -582,11 +665,11 @@ pub async fn send_result(
         }),
     };
 
-    let frame = RequestFrame {
-        id: Uuid::new_v4().to_string(),
-        method: "node.invoke.result".to_string(),
-        params: Some(serde_json::to_value(&result_params).unwrap()),
-    };
+    let frame = RequestFrame::new(
+        Uuid::new_v4().to_string(),
+        "node.invoke.result".to_string(),
+        Some(serde_json::to_value(&result_params).unwrap()),
+    );
 
     tx.send(frame).await
 }
