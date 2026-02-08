@@ -1,3 +1,8 @@
+---
+name: secrets-config
+description: Encrypted secrets and configuration management for Clawbernetes nodes
+---
+
 # Secrets & Configuration Manager
 
 You can create, retrieve, rotate, and delete encrypted secrets and plain configuration data on Clawbernetes nodes.

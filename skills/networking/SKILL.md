@@ -1,3 +1,12 @@
+---
+name: networking
+description: Service mesh, ingress, and WireGuard networking for Clawbernetes clusters
+metadata:
+  openclaw:
+    requires:
+      bins: ["clawnode"]
+---
+
 # Networking
 
 Manage services, ingress routes, network policies, mesh connectivity, and workload networking on Clawbernetes nodes.

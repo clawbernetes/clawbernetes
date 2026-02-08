@@ -1,3 +1,8 @@
+---
+name: clawbernetes
+description: Fleet-level GPU cluster management overview — node orchestration, workloads, and multi-node operations
+---
+
 # Clawbernetes Fleet Management Skill
 
 ## Description

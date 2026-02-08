@@ -1,3 +1,9 @@
+---
+name: gpu-diagnose
+description: GPU troubleshooting — performance issues, memory errors, thermal throttling, and hardware failures
+user-invocable: false
+---
+
 # GPU Diagnose
 
 Diagnose GPU issues including performance problems, memory errors, thermal throttling, and hardware failures.

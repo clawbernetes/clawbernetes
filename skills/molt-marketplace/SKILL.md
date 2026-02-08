@@ -1,3 +1,12 @@
+---
+name: molt-marketplace
+description: P2P GPU compute marketplace — discover providers, bid, and trade capacity via MOLT
+metadata:
+  openclaw:
+    requires:
+      bins: ["clawnode"]
+---
+
 # MOLT Marketplace
 
 You can discover GPU providers, submit bids for compute, and manage marketplace interactions on the MOLT decentralized GPU network.

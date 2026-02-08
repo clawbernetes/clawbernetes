@@ -1,0 +1,53 @@
+{
+  "id": "clawbernetes",
+  "name": "Clawbernetes GPU Cluster",
+  "description": "Fleet-level GPU cluster management for OpenClaw — aggregate tools, skills, and monitoring",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "gatewayUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:18789",
+        "description": "Gateway URL for node.invoke calls"
+      },
+      "healthIntervalMs": {
+        "type": "number",
+        "default": 60000,
+        "description": "Fleet health check interval in milliseconds"
+      },
+      "invokeTimeoutMs": {
+        "type": "number",
+        "default": 30000,
+        "description": "Default timeout for node.invoke calls"
+      }
+    }
+  },
+  "uiHints": {
+    "gatewayUrl": { "label": "Gateway URL", "placeholder": "http://127.0.0.1:18789" },
+    "healthIntervalMs": { "label": "Health Check Interval (ms)" },
+    "invokeTimeoutMs": { "label": "Invoke Timeout (ms)" }
+  },
+  "skills": [
+    "../../skills/gpu-cluster",
+    "../../skills/workload-manager",
+    "../../skills/system-admin",
+    "../../skills/secrets-config",
+    "../../skills/observability",
+    "../../skills/auth-rbac",
+    "../../skills/job-scheduler",
+    "../../skills/storage",
+    "../../skills/networking",
+    "../../skills/autoscaler",
+    "../../skills/molt-marketplace",
+    "../../skills/clawbernetes",
+    "../../skills/auto-heal",
+    "../../skills/canary-release",
+    "../../skills/blue-green-deploy",
+    "../../skills/spot-migration",
+    "../../skills/cost-optimize",
+    "../../skills/training-job",
+    "../../skills/incident-response",
+    "../../skills/gpu-diagnose"
+  ]
+}

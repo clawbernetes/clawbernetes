@@ -1,3 +1,9 @@
+---
+name: incident-response
+description: Structured SRE incident response — detection, triage, mitigation, and post-mortem
+user-invocable: false
+---
+
 # Incident Response
 
 Structured approach to handling production incidents — detection, triage, mitigation, and post-mortem.

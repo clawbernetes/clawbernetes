@@ -1,3 +1,8 @@
+---
+name: gpu-cluster
+description: Discover and manage GPU compute nodes in the Clawbernetes cluster
+---
+
 # GPU Cluster Management
 
 You can discover and manage GPU compute nodes in the Clawbernetes cluster.

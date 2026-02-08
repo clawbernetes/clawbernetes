@@ -1,3 +1,9 @@
+---
+name: auto-heal
+description: Automatically detect and recover from infrastructure failures in Clawbernetes clusters
+user-invocable: false
+---
+
 # Auto-Heal
 
 Automatically detect and recover from common infrastructure failures including node failures, workload crashes, and resource exhaustion.

@@ -1,3 +1,9 @@
+---
+name: blue-green-deploy
+description: Zero-downtime blue-green deployment strategy for Clawbernetes workloads
+user-invocable: false
+---
+
 # Blue-Green Deploy
 
 Deploy with zero-downtime using blue-green strategy — maintain two identical environments and switch traffic instantly.

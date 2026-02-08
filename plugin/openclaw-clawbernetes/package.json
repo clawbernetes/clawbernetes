@@ -1,0 +1,45 @@
+{
+  "name": "@clawbernetes/openclaw-plugin",
+  "version": "0.1.0",
+  "description": "GPU cluster management for OpenClaw — fleet tools, skills, and monitoring",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "openclaw.plugin.json"
+  ],
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "clawbernetes",
+    "gpu",
+    "kubernetes",
+    "cluster",
+    "fleet"
+  ],
+  "author": "Clawbernetes",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "openclaw": {
+    "plugin": true,
+    "tools": true,
+    "skills": "./skills"
+  }
+}

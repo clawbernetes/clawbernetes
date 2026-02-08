@@ -1,3 +1,8 @@
+---
+name: observability
+description: Metrics, events, and alerts for Clawbernetes cluster observability
+---
+
 # Observability
 
 You can query metrics, emit and query events, and manage alert rules on Clawbernetes nodes.

@@ -1,3 +1,8 @@
+---
+name: workload-manager
+description: Container lifecycle management for GPU workloads on Clawbernetes nodes
+---
+
 # Workload Manager
 
 You can run, monitor, and manage container workloads across Clawbernetes nodes.

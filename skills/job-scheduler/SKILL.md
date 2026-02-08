@@ -1,3 +1,12 @@
+---
+name: job-scheduler
+description: One-shot jobs and cron scheduling for Clawbernetes workloads
+metadata:
+  openclaw:
+    requires:
+      bins: ["clawnode"]
+---
+
 # Job Scheduler
 
 You can create and manage batch jobs and cron schedules on Clawbernetes nodes.

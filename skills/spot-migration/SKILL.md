@@ -1,3 +1,9 @@
+---
+name: spot-migration
+description: Cost optimization by migrating workloads between spot and on-demand capacity via MOLT
+user-invocable: false
+---
+
 # Spot Migration
 
 Migrate workloads between spot/preemptible and on-demand capacity to optimize costs while maintaining availability.

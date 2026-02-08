@@ -1,3 +1,12 @@
+---
+name: autoscaler
+description: GPU-aware autoscaling policies for Clawbernetes node pools
+metadata:
+  openclaw:
+    requires:
+      bins: ["clawnode"]
+---
+
 # Autoscaler
 
 You can create and manage autoscaling policies for GPU node pools on Clawbernetes nodes.

@@ -1,3 +1,9 @@
+---
+name: cost-optimize
+description: Analyze and reduce GPU cluster costs without impacting performance
+user-invocable: false
+---
+
 # Cost Optimize
 
 Analyze GPU cluster costs and recommend optimizations to reduce spending without impacting performance.

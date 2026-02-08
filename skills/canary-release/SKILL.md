@@ -1,3 +1,9 @@
+---
+name: canary-release
+description: Gradual canary deployment strategy for Clawbernetes workloads
+user-invocable: false
+---
+
 # Canary Release
 
 Deploy workloads with canary strategy — gradual rollout with automatic rollback on failure.

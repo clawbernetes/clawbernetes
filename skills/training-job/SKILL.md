@@ -1,3 +1,9 @@
+---
+name: training-job
+description: ML/AI training job orchestration with resource allocation and checkpointing
+user-invocable: false
+---
+
 # Training Job
 
 Submit and manage ML/AI training jobs with proper resource allocation, checkpointing, and monitoring.

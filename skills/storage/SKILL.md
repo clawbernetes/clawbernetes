@@ -1,3 +1,12 @@
+---
+name: storage
+description: Volume provisioning, snapshots, and backup management for Clawbernetes nodes
+metadata:
+  openclaw:
+    requires:
+      bins: ["clawnode"]
+---
+
 # Storage & Volumes
 
 You can provision, mount, snapshot, and manage persistent volumes and backups on Clawbernetes nodes.

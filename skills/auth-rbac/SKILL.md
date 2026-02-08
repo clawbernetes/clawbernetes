@@ -1,3 +1,12 @@
+---
+name: auth-rbac
+description: API key management, role-based access control, and audit logging for Clawbernetes nodes
+metadata:
+  openclaw:
+    requires:
+      bins: ["clawnode"]
+---
+
 # Auth, RBAC & Audit
 
 You can manage API keys, role-based access control, and audit logging on Clawbernetes nodes.

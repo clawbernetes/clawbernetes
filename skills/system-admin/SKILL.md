@@ -1,3 +1,8 @@
+---
+name: system-admin
+description: System information, node management, and cluster administration for Clawbernetes
+---
+
 # System Administration
 
 You can run system commands, gather diagnostics, and monitor node health across the Clawbernetes cluster.
