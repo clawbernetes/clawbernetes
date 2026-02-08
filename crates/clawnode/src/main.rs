@@ -8,6 +8,8 @@ use clawnode::{config::NodeConfig, create_state, GatewayClient, GpuManager};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{error, info};
+#[cfg(feature = "network")]
+use tracing::warn;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser)]
@@ -123,8 +125,17 @@ async fn run_agent(config_path: PathBuf) -> anyhow::Result<()> {
     );
     
     let state = create_state(config.clone());
+
+    // Initialize networking if enabled and compiled in
+    #[cfg(feature = "network")]
+    if config.network_enabled {
+        if let Err(e) = init_networking(&state, &config).await {
+            warn!(error = %e, "networking unavailable, continuing without mesh");
+        }
+    }
+
     let identity_path = config.state_path.join("device.json");
-    
+
     // Log capabilities
     info!(
         caps = ?state.capabilities,
@@ -175,6 +186,11 @@ async fn join_cluster(gateway: String, token: String) -> anyhow::Result<()> {
         heartbeat_interval_secs: 30,
         reconnect_delay_secs: 5,
         container_runtime: "docker".to_string(),
+        network_enabled: false,
+        region: "us-west".to_string(),
+        wireguard_listen_port: 51820,
+        ingress_listen_port: 8443,
+        wireguard_endpoint: None,
     };
     
     let state = create_state(config);
@@ -200,6 +216,93 @@ async fn join_cluster(gateway: String, token: String) -> anyhow::Result<()> {
             anyhow::bail!("{}", e)
         }
     }
+}
+
+/// Initialize the networking stack: mesh, workload networking, service discovery,
+/// network policies, and optionally the ingress proxy.
+///
+/// Any step that fails logs a warning and the function returns early with an error.
+/// The node continues to operate without networking in that case.
+#[cfg(feature = "network")]
+async fn init_networking(
+    state: &clawnode::SharedState,
+    config: &NodeConfig,
+) -> anyhow::Result<()> {
+    use clawnode::{
+        ingress_proxy::{IngressProxyConfig, start_proxy},
+        mesh::{parse_region, MeshManager},
+        netpolicy::PolicyEngine,
+        service_discovery::ServiceDiscovery,
+        workload_net::WorkloadNetManager,
+    };
+
+    // 1. Parse region
+    let region = parse_region(&config.region);
+
+    // 2. Generate WireGuard keypair
+    let (_private_key, public_key) = claw_wireguard::generate_keypair();
+    let pubkey_b64 = public_key.to_base64();
+
+    // 3. Parse endpoint
+    let endpoint = config
+        .wireguard_endpoint
+        .as_ref()
+        .and_then(|ep| ep.parse::<std::net::SocketAddr>().ok());
+
+    // 4. Init MeshManager
+    let mesh_mgr = MeshManager::init(
+        state.wireguard_mesh.clone(),
+        region,
+        pubkey_b64,
+        endpoint,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    info!(
+        mesh_ip = %mesh_mgr.mesh_ip(),
+        region = %mesh_mgr.region(),
+        "mesh networking initialized"
+    );
+
+    // 5. Init WorkloadNetManager from the mesh subnet
+    let workload_subnet = mesh_mgr
+        .workload_subnet()
+        .ok_or_else(|| anyhow::anyhow!("workload subnet is not IPv4"))?;
+
+    let wn_mgr = WorkloadNetManager::init(workload_subnet, mesh_mgr.interface_name())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    info!(subnet = %workload_subnet, "workload networking initialized");
+
+    // 6. Init ServiceDiscovery
+    let sd = ServiceDiscovery::new();
+    info!("service discovery initialized");
+
+    // 7. Init PolicyEngine
+    let pe = PolicyEngine::new();
+    info!("network policy engine initialized");
+
+    // Store all in shared state
+    *state.mesh_manager.write().await = Some(mesh_mgr);
+    *state.workload_net.write().await = Some(wn_mgr);
+    *state.service_discovery.write().await = Some(sd);
+    *state.policy_engine.write().await = Some(pe);
+
+    // 8. Start ingress proxy (if port > 0)
+    if config.ingress_listen_port > 0 {
+        let proxy_config = IngressProxyConfig {
+            listen_addr: ([0, 0, 0, 0], config.ingress_listen_port).into(),
+        };
+        let routes = state.ingress_routes.clone();
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            if let Err(e) = start_proxy(proxy_config, routes, shutdown_rx).await {
+                warn!(error = %e, "ingress proxy stopped");
+            }
+        });
+        info!(port = config.ingress_listen_port, "ingress proxy started");
+    }
+
+    Ok(())
 }
 
 fn gpu_list() -> anyhow::Result<()> {
@@ -316,6 +419,11 @@ fn init_config(output: PathBuf, gateway: String) -> anyhow::Result<()> {
         heartbeat_interval_secs: 30,
         reconnect_delay_secs: 5,
         container_runtime: "docker".to_string(),
+        network_enabled: false,
+        region: "us-west".to_string(),
+        wireguard_listen_port: 51820,
+        ingress_listen_port: 8443,
+        wireguard_endpoint: None,
     };
     
     config.save(&output)?;

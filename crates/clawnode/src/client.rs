@@ -91,6 +91,9 @@ pub struct ConnectParams {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
+    #[cfg(feature = "network")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<crate::mesh::MeshInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -274,6 +277,19 @@ impl GatewayClient {
             Some(&challenge_nonce),
         );
         
+        // Build mesh info from active mesh manager (if networking is initialized)
+        #[cfg(feature = "network")]
+        let mesh_info = {
+            let mgr = self.state.mesh_manager.read().await;
+            mgr.as_ref().map(|m| crate::mesh::MeshInfo {
+                mesh_ip: m.mesh_ip().to_string(),
+                wireguard_pubkey: m.public_key().to_string(),
+                wireguard_port: m.listen_port(),
+                region: format!("{}", m.region()),
+                endpoint: None,
+            })
+        };
+
         let connect_params = ConnectParams {
             min_protocol: PROTOCOL_VERSION,
             max_protocol: PROTOCOL_VERSION,
@@ -291,6 +307,8 @@ impl GatewayClient {
             device: Some(device_params),
             role: Some("node".to_string()),
             scopes: Some(vec!["node".to_string()]),
+            #[cfg(feature = "network")]
+            mesh: mesh_info,
         };
 
         // Send connect with device signature - must be a proper RequestFrame
@@ -501,14 +519,29 @@ impl GatewayClient {
 
                 // Send heartbeat
                 _ = heartbeat_interval.tick() => {
+                    let mut payload = json!({
+                        "nodeId": node_id_clone,
+                    });
+
+                    // Enrich heartbeat with mesh status if available
+                    #[cfg(feature = "network")]
+                    {
+                        let mgr = self.state.mesh_manager.read().await;
+                        if let Some(ref m) = *mgr {
+                            let status = m.status().await;
+                            if let Some(obj) = payload.as_object_mut() {
+                                obj.insert("meshIp".to_string(), json!(status.mesh_ip));
+                                obj.insert("peerCount".to_string(), json!(status.peers.len()));
+                            }
+                        }
+                    }
+
                     let heartbeat = RequestFrame::new(
                         Uuid::new_v4().to_string(),
                         "node.event".to_string(),
                         Some(json!({
                             "event": "heartbeat",
-                            "payload": {
-                                "nodeId": node_id_clone,
-                            }
+                            "payload": payload,
                         })),
                     );
                     if let Err(e) = outgoing_tx.send(heartbeat).await {
@@ -542,6 +575,33 @@ impl GatewayClient {
                 }
                 "tick" => {
                     // Gateway tick, ignore
+                }
+                #[cfg(feature = "network")]
+                "mesh.peer.join" => {
+                    if let Some(payload) = frame.get("payload") {
+                        match serde_json::from_value::<crate::mesh::PeerInfo>(payload.clone()) {
+                            Ok(peer) => {
+                                let mgr = self.state.mesh_manager.read().await;
+                                if let Some(ref m) = *mgr {
+                                    if let Err(e) = m.add_remote_peer(peer).await {
+                                        warn!(error = %e, "failed to add mesh peer");
+                                    }
+                                }
+                            }
+                            Err(e) => warn!(error = %e, "invalid mesh.peer.join payload"),
+                        }
+                    }
+                }
+                #[cfg(feature = "network")]
+                "mesh.peer.leave" => {
+                    if let Some(payload) = frame.get("payload") {
+                        if let Some(peer_node_id) = payload.get("nodeId").and_then(|v| v.as_str()) {
+                            let mgr = self.state.mesh_manager.read().await;
+                            if let Some(ref m) = *mgr {
+                                let _ = m.remove_remote_peer(peer_node_id).await;
+                            }
+                        }
+                    }
                 }
                 _ => {
                     debug!("unhandled event: {}", event);

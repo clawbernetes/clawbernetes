@@ -35,6 +35,26 @@ pub struct NodeConfig {
     /// Container runtime (docker, podman, containerd)
     #[serde(default = "default_runtime")]
     pub container_runtime: String,
+
+    /// Enable mesh networking (requires network feature at compile time)
+    #[serde(default)]
+    pub network_enabled: bool,
+
+    /// Region for mesh IP allocation (e.g., "us-west", "us-east", "eu-west")
+    #[serde(default = "default_region")]
+    pub region: String,
+
+    /// WireGuard listen port
+    #[serde(default = "default_wireguard_port")]
+    pub wireguard_listen_port: u16,
+
+    /// Ingress proxy listen port (0 = disabled)
+    #[serde(default = "default_ingress_port")]
+    pub ingress_listen_port: u16,
+
+    /// Public endpoint for WireGuard (other nodes connect to this)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wireguard_endpoint: Option<String>,
 }
 
 fn default_state_path() -> PathBuf {
@@ -53,6 +73,18 @@ fn default_runtime() -> String {
     "docker".to_string()
 }
 
+fn default_region() -> String {
+    "us-west".to_string()
+}
+
+fn default_wireguard_port() -> u16 {
+    51820
+}
+
+fn default_ingress_port() -> u16 {
+    8443
+}
+
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
@@ -66,6 +98,11 @@ impl Default for NodeConfig {
             heartbeat_interval_secs: default_heartbeat_interval(),
             reconnect_delay_secs: default_reconnect_delay(),
             container_runtime: default_runtime(),
+            network_enabled: false,
+            region: default_region(),
+            wireguard_listen_port: default_wireguard_port(),
+            ingress_listen_port: default_ingress_port(),
+            wireguard_endpoint: None,
         }
     }
 }
