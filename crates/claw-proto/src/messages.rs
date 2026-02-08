@@ -245,6 +245,18 @@ pub enum GatewayMessage {
         /// Public keys of peers to remove (base64 encoded).
         peer_public_keys: Vec<String>,
     },
+    /// Raw event frame for OpenClaw protocol bridge.
+    ///
+    /// This variant bypasses the normal tagged serialization and is serialized
+    /// as `{"event": "...", "payload": {...}}` by `gateway_msg_to_ws()` in the
+    /// gateway server. Used to send OpenClaw-format events to nodes (e.g.,
+    /// `node.invoke.request`).
+    RawEvent {
+        /// Event name (e.g., "node.invoke.request").
+        event: String,
+        /// Event payload.
+        payload: serde_json::Value,
+    },
     /// Error.
     Error {
         /// Code.
@@ -703,6 +715,22 @@ mod tests {
         }
 
         assert!(msg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_raw_event_construction() {
+        let msg = GatewayMessage::RawEvent {
+            event: "node.invoke.request".to_string(),
+            payload: serde_json::json!({
+                "id": "test-id",
+                "nodeId": "node-1",
+                "command": "gpu.list",
+            }),
+        };
+        // RawEvent uses tagged serde, but gateway_msg_to_ws() handles it specially.
+        // Here we just verify it can be created and cloned.
+        let cloned = msg.clone();
+        assert_eq!(msg, cloned);
     }
 
     #[test]

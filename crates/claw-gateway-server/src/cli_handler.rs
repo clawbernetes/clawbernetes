@@ -4,6 +4,7 @@
 //! node connections. CLI connections use the CLI protocol for administrative
 //! operations like listing nodes, managing workloads, and querying status.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -15,22 +16,23 @@ use claw_proto::cli::{
     NodeState, WorkloadInfo, CLI_PROTOCOL_VERSION,
 };
 use claw_proto::scheduling::{ConditionStatus, NodeCondition};
-use claw_proto::{NodeId, WorkloadId, WorkloadSpec, WorkloadState};
+use claw_proto::{GatewayMessage, NodeId, WorkloadId, WorkloadSpec, WorkloadState};
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, info, warn};
 
 use crate::config::ServerConfig;
 use crate::error::{ServerError, ServerResult};
 use crate::molt::MoltIntegration;
+use crate::server::{ActiveSession, PendingInvokes};
 
 /// Handle a CLI WebSocket connection.
 ///
 /// This function takes over after the initial Hello message identifies
 /// the connection as a CLI client.
 #[allow(clippy::too_many_arguments)]
-pub async fn handle_cli_connection<S>(
+pub(crate) async fn handle_cli_connection<S>(
     mut ws: S,
     registry: Arc<Mutex<NodeRegistry>>,
     workload_manager: Arc<Mutex<WorkloadManager>>,
@@ -39,6 +41,8 @@ pub async fn handle_cli_connection<S>(
     molt: Option<Arc<MoltIntegration>>,
     mesh: Option<Arc<crate::mesh::MeshIntegration>>,
     config: Arc<ServerConfig>,
+    sessions: Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
+    pending_invokes: PendingInvokes,
     start_time: Instant,
 ) -> ServerResult<()>
 where
@@ -104,6 +108,8 @@ where
             &molt,
             &mesh,
             &config,
+            &sessions,
+            &pending_invokes,
             start_time,
         )
         .await;
@@ -125,6 +131,8 @@ async fn handle_request(
     molt: &Option<Arc<MoltIntegration>>,
     mesh: &Option<Arc<crate::mesh::MeshIntegration>>,
     _config: &Arc<ServerConfig>,
+    sessions: &Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
+    pending_invokes: &PendingInvokes,
     start_time: Instant,
 ) -> CliResponse {
     match request {
@@ -163,7 +171,8 @@ async fn handle_request(
         }
 
         CliMessage::StartWorkload { node_id, spec } => {
-            handle_start_workload(workload_manager, registry, scheduler, node_id, spec).await
+            handle_start_workload(workload_manager, registry, scheduler, sessions, node_id, spec)
+                .await
         }
 
         CliMessage::StopWorkload { workload_id, force } => {
@@ -237,6 +246,20 @@ async fn handle_request(
 
         CliMessage::GetNodeConditions { node_id } => {
             handle_get_node_conditions(registry, node_id).await
+        }
+
+        // =====================================================================
+        // Node Invoke Commands
+        // =====================================================================
+
+        CliMessage::NodeInvoke {
+            node_id,
+            command,
+            params,
+            timeout_ms,
+        } => {
+            handle_node_invoke(sessions, pending_invokes, node_id, command, params, timeout_ms)
+                .await
         }
     }
 }
@@ -441,6 +464,7 @@ async fn handle_start_workload(
     workload_manager: &Arc<Mutex<WorkloadManager>>,
     registry: &Arc<Mutex<NodeRegistry>>,
     scheduler: &Arc<Mutex<AdvancedScheduler>>,
+    sessions: &Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
     target_node: Option<NodeId>,
     spec: WorkloadSpec,
 ) -> CliResponse {
@@ -480,6 +504,31 @@ async fn handle_start_workload(
                 );
             }
 
+            // Dispatch StartWorkload to the target node
+            let dispatch_msg = GatewayMessage::StartWorkload {
+                workload_id,
+                spec: spec.clone(),
+            };
+
+            if let Err(e) = dispatch_to_node(sessions, result.node_id, dispatch_msg).await {
+                warn!(
+                    workload_id = %workload_id,
+                    node_id = %result.node_id,
+                    error = %e,
+                    "failed to dispatch workload to node"
+                );
+                return CliResponse::error(
+                    cli::error_codes::INTERNAL_ERROR,
+                    format!("workload scheduled but dispatch to node failed: {e}"),
+                );
+            }
+
+            info!(
+                workload_id = %workload_id,
+                node_id = %result.node_id,
+                "workload dispatched to node"
+            );
+
             CliResponse::WorkloadStarted {
                 workload_id,
                 node_id: result.node_id,
@@ -516,6 +565,25 @@ async fn handle_start_workload(
             CliResponse::error(cli::error_codes::NO_CAPACITY, reason)
         }
     }
+}
+
+/// Dispatch a gateway message to a specific node via its session sender.
+async fn dispatch_to_node(
+    sessions: &Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
+    node_id: NodeId,
+    msg: GatewayMessage,
+) -> Result<(), String> {
+    let sessions_guard = sessions.read().await;
+    for active_session in sessions_guard.values() {
+        let session = active_session.session.lock().await;
+        if session.node_id() == Some(node_id) {
+            return active_session
+                .sender
+                .try_send(msg)
+                .map_err(|e| format!("send failed: {e}"));
+        }
+    }
+    Err(format!("no active session found for node {node_id}"))
 }
 
 async fn handle_stop_workload(
@@ -1061,6 +1129,105 @@ async fn handle_get_node_conditions(
         node_id,
         conditions,
         labels,
+    }
+}
+
+// ============================================================================
+// Node Invoke Operations
+// ============================================================================
+
+async fn handle_node_invoke(
+    sessions: &Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
+    pending_invokes: &PendingInvokes,
+    node_id: NodeId,
+    command: String,
+    params: Option<String>,
+    timeout_ms: u64,
+) -> CliResponse {
+    info!(
+        node_id = %node_id,
+        command = %command,
+        timeout_ms = timeout_ms,
+        "node invoke request"
+    );
+
+    // Generate a unique invoke ID for correlation
+    let invoke_id = uuid::Uuid::new_v4().to_string();
+
+    // Create oneshot channel for the response
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    // Store in pending invokes map
+    pending_invokes.write().await.insert(invoke_id.clone(), tx);
+
+    // Build the node.invoke.request event payload
+    let event_payload = serde_json::json!({
+        "id": invoke_id,
+        "nodeId": node_id.to_string(),
+        "command": command,
+        "paramsJSON": params,
+        "timeoutMs": timeout_ms,
+    });
+
+    // Dispatch to node as a RawEvent (serialized as OpenClaw EventFrame)
+    let msg = GatewayMessage::RawEvent {
+        event: "node.invoke.request".to_string(),
+        payload: event_payload,
+    };
+
+    if let Err(e) = dispatch_to_node(sessions, node_id, msg).await {
+        // Clean up pending invoke on dispatch failure
+        pending_invokes.write().await.remove(&invoke_id);
+        return CliResponse::error(
+            cli::error_codes::NODE_NOT_FOUND,
+            format!("failed to invoke on node {node_id}: {e}"),
+        );
+    }
+
+    // Await response with timeout
+    let timeout_duration = std::time::Duration::from_millis(timeout_ms);
+    match tokio::time::timeout(timeout_duration, rx).await {
+        Ok(Ok(result)) => {
+            info!(
+                node_id = %node_id,
+                command = %command,
+                ok = result.ok,
+                "node invoke completed"
+            );
+            CliResponse::NodeInvokeResult {
+                node_id,
+                command,
+                ok: result.ok,
+                payload: result.payload,
+                error: result.error,
+            }
+        }
+        Ok(Err(_)) => {
+            // Sender dropped — node disconnected during invoke
+            warn!(
+                node_id = %node_id,
+                command = %command,
+                "node disconnected during invoke"
+            );
+            CliResponse::error(
+                cli::error_codes::INTERNAL_ERROR,
+                format!("node {node_id} disconnected during invoke"),
+            )
+        }
+        Err(_) => {
+            // Timeout — clean up pending invoke
+            pending_invokes.write().await.remove(&invoke_id);
+            warn!(
+                node_id = %node_id,
+                command = %command,
+                timeout_ms = timeout_ms,
+                "node invoke timed out"
+            );
+            CliResponse::error(
+                cli::error_codes::NODE_INVOKE_TIMEOUT,
+                format!("node invoke timed out after {timeout_ms}ms"),
+            )
+        }
     }
 }
 

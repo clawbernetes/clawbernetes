@@ -10,7 +10,7 @@ use claw_proto::cli::CliMessage;
 use claw_proto::{GatewayMessage, NodeId, NodeMessage};
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message as WsMessage, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, info, warn};
 
@@ -21,12 +21,29 @@ use crate::session::{run_session, session_channel, NodeSession, SessionSender};
 
 /// Active session tracking information.
 #[derive(Debug)]
-struct ActiveSession {
+pub(crate) struct ActiveSession {
     /// The session state.
-    session: Arc<Mutex<NodeSession>>,
+    pub(crate) session: Arc<Mutex<NodeSession>>,
     /// Channel to send messages to this session.
-    sender: SessionSender,
+    pub(crate) sender: SessionSender,
 }
+
+/// Result from a node invoke operation.
+#[derive(Debug)]
+pub(crate) struct InvokeResult {
+    /// Whether the command succeeded.
+    pub(crate) ok: bool,
+    /// Result payload (on success).
+    pub(crate) payload: Option<serde_json::Value>,
+    /// Error message (on failure).
+    pub(crate) error: Option<String>,
+}
+
+/// Pending node invoke requests awaiting responses from nodes.
+///
+/// Maps invoke ID (UUID string) to a oneshot sender that will deliver the result
+/// back to the waiting CLI handler.
+pub(crate) type PendingInvokes = Arc<RwLock<HashMap<String, oneshot::Sender<InvokeResult>>>>;
 
 /// Gateway server for managing WebSocket connections from clawnode instances and CLI clients.
 #[derive(Debug)]
@@ -47,6 +64,8 @@ pub struct GatewayServer {
     mesh: Option<Arc<crate::mesh::MeshIntegration>>,
     /// Active sessions indexed by session ID.
     sessions: Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
+    /// Pending node invoke requests awaiting responses.
+    pending_invokes: PendingInvokes,
     /// Shutdown signal sender.
     shutdown_tx: Option<mpsc::Sender<()>>,
     /// Server start time (for uptime calculation).
@@ -66,6 +85,7 @@ impl GatewayServer {
             molt: None,
             mesh: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            pending_invokes: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             start_time: Instant::now(),
         }
@@ -87,6 +107,7 @@ impl GatewayServer {
             molt: None,
             mesh: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            pending_invokes: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             start_time: Instant::now(),
         }
@@ -217,6 +238,7 @@ impl GatewayServer {
         let mesh = self.mesh.clone();
         let config = self.config.clone();
         let sessions = self.sessions.clone();
+        let pending_invokes = self.pending_invokes.clone();
         let start_time = self.start_time;
 
         tokio::spawn(async move {
@@ -231,6 +253,7 @@ impl GatewayServer {
                 mesh,
                 config,
                 sessions,
+                pending_invokes,
                 start_time,
             )
             .await
@@ -350,6 +373,7 @@ async fn detect_and_handle_connection(
     mesh: Option<Arc<crate::mesh::MeshIntegration>>,
     config: Arc<ServerConfig>,
     sessions: Arc<RwLock<HashMap<uuid::Uuid, ActiveSession>>>,
+    pending_invokes: PendingInvokes,
     start_time: Instant,
 ) -> ServerResult<()> {
     // Wait for first message to determine connection type
@@ -378,6 +402,8 @@ async fn detect_and_handle_connection(
                 molt,
                 mesh,
                 config,
+                sessions,
+                pending_invokes,
                 start_time,
             )
             .await;
@@ -416,6 +442,7 @@ async fn detect_and_handle_connection(
             workload_manager,
             log_store,
             config,
+            pending_invokes,
             receiver,
             first_msg,
         )
@@ -442,6 +469,7 @@ async fn run_node_session_with_first_message(
     workload_mgr: Arc<Mutex<WorkloadManager>>,
     log_store: Arc<Mutex<WorkloadLogStore>>,
     config: Arc<ServerConfig>,
+    pending_invokes: PendingInvokes,
     mut outbound_rx: mpsc::Receiver<GatewayMessage>,
     first_msg: String,
 ) -> ServerResult<()> {
@@ -471,6 +499,7 @@ async fn run_node_session_with_first_message(
     let read_log_store = log_store.clone();
     let read_config = config.clone();
     let read_response_tx = response_tx.clone();
+    let read_pending_invokes = pending_invokes;
 
     let read_task = async move {
         while let Some(msg_result) = ws_stream_rest.next().await {
@@ -490,6 +519,33 @@ async fn run_node_session_with_first_message(
                 _ => continue,
             };
 
+            // Try to detect node.invoke.result frames (OpenClaw JSON-RPC)
+            // These are sent by clawnode as RequestFrames with method "node.invoke.result"
+            // and cannot be parsed as NodeMessage.
+            if let Ok(frame) = serde_json::from_str::<serde_json::Value>(&text) {
+                if frame.get("method").and_then(|m| m.as_str()) == Some("node.invoke.result") {
+                    if let Some(params) = frame.get("params") {
+                        let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let ok = params.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let payload = params.get("payload").cloned();
+                        let error = params.get("error")
+                            .and_then(|e| e.get("message"))
+                            .and_then(|m| m.as_str())
+                            .map(String::from);
+
+                        let mut pending = read_pending_invokes.write().await;
+                        if let Some(sender) = pending.remove(id) {
+                            let _ = sender.send(InvokeResult { ok, payload, error });
+                            debug!(invoke_id = %id, ok = ok, "resolved pending node invoke");
+                        } else {
+                            debug!(invoke_id = %id, "received invoke result with no pending request");
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            // Fall through to normal NodeMessage handling
             let node_msg = match NodeMessage::from_json(&text) {
                 Ok(msg) => msg,
                 Err(e) => {

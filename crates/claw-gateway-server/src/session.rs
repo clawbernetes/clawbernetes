@@ -250,12 +250,26 @@ pub fn process_ws_message_with_limits(
 
 /// Serialize a gateway message to a WebSocket message.
 ///
+/// `RawEvent` variants are serialized as OpenClaw event frames
+/// (`{"event": "...", "payload": {...}}`) instead of the normal tagged format.
+///
 /// # Errors
 ///
 /// Returns an error if serialization fails.
 pub fn gateway_msg_to_ws(msg: &GatewayMessage) -> ServerResult<WsMessage> {
-    let json = serde_json::to_string(msg)?;
-    Ok(WsMessage::Text(json))
+    match msg {
+        GatewayMessage::RawEvent { event, payload } => {
+            let json = serde_json::json!({
+                "event": event,
+                "payload": payload,
+            });
+            Ok(WsMessage::Text(json.to_string()))
+        }
+        _ => {
+            let json = serde_json::to_string(msg)?;
+            Ok(WsMessage::Text(json))
+        }
+    }
 }
 
 /// Channel for sending outbound messages to a session.

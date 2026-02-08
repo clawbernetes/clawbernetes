@@ -215,6 +215,27 @@ pub enum CliMessage {
         /// Node ID.
         node_id: NodeId,
     },
+
+    // =========================================================================
+    // Node Invoke Commands
+    // =========================================================================
+
+    /// Invoke a command on a specific node.
+    ///
+    /// This is the primary bridge for executing any of the 91 clawnode commands
+    /// from the control plane (CLI, Morpheus AI agent, OpenClaw skills).
+    NodeInvoke {
+        /// Target node ID.
+        node_id: NodeId,
+        /// Command to execute (e.g., "secret.create", "gpu.list").
+        command: String,
+        /// Command parameters as JSON string.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        params: Option<String>,
+        /// Timeout in milliseconds (default: 30000).
+        #[serde(default = "default_invoke_timeout")]
+        timeout_ms: u64,
+    },
 }
 
 /// State of a node.
@@ -470,6 +491,26 @@ pub enum CliResponse {
         labels: Vec<NodeLabelInfo>,
     },
 
+    // =========================================================================
+    // Node Invoke Responses
+    // =========================================================================
+
+    /// Result of a node invoke command.
+    NodeInvokeResult {
+        /// Target node ID.
+        node_id: NodeId,
+        /// Command that was executed.
+        command: String,
+        /// Whether the command succeeded.
+        ok: bool,
+        /// Result payload (on success).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        payload: Option<serde_json::Value>,
+        /// Error message (on failure).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
     /// Error response.
     Error {
         /// Error code.
@@ -653,6 +694,10 @@ pub struct NodeLabelInfo {
 
 // === Error codes ===
 
+fn default_invoke_timeout() -> u64 {
+    30_000
+}
+
 /// Error codes for CLI responses.
 pub mod error_codes {
     /// Node not found.
@@ -671,6 +716,8 @@ pub mod error_codes {
     pub const MOLT_NOT_CONNECTED: u32 = 1007;
     /// Protocol version mismatch.
     pub const PROTOCOL_MISMATCH: u32 = 1008;
+    /// Node invoke timed out.
+    pub const NODE_INVOKE_TIMEOUT: u32 = 1009;
 }
 
 impl CliMessage {
@@ -737,6 +784,7 @@ impl CliMessage {
             Self::SetNodeLabel { .. } => "set_node_label",
             Self::RemoveNodeLabel { .. } => "remove_node_label",
             Self::GetNodeConditions { .. } => "get_node_conditions",
+            Self::NodeInvoke { .. } => "node_invoke",
         }
     }
 }
@@ -1152,5 +1200,90 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("test-node"));
         assert!(json.contains("connecting"));
+    }
+
+    // ==================== Node Invoke CLI Tests ====================
+
+    #[test]
+    fn test_node_invoke_message() {
+        let msg = CliMessage::NodeInvoke {
+            node_id: NodeId::new(),
+            command: "gpu.list".to_string(),
+            params: None,
+            timeout_ms: 30_000,
+        };
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("node_invoke"));
+        assert!(json.contains("gpu.list"));
+        assert_eq!(msg.request_type(), "node_invoke");
+
+        let parsed = CliMessage::from_json(&json).unwrap();
+        assert_eq!(msg, parsed);
+    }
+
+    #[test]
+    fn test_node_invoke_with_params() {
+        let msg = CliMessage::NodeInvoke {
+            node_id: NodeId::new(),
+            command: "secret.create".to_string(),
+            params: Some(r#"{"name":"my-secret","value":"s3cret"}"#.to_string()),
+            timeout_ms: 5_000,
+        };
+        let json = msg.to_json().unwrap();
+        assert!(json.contains("secret.create"));
+        assert!(json.contains("my-secret"));
+
+        let parsed = CliMessage::from_json(&json).unwrap();
+        assert_eq!(msg, parsed);
+    }
+
+    #[test]
+    fn test_node_invoke_default_timeout() {
+        // Deserialize without timeout_ms — should default to 30000
+        let json = r#"{"type":"node_invoke","node_id":"00000000-0000-0000-0000-000000000001","command":"gpu.list"}"#;
+        let msg = CliMessage::from_json(json).unwrap();
+        if let CliMessage::NodeInvoke { timeout_ms, .. } = msg {
+            assert_eq!(timeout_ms, 30_000);
+        } else {
+            panic!("Expected NodeInvoke");
+        }
+    }
+
+    #[test]
+    fn test_node_invoke_result_success() {
+        let resp = CliResponse::NodeInvokeResult {
+            node_id: NodeId::new(),
+            command: "gpu.list".to_string(),
+            ok: true,
+            payload: Some(serde_json::json!({"gpus": []})),
+            error: None,
+        };
+        let json = resp.to_json().unwrap();
+        assert!(json.contains("node_invoke_result"));
+        assert!(json.contains("gpu.list"));
+        assert!(json.contains("\"ok\":true"));
+
+        let parsed = CliResponse::from_json(&json).unwrap();
+        assert_eq!(resp, parsed);
+    }
+
+    #[test]
+    fn test_node_invoke_result_error() {
+        let resp = CliResponse::NodeInvokeResult {
+            node_id: NodeId::new(),
+            command: "secret.get".to_string(),
+            ok: false,
+            payload: None,
+            error: Some("secret not found".to_string()),
+        };
+        let json = resp.to_json().unwrap();
+        assert!(json.contains("node_invoke_result"));
+        assert!(json.contains("\"ok\":false"));
+        assert!(json.contains("secret not found"));
+    }
+
+    #[test]
+    fn test_node_invoke_timeout_error_code() {
+        assert_eq!(error_codes::NODE_INVOKE_TIMEOUT, 1009);
     }
 }

@@ -92,6 +92,11 @@ pub fn handle_gateway_message<R: ContainerRuntime + ?Sized>(
             debug!("received mesh peer remove (not implemented)");
             Ok(None)
         }
+
+        GatewayMessage::RawEvent { event, .. } => {
+            debug!(event = %event, "received raw event (handled in client event loop)");
+            Ok(None)
+        }
     }
 }
 
