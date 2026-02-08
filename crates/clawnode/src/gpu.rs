@@ -203,20 +203,31 @@ impl GpuManager {
         let mut cmds = vec![
             "system.info".to_string(),
             "system.run".to_string(),
+            "node.capabilities".to_string(),
+            "node.health".to_string(),
+            // Config commands (always available)
+            "config.create".to_string(),
+            "config.get".to_string(),
+            "config.update".to_string(),
+            "config.delete".to_string(),
+            "config.list".to_string(),
         ];
-        
+
         if self.nvidia_available {
             cmds.push("gpu.list".to_string());
             cmds.push("gpu.metrics".to_string());
         }
-        
+
         if self.capabilities().contains(&"container".to_string()) {
             cmds.push("workload.run".to_string());
             cmds.push("workload.stop".to_string());
             cmds.push("workload.logs".to_string());
+            cmds.push("workload.list".to_string());
+            cmds.push("workload.inspect".to_string());
+            cmds.push("workload.stats".to_string());
             cmds.push("container.exec".to_string());
         }
-        
+
         cmds
     }
 }

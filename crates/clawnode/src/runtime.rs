@@ -100,6 +100,22 @@ impl Container {
     }
 }
 
+/// Port mapping for containers (host:container).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortMapping {
+    /// Host port.
+    pub host_port: u16,
+    /// Container port.
+    pub container_port: u16,
+    /// Protocol (tcp/udp).
+    #[serde(default = "default_tcp")]
+    pub protocol: String,
+}
+
+fn default_tcp() -> String {
+    "tcp".to_string()
+}
+
 /// Specification for creating a container.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContainerSpec {
@@ -119,6 +135,18 @@ pub struct ContainerSpec {
     pub labels: HashMap<String, String>,
     /// Working directory.
     pub working_dir: Option<String>,
+    /// Docker network name (e.g., "claw-mesh").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    /// Specific IP address within the network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_address: Option<String>,
+    /// Port mappings (host:container).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub port_mappings: Vec<PortMapping>,
+    /// Custom DNS servers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns: Vec<String>,
 }
 
 impl ContainerSpec {
@@ -134,6 +162,10 @@ impl ContainerSpec {
             cpu_limit: None,
             labels: HashMap::new(),
             working_dir: None,
+            network: None,
+            ip_address: None,
+            port_mappings: Vec::new(),
+            dns: Vec::new(),
         }
     }
 

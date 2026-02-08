@@ -4,7 +4,13 @@
 
 use std::io::Write;
 
+use futures::{SinkExt, StreamExt};
 use serde::Serialize;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tracing::{debug, info};
+
+use claw_proto::cli::{CliMessage, CliResponse, CLI_PROTOCOL_VERSION};
+use claw_proto::WorkloadSpec as ProtoWorkloadSpec;
 
 use crate::cli::RunArgs;
 use crate::error::CliError;
@@ -107,17 +113,139 @@ impl RunCommand {
         })
     }
 
-    /// Submit a workload to the cluster.
+    /// Submit a workload to the cluster via WebSocket.
     ///
     /// # Errors
     ///
     /// Returns an error if submission fails.
-    pub async fn submit_workload(&self, _spec: &WorkloadSpec) -> Result<SubmitResult, CliError> {
-        // TODO: Replace with actual gateway call
-        // This is a placeholder
-        Ok(SubmitResult {
-            workload_id: format!("wl-{}", uuid::Uuid::new_v4()),
-        })
+    pub async fn submit_workload(&self, spec: &WorkloadSpec) -> Result<SubmitResult, CliError> {
+        // Connect to gateway
+        debug!(url = %self.gateway_url, "connecting to gateway");
+        let (mut ws, _) = tokio_tungstenite::connect_async(&self.gateway_url)
+            .await
+            .map_err(|e| CliError::Connection(format!("failed to connect to gateway: {e}")))?;
+
+        // Send Hello handshake
+        let hello = CliMessage::Hello {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: CLI_PROTOCOL_VERSION,
+        };
+        let hello_json = hello
+            .to_json()
+            .map_err(|e| CliError::Protocol(format!("failed to serialize hello: {e}")))?;
+        ws.send(WsMessage::Text(hello_json))
+            .await
+            .map_err(|e| CliError::Connection(format!("failed to send hello: {e}")))?;
+
+        // Read Welcome response
+        let welcome_msg = read_text_message(&mut ws).await?;
+        let welcome = CliResponse::from_json(&welcome_msg)
+            .map_err(|e| CliError::Protocol(format!("failed to parse welcome: {e}")))?;
+        match &welcome {
+            CliResponse::Welcome { server_version, .. } => {
+                info!(server_version = %server_version, "connected to gateway");
+            }
+            CliResponse::Error { code, message, .. } => {
+                return Err(CliError::Gateway {
+                    code: *code,
+                    message: message.clone(),
+                });
+            }
+            _ => {
+                return Err(CliError::Protocol(
+                    "expected Welcome response from gateway".into(),
+                ));
+            }
+        }
+
+        // Convert local WorkloadSpec -> claw_proto::WorkloadSpec
+        let proto_spec = self.to_proto_spec(spec);
+
+        // Send StartWorkload
+        let start_msg = CliMessage::StartWorkload {
+            node_id: None,
+            spec: proto_spec,
+        };
+        let start_json = start_msg
+            .to_json()
+            .map_err(|e| CliError::Protocol(format!("failed to serialize start: {e}")))?;
+        ws.send(WsMessage::Text(start_json))
+            .await
+            .map_err(|e| CliError::Connection(format!("failed to send start: {e}")))?;
+
+        // Read response
+        let resp_msg = read_text_message(&mut ws).await?;
+        let response = CliResponse::from_json(&resp_msg)
+            .map_err(|e| CliError::Protocol(format!("failed to parse response: {e}")))?;
+
+        // Close the connection
+        let _ = ws.close(None).await;
+
+        match response {
+            CliResponse::WorkloadStarted {
+                workload_id,
+                node_id,
+            } => {
+                info!(
+                    workload_id = %workload_id,
+                    node_id = %node_id,
+                    "workload started"
+                );
+                Ok(SubmitResult {
+                    workload_id: workload_id.to_string(),
+                })
+            }
+            CliResponse::Error { code, message, .. } => Err(CliError::Gateway { code, message }),
+            other => Err(CliError::Protocol(format!(
+                "unexpected response: {other:?}"
+            ))),
+        }
+    }
+
+    /// Convert local WorkloadSpec to claw_proto::WorkloadSpec.
+    fn to_proto_spec(&self, spec: &WorkloadSpec) -> ProtoWorkloadSpec {
+        let command = spec.command.clone().unwrap_or_default();
+        let gpu_count = spec.gpu_indices.len() as u32;
+        let memory_mb = spec.memory_limit_mib.unwrap_or(512);
+
+        let mut proto = ProtoWorkloadSpec::new(&spec.image)
+            .with_command(command)
+            .with_gpu_count(gpu_count)
+            .with_memory_mb(memory_mb)
+            .with_cpu_cores(1);
+
+        for (key, value) in &spec.env {
+            proto = proto.with_env(key, value);
+        }
+
+        proto
+    }
+}
+
+/// Read the next text message from a WebSocket stream.
+async fn read_text_message<S>(ws: &mut S) -> Result<String, CliError>
+where
+    S: StreamExt<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    loop {
+        match ws.next().await {
+            Some(Ok(WsMessage::Text(text))) => return Ok(text),
+            Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,
+            Some(Ok(WsMessage::Close(_))) => {
+                return Err(CliError::Connection(
+                    "gateway closed connection unexpectedly".into(),
+                ));
+            }
+            Some(Ok(_)) => continue,
+            Some(Err(e)) => {
+                return Err(CliError::Connection(format!("WebSocket error: {e}")));
+            }
+            None => {
+                return Err(CliError::Connection(
+                    "gateway connection closed".into(),
+                ));
+            }
+        }
     }
 }
 
@@ -343,8 +471,8 @@ mod tests {
         assert_eq!(spec.env[0], ("CONFIG".into(), "a=b=c".into()));
     }
 
-    #[tokio::test]
-    async fn submit_workload_returns_id() {
+    #[test]
+    fn to_proto_spec_minimal() {
         let cmd = RunCommand::new("ws://localhost:8080");
         let spec = WorkloadSpec {
             image: "test:latest".into(),
@@ -354,64 +482,51 @@ mod tests {
             memory_limit_mib: None,
         };
 
-        let result = cmd.submit_workload(&spec).await.expect("should submit");
+        let proto = cmd.to_proto_spec(&spec);
 
-        assert!(result.workload_id.starts_with("wl-"));
+        assert_eq!(proto.image, "test:latest");
+        assert!(proto.command.is_empty());
+        assert_eq!(proto.gpu_count, 0);
+        assert_eq!(proto.memory_mb, 512); // default
+        assert_eq!(proto.cpu_cores, 1);
+        assert!(proto.env.is_empty());
     }
 
-    #[tokio::test]
-    async fn execute_detached() {
+    #[test]
+    fn to_proto_spec_full() {
         let cmd = RunCommand::new("ws://localhost:8080");
-        let format = OutputFormat::new(Format::Table);
-        let args = RunArgs {
-            image: "nginx:latest".into(),
-            command: vec![],
-            gpus: vec![],
-            env: vec![],
-            memory: None,
-            detach: true,
+        let spec = WorkloadSpec {
+            image: "pytorch:latest".into(),
+            command: Some(vec!["python".into(), "train.py".into()]),
+            gpu_indices: vec![0, 1, 2],
+            env: vec![("BATCH_SIZE".into(), "32".into())],
+            memory_limit_mib: Some(8192),
         };
-        let mut buf = Vec::new();
 
-        cmd.execute(&mut buf, &format, &args).await.expect("should execute");
+        let proto = cmd.to_proto_spec(&spec);
 
-        let output = String::from_utf8(buf).expect("valid utf8");
-        assert!(output.contains("Workload submitted"));
-        assert!(output.contains("Workload ID:"));
+        assert_eq!(proto.image, "pytorch:latest");
+        assert_eq!(proto.command, vec!["python", "train.py"]);
+        assert_eq!(proto.gpu_count, 3);
+        assert_eq!(proto.memory_mb, 8192);
+        assert_eq!(proto.cpu_cores, 1);
+        assert_eq!(proto.env.get("BATCH_SIZE"), Some(&"32".to_string()));
     }
 
     #[tokio::test]
-    async fn execute_attached() {
-        let cmd = RunCommand::new("ws://localhost:8080");
-        let format = OutputFormat::new(Format::Table);
-        let args = make_minimal_args();
-        let mut buf = Vec::new();
-
-        cmd.execute(&mut buf, &format, &args).await.expect("should execute");
-
-        let output = String::from_utf8(buf).expect("valid utf8");
-        assert!(output.contains("Workload ID:"));
-    }
-
-    #[tokio::test]
-    async fn execute_json_output() {
-        let cmd = RunCommand::new("ws://localhost:8080");
-        let format = OutputFormat::new(Format::Json);
-        let args = RunArgs {
-            image: "app:latest".into(),
-            command: vec![],
-            gpus: vec![],
+    async fn submit_workload_fails_without_gateway() {
+        let cmd = RunCommand::new("ws://127.0.0.1:1"); // unreachable port
+        let spec = WorkloadSpec {
+            image: "test:latest".into(),
+            command: None,
+            gpu_indices: vec![],
             env: vec![],
-            memory: None,
-            detach: true,
+            memory_limit_mib: None,
         };
-        let mut buf = Vec::new();
 
-        cmd.execute(&mut buf, &format, &args).await.expect("should execute");
-
-        let output = String::from_utf8(buf).expect("valid utf8");
-        assert!(output.contains("\"workload_id\""));
-        assert!(output.contains("\"detached\": true"));
+        let result = cmd.submit_workload(&spec).await;
+        assert!(result.is_err());
+        assert!(matches!(result, Err(CliError::Connection(_))));
     }
 
     #[tokio::test]

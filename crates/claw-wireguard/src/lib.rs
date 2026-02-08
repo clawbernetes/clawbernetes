@@ -40,6 +40,8 @@ mod config;
 mod error;
 mod interface;
 mod keys;
+#[cfg(feature = "linux")]
+pub mod linux;
 mod manager;
 mod mesh;
 mod tunnel;
@@ -51,6 +53,8 @@ pub use config::{
 };
 pub use error::{Result, WireGuardError};
 pub use interface::{FakeWireGuardInterface, InterfaceState, WireGuardInterface};
+#[cfg(feature = "linux")]
+pub use linux::LinuxWireGuardInterface;
 pub use keys::{generate_keypair, public_key_from_private, KeyPair, PrivateKey, PublicKey, KEY_SIZE};
 pub use manager::{ManagerConfig, MeshPeerBuilder, SyncResult, WireGuardManager};
 pub use mesh::{

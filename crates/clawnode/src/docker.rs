@@ -189,6 +189,18 @@ impl DockerContainerRuntime {
             config = config.with_label(key, value);
         }
 
+        // Set network if specified (e.g., "claw-mesh" for workload networking)
+        if let Some(ref network) = spec.network {
+            config = config.with_network(
+                claw_compute::container::NetworkMode::Custom(network.clone()),
+            );
+        }
+
+        // Add port mappings
+        for pm in &spec.port_mappings {
+            config = config.with_port(pm.container_port, pm.host_port);
+        }
+
         config
     }
 
@@ -456,6 +468,66 @@ impl AsyncContainerRuntime for DockerContainerRuntime {
             .ping()
             .await
             .map_err(|e| NodeError::ContainerRuntime(format!("ping failed: {e}")))
+    }
+}
+
+/// Sync adapter: implements the sync `ContainerRuntime` trait by bridging to async Docker calls.
+///
+/// This allows `DockerContainerRuntime` to be used in the synchronous handler path
+/// (`handlers.rs`) which expects `ContainerRuntime`.
+#[cfg(feature = "docker")]
+impl crate::runtime::ContainerRuntime for DockerContainerRuntime {
+    fn create(
+        &self,
+        spec: &crate::runtime::ContainerSpec,
+    ) -> Result<crate::runtime::Container, NodeError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(AsyncContainerRuntime::create(self, spec))
+        })
+    }
+
+    fn start(&self, container_id: &str) -> Result<(), NodeError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(AsyncContainerRuntime::start(self, container_id))
+        })
+    }
+
+    fn stop(&self, container_id: &str, timeout_secs: u32) -> Result<(), NodeError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(AsyncContainerRuntime::stop(self, container_id, timeout_secs))
+        })
+    }
+
+    fn remove(&self, container_id: &str) -> Result<(), NodeError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(AsyncContainerRuntime::remove(self, container_id))
+        })
+    }
+
+    fn get(&self, container_id: &str) -> Result<crate::runtime::Container, NodeError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(AsyncContainerRuntime::get(self, container_id))
+        })
+    }
+
+    fn list(&self) -> Result<Vec<crate::runtime::Container>, NodeError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(AsyncContainerRuntime::list(self))
+        })
+    }
+
+    fn logs(
+        &self,
+        container_id: &str,
+        tail: Option<usize>,
+    ) -> Result<Vec<String>, NodeError> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(AsyncContainerRuntime::logs(self, container_id, tail))
+        })
     }
 }
 
