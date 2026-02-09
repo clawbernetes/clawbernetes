@@ -27,9 +27,16 @@
 
 ## What is Clawbernetes?
 
-Clawbernetes turns your machines into a GPU cluster you can talk to. Instead of writing config files, you tell an AI agent what you want and it handles the rest. It works with any GPU — NVIDIA, AMD, Apple Silicon — across any number of machines.
+Clawbernetes turns your machines into a cluster you can talk to. Instead of writing config files, you tell an AI agent what you want — deploy a service, run a batch job, manage secrets — and it handles the rest. It runs any workload across any number of machines, with first-class support for AI/ML workflows and GPU acceleration.
 
 ## Quick Start
+
+### Prerequisites
+
+- **Node.js 20+** — needed for OpenClaw and the plugin
+- **Rust 1.85+** — needed to build Clawbernetes
+- **Docker** (optional) — for running containerized workloads
+- GPU drivers (optional) — for GPU acceleration (NVIDIA, AMD, or Apple Silicon)
 
 ### 1. Install OpenClaw
 
