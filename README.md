@@ -162,5 +162,5 @@ We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full gu
 <p align="center">
   <a href="https://discord.gg/clawbernetes">Discord</a> &bull;
   <a href="https://twitter.com/clawbernetes">Twitter</a> &bull;
-  <a href="https://clawbernetes.dev">Website</a>
+  <a href="https://clawbernetes.com">Website</a>
 </p>
