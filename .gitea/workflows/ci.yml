@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          rustup show active-toolchain || rustup default stable
+          rustup component add rustfmt clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: lint-${{ hashFiles('Cargo.lock') }}
+          restore-keys: lint-
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test
+    needs: lint
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: test-${{ hashFiles('Cargo.lock') }}
+          restore-keys: test-
+
+      - name: Test (default features)
+        run: cargo test --workspace --all-targets
+
+      - name: Test (all features)
+        run: cargo test --workspace --all-targets --all-features
+
+  build-debug:
+    name: Build (debug)
+    needs: test
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: build-debug-${{ hashFiles('Cargo.lock') }}
+          restore-keys: build-debug-
+
+      - name: Build (default features)
+        run: cargo build --workspace
+
+      - name: Build (all features)
+        run: cargo build --workspace --all-features
+
+  build-release:
+    name: Build (release)
+    needs: build-debug
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: build-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: build-release-
+
+      - name: Build release
+        run: cargo build --release --workspace
+
+      - name: Verify binaries
+        run: |
+          for bin in claw-gateway-server clawnode clawbernetes claw-tui claw-bridge; do
+            test -x "target/release/$bin" || { echo "MISSING: $bin"; exit 1; }
+            echo "OK: $bin ($(du -h target/release/$bin | cut -f1))"
+          done
+
+  mirror:
+    name: Mirror to GitHub
+    needs: build-release
+    runs-on: self-hosted
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.GITHUB_MIRROR_SSH_KEY }}" > ~/.ssh/github_mirror
+          chmod 600 ~/.ssh/github_mirror
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<EOF
+          Host github.com
+            IdentityFile ~/.ssh/github_mirror
+            StrictHostKeyChecking accept-new
+          EOF
+
+      - name: Push to GitHub
+        run: |
+          git remote add github git@github.com:clawbernetes/clawbernetes.git 2>/dev/null || true
+          git push github main --force-with-lease
+          git push github --tags

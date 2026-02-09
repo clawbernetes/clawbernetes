@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  release:
+    name: Auto Release
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup default stable
+
+      - name: Determine version bump
+        id: bump
+        run: |
+          # Find the latest semver tag
+          LAST_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.' | head -1)
+          if [ -z "$LAST_TAG" ]; then
+            LAST_TAG=$(git rev-list --max-parents=0 HEAD)
+            echo "No previous tag found, scanning from initial commit"
+          fi
+
+          echo "Last tag: $LAST_TAG"
+
+          # Scan commits since last tag
+          COMMITS=$(git log "$LAST_TAG"..HEAD --pretty=format:"%s%n%b" 2>/dev/null || git log --pretty=format:"%s%n%b")
+
+          BUMP=""
+          if echo "$COMMITS" | grep -qiE "BREAKING[- ]CHANGE"; then
+            BUMP="major"
+          elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?:"; then
+            BUMP="minor"
+          elif echo "$COMMITS" | grep -qE "^(fix|perf)(\(.+\))?:"; then
+            BUMP="patch"
+          fi
+
+          if [ -z "$BUMP" ]; then
+            echo "No version bump warranted, skipping release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Bump type: $BUMP"
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate next version
+        if: steps.bump.outputs.skip != 'true'
+        id: version
+        run: |
+          CURRENT=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          case "${{ steps.bump.outputs.bump }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEXT="${MAJOR}.${MINOR}.${PATCH}"
+          echo "Current: $CURRENT -> Next: $NEXT"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in Cargo.toml
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          sed -i '0,/^version = ".*"/s//version = "${{ steps.version.outputs.next }}"/' Cargo.toml
+          cargo generate-lockfile
+
+      - name: Generate changelog
+        if: steps.bump.outputs.skip != 'true'
+        id: changelog
+        run: |
+          if command -v git-cliff &>/dev/null; then
+            git-cliff --config cliff.toml --unreleased --tag "${{ steps.version.outputs.tag }}" --output CHANGELOG.md
+            # Extract just the latest release section for the release body
+            git-cliff --config cliff.toml --unreleased --tag "${{ steps.version.outputs.tag }}" --strip header > /tmp/release-notes.md
+          else
+            echo "git-cliff not found, generating basic changelog"
+            LAST_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.' | head -1)
+            {
+              echo "## ${{ steps.version.outputs.tag }}"
+              echo ""
+              git log "${LAST_TAG:+$LAST_TAG..}HEAD" --pretty=format:"- %s" --no-merges
+            } > /tmp/release-notes.md
+            cp /tmp/release-notes.md CHANGELOG.md
+          fi
+
+      - name: Commit and tag
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          git config user.name "Gitea Actions"
+          git config user.email "actions@gitea.local"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): ${{ steps.version.outputs.tag }}"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
+          git push origin main
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - uses: actions/cache@v4
+        if: steps.bump.outputs.skip != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: release-
+
+      - name: Build release binaries
+        if: steps.bump.outputs.skip != 'true'
+        run: cargo build --release --workspace
+
+      - name: Create Gitea release
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          BODY=$(cat /tmp/release-notes.md)
+
+          # Create release via Gitea API
+          RELEASE_ID=$(curl -s -X POST \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases" \
+            -H "Authorization: token ${{ secrets.GITEA_RELEASE_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg tag "$TAG" \
+              --arg name "$TAG" \
+              --arg body "$BODY" \
+              '{tag_name: $tag, name: $name, body: $body, draft: false, prerelease: false}')" \
+            | jq -r '.id')
+
+          echo "Created release ID: $RELEASE_ID"
+
+          # Upload binaries
+          for bin in claw-gateway-server clawnode clawbernetes claw-tui claw-bridge; do
+            if [ -x "target/release/$bin" ]; then
+              curl -s -X POST \
+                "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${bin}-linux-amd64" \
+                -H "Authorization: token ${{ secrets.GITEA_RELEASE_TOKEN }}" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary "@target/release/$bin"
+              echo "Uploaded: $bin"
+            fi
+          done
+
+      - name: Mirror to GitHub
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.GITHUB_MIRROR_SSH_KEY }}" > ~/.ssh/github_mirror
+          chmod 600 ~/.ssh/github_mirror
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<EOF
+          Host github.com
+            IdentityFile ~/.ssh/github_mirror
+            StrictHostKeyChecking accept-new
+          EOF
+
+          git remote add github git@github.com:clawbernetes/clawbernetes.git 2>/dev/null || true
+          git push github main --force-with-lease
+          git push github --tags
