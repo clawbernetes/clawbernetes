@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="Clawbernetes" width="200"/>
+  <img src="docs/assets/claw_logo.png" alt="Clawbernetes" width="200"/>
 </p>
 
 <h1 align="center">Clawbernetes</h1>
 
 <p align="center">
-  <strong>AI-Native GPU Orchestration Platform</strong><br>
+  <strong>AI-Native Workload Orchestration Platform</strong><br>
   Deploy and manage GPU workloads across any machine using natural language.
 </p>
 
@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
   </a>
   <a href="https://www.rust-lang.org/">
-    <img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust">
+    <img src="https://img.shields.io/badge/rust-1.93%2B-orange.svg" alt="Rust">
   </a>
   <img src="https://img.shields.io/badge/tests-4%2C600%2B-green.svg" alt="Tests">
   <img src="https://img.shields.io/badge/crates-37-informational.svg" alt="Crates">
