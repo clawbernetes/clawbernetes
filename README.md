@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="docs/assets/claw_logo.png" alt="Clawbernetes" width="200"/>
+  <img src="docs/assets/claw_logo.png" alt="Clawbernetes" width="400"/>
 </p>
 
 <h1 align="center">Clawbernetes</h1>
 
 <p align="center">
   <strong>AI-Native Workload Orchestration Platform</strong><br>
-  Deploy and manage GPU workloads across any machine using natural language.
+  Deploy, manage, and orchestrate workloads across any infrastructure using natural language.
 </p>
 
 <p align="center">
