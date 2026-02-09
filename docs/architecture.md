@@ -509,6 +509,140 @@ Nodes participating in MOLT communicate via libp2p gossip:
 
 ---
 
+## Crate Map (37 crates)
+
+**Core**
+
+| Crate | Purpose |
+|-------|---------|
+| `claw-gateway-server` | WebSocket gateway, node registry, workload routing |
+| `clawnode` | Node agent — 91 commands, GPU detection, container runtime |
+| `claw-cli` | CLI (`clawbernetes` binary) |
+| `claw-proto` | Protocol messages (NodeMessage, GatewayMessage, WorkloadSpec) |
+| `claw-bridge` | JSON-RPC stdio bridge for plugin integration |
+| `claw-compute` | Multi-platform GPU compute via CubeCL |
+
+**Operations**
+
+| Crate | Purpose |
+|-------|---------|
+| `claw-deploy` | Deployment strategies (canary, blue-green, rolling) |
+| `claw-secrets` | ChaCha20-Poly1305 encrypted secrets with audit trail |
+| `claw-metrics` | In-memory time-series database (24h retention) |
+| `claw-auth` | API keys, RBAC, audit logging |
+| `claw-autoscaler` | GPU-aware autoscaling policies |
+| `claw-storage` | Volume management and backups |
+
+**Networking**
+
+| Crate | Purpose |
+|-------|---------|
+| `claw-network` | Mesh topology, service discovery, ingress |
+| `claw-wireguard` | WireGuard tunnel management |
+| `claw-discovery` | Network scanning, node bootstrap |
+| `claw-pki` | Certificate authority |
+
+**MOLT Marketplace**
+
+| Crate | Purpose |
+|-------|---------|
+| `molt-core` | Token primitives and policies |
+| `molt-p2p` | Peer discovery and gossip protocol |
+| `molt-market` | Order book and settlement |
+| `molt-agent` | Provider/buyer automation |
+| `molt-token` | Solana SPL token integration |
+| `molt-attestation` | Hardware verification (TEE/TPM) |
+
+---
+
+## Command Tiers (91 commands per node)
+
+Each `clawnode` exposes commands organized into feature-gated tiers:
+
+| Tier | Commands | Feature Flag | Examples |
+|------|----------|-------------|----------|
+| 0 - Core | 13 | always | `system.info`, `gpu.list`, `gpu.metrics`, `workload.run`, `workload.list` |
+| Config | 5 | always | `config.create`, `config.get`, `config.update`, `config.delete`, `config.list` |
+| 1 - Secrets | 5 | `secrets` | `secret.create`, `secret.get`, `secret.rotate` |
+| 2 - Metrics | 8 | `metrics` | `metrics.query`, `events.emit`, `alerts.create` |
+| 3 - Deploy | 8 | `deploy` | `deploy.create`, `deploy.rollback`, `deploy.promote` |
+| 4 - Jobs | 9 | always | `job.create`, `cron.create`, `cron.trigger` |
+| 5 - Network | 8 | `network` | `service.create`, `ingress.create`, `network.status` |
+| 6 - Storage | 9 | `storage` | `volume.create`, `volume.snapshot`, `backup.create` |
+| 7 - Auth | 7 | `auth` | `auth.create_key`, `rbac.create_role`, `audit.query` |
+| 8 - Namespaces | 7 | always | `namespace.create`, `node.label`, `node.drain` |
+| 9 - Autoscale | 4 | `autoscaler` | `autoscale.create`, `autoscale.status` |
+| 10 - MOLT | 5 | `molt` | `molt.discover`, `molt.bid`, `molt.reputation` |
+| 11 - Policy | 3 | always | `policy.create`, `policy.validate`, `policy.list` |
+
+Build with the features you need:
+
+```bash
+cargo build -p clawnode --features full              # all 91 commands
+cargo build -p clawnode --features docker,secrets     # core + docker + secrets
+cargo build -p clawnode                               # core only (13 commands)
+```
+
+---
+
+## What Clawbernetes Replaces
+
+| Traditional Stack | Clawbernetes |
+|-------------------|-------------|
+| Kubernetes + kubectl + YAML | Single binary + natural language |
+| Prometheus + Grafana + Alertmanager | AI-native observability ("what's wrong?" gets an answer) |
+| Vault + cert-manager | Built-in encrypted secrets + automatic rotation |
+| ArgoCD + Helm + Kustomize | Intent-based deployment ("deploy X with Y GPUs") |
+| Calico + Flannel + Istio | WireGuard mesh or Tailscale (automatic) |
+| SLURM + PBS | GPU-aware scheduling with workload priorities |
+| Cloud marketplace (AWS/GCP) | MOLT P2P compute marketplace |
+
+---
+
+## GPU Support
+
+Real GPU acceleration via [CubeCL](https://github.com/tracel-ai/cubecl):
+
+| Platform | Backend | Status |
+|----------|---------|--------|
+| NVIDIA | CUDA | Production |
+| Apple Silicon | Metal | Production |
+| AMD | ROCm/HIP | Production |
+| Cross-platform | Vulkan | Production |
+| Fallback | CPU SIMD | Production |
+
+---
+
+## MOLT P2P Marketplace
+
+Clawbernetes nodes can participate in the MOLT decentralized GPU marketplace:
+
+```
+Provider Node                         Buyer Agent
++-------------+                      +-------------+
+| Idle GPUs   |<-- Offer ----------->| "Need 4     |
+| H100 x 8   |                      |  H100s for  |
++-------------+                      |  training"  |
+      |                              +-------------+
+      | Execute                             |
+      v                                     | MOLT Payment
++-------------+                             v
+| Attestation |---- Proof -------->+-------------+
+| (TEE/TPM)   |                    |   Escrow    |
++-------------+                    |  (Solana)   |
+                                   +-------------+
+```
+
+**Autonomy modes:**
+
+| Mode | Behavior |
+|------|----------|
+| Conservative | Approve every job manually |
+| Moderate | Agent follows your pricing/duration policies |
+| Aggressive | Full autopilot — maximize earnings |
+
+---
+
 ## See Also
 
 - [User Guide](user-guide.md) — Getting started
@@ -516,3 +650,5 @@ Nodes participating in MOLT communicate via libp2p gossip:
 - [MOLT Network](molt-network.md) — P2P marketplace architecture
 - [Security Guide](security.md) — Security deep-dive
 - [API Documentation](api/README.md) — Crate-level API docs
+- [Skills](skills.md) — Agent skills reference
+- [Use Cases](use-cases.md) — Example conversations
