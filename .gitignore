@@ -1,7 +1,6 @@
 # Rust
 /target/
 **/*.rs.bk
-Cargo.lock
 
 # IDE
 .idea/
@@ -25,3 +24,8 @@ Thumbs.db
 *.so
 *.dylib
 *.dll
+*.profraw
+
+# Internal / private
+clawbernetes-prd.json
+/security/

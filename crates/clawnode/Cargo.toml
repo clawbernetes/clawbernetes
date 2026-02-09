@@ -1,7 +1,7 @@
 [package]
 name = "clawnode"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Clawbernetes GPU node agent - connects to OpenClaw gateway"
 license = "Apache-2.0"
 repository = "https://github.com/clawbernetes/clawbernetes"

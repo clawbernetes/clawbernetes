@@ -1,7 +1,8 @@
 # Clawbernetes Makefile
 # Common commands for development and deployment
 
-.PHONY: all build test clean docker docker-up docker-down release help
+.PHONY: all build test clean docker docker-up docker-down release help \
+       ci-lint ci-test ci-build-debug ci-build-release ci version
 
 # Default target
 all: build test
@@ -101,6 +102,37 @@ clean-docker:
 	docker compose down -v --rmi local
 
 # ===========================================
+# CI (mirrors the Gitea Actions pipeline)
+# ===========================================
+
+ci-lint:
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+ci-test:
+	cargo test --workspace --all-targets
+	cargo test --workspace --all-targets --all-features
+
+ci-build-debug:
+	cargo build --workspace
+	cargo build --workspace --all-features
+
+ci-build-release:
+	cargo build --release --workspace
+	@echo "Verifying binaries..."
+	@for bin in claw-gateway-server clawnode clawbernetes claw-tui claw-bridge; do \
+		test -x "target/release/$$bin" || { echo "MISSING: $$bin"; exit 1; }; \
+		echo "OK: $$bin"; \
+	done
+
+ci: ci-lint ci-test ci-build-debug ci-build-release
+	@echo "All CI stages passed."
+
+version:
+	@grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/'
+
+# ===========================================
 # Help
 # ===========================================
 
@@ -131,6 +163,14 @@ help:
 	@echo "  make run-node       - Run node locally"
 	@echo "  make status         - Check cluster status"
 	@echo "  make nodes          - List nodes"
+	@echo ""
+	@echo "CI (mirrors Gitea Actions):"
+	@echo "  make ci             - Run full CI pipeline locally"
+	@echo "  make ci-lint        - Format check + clippy"
+	@echo "  make ci-test        - Run tests (default + all features)"
+	@echo "  make ci-build-debug - Debug build (default + all features)"
+	@echo "  make ci-build-release - Release build + verify binaries"
+	@echo "  make version        - Print current workspace version"
 	@echo ""
 	@echo "Release:"
 	@echo "  make release        - Full release build"
