@@ -1,127 +1,78 @@
 ---
 name: molt-marketplace
-description: P2P GPU compute marketplace — discover providers, bid, and trade capacity via MOLT
-metadata:
-  openclaw:
-    requires:
-      bins: ["clawnode"]
+description: MOLT P2P GPU compute marketplace — offer idle GPUs, find compute, manage escrow and attestation.
+metadata: {"openclaw": {"always": true}}
 ---
 
 # MOLT Marketplace
 
-You can discover GPU providers, submit bids for compute, and manage marketplace interactions on the MOLT decentralized GPU network.
+MOLT is a peer-to-peer GPU compute marketplace. Providers offer idle GPUs, buyers rent them, payment via MOLT tokens on Solana.
 
-Requires the `molt` feature on the node.
+## Prerequisites
 
-## Commands
-
-### Discover Providers
-
-```
-node.invoke <node-id> molt.discover {
-  "gpuType": "nvidia",
-  "minVram": 24,
-  "maxPrice": 500
-}
+clawnode must be built with `--features molt`:
+```bash
+cargo install --path crates/clawnode --features molt
 ```
 
-**Parameters (all optional):**
-- `gpuType`: Filter by GPU type/capability (default "gpu")
-- `minVram`: Minimum VRAM in GB
-- `maxPrice`: Maximum price per GPU-hour (in MOLT nano-tokens)
+## Provider Operations (selling GPU time)
 
-Returns: matching providers with peer IDs and capabilities.
-
-### Submit a Bid
-
-```
-node.invoke <node-id> molt.bid {
-  "providerId": "peer-abc123",
-  "jobSpec": {
-    "gpus": 2,
-    "gpuModel": "A100",
-    "memoryGb": 80,
-    "durationHours": 24
-  },
-  "maxPrice": 1000
-}
+### List Available Capacity
+```bash
+# Check which GPUs are idle
+exec host=node node=<name> command="nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total --format=csv,noheader"
 ```
 
-**Parameters:**
-- `providerId` (required): Target provider's peer ID
-- `jobSpec` (required): Job requirements
-  - `gpus`: Number of GPUs needed
-  - `gpuModel` (optional): Specific GPU model
-  - `memoryGb`: Minimum GPU memory
-  - `durationHours`: Maximum job duration
-- `maxPrice` (required): Maximum price willing to pay
-
-Returns: `orderId`, `state` (submitted), `success`
-
-### Check Order Status
-
-```
-node.invoke <node-id> molt.status {
-  "orderId": "<order-id>"
-}
+### Offer GPUs
+```bash
+# Via clawnode invoke
+nodes invoke --node <name> --command molt.discover --params '{"action":"announce","gpus":[0,1],"pricePerHour":0.50,"maxHours":24}'
 ```
 
-Or by job ID:
-```
-node.invoke <node-id> molt.status {
-  "jobId": "<job-id>"
-}
+### Check Earnings
+```bash
+nodes invoke --node <name> --command molt.balance --params '{}'
 ```
 
-Returns: order details, buyer, max price, state.
+### Set Autonomy Mode
+- **Conservative**: approve every job manually
+- **Moderate**: auto-accept jobs matching policy
+- **Aggressive**: accept all jobs within price range
 
-### Check Wallet Balance
+## Buyer Operations (renting GPU time)
 
-```
-node.invoke <node-id> molt.balance
-```
-
-Returns: public key, balance, and on-chain integration status.
-
-### Check Provider Reputation
-
-```
-node.invoke <node-id> molt.reputation {
-  "peerId": "<hex-encoded-peer-id>"
-}
+### Find Available GPUs
+```bash
+nodes invoke --node <name> --command molt.discover --params '{"action":"search","gpuType":"H100","count":4,"maxPrice":1.00}'
 ```
 
-Returns: peer capabilities, reputation score, and attestation status.
-
-## Common Patterns
-
-### Find Cheap A100 Compute
-```json
-// 1. Discover
-{"gpuType": "nvidia", "minVram": 80}
-// 2. Bid on the best provider
-{"providerId": "<id>", "jobSpec": {"gpus": 8, "memoryGb": 80, "durationHours": 48}, "maxPrice": 5000}
-// 3. Monitor
-{"orderId": "<returned-order-id>"}
+### Place Bid
+```bash
+nodes invoke --node <name> --command molt.bid --params '{"offerId":"<id>","hours":6,"pricePerHour":0.75}'
 ```
 
-### Quick Inference Job
-```json
-{
-  "providerId": "<id>",
-  "jobSpec": {"gpus": 1, "memoryGb": 24, "durationHours": 1},
-  "maxPrice": 50
-}
+### Check Job Status
+```bash
+nodes invoke --node <name> --command molt.status --params '{"jobId":"<id>"}'
 ```
 
-## How MOLT Works
+## Reputation
 
-1. **Discover** — Search the peer-to-peer network for providers matching your GPU requirements
-2. **Bid** — Submit an order to the order book with your job spec and max price
-3. **Match** — The marketplace matches orders with capacity offers from providers
-4. **Execute** — Jobs run on provider hardware with attestation verification
-5. **Settle** — Payment is released from escrow upon verified completion
+```bash
+nodes invoke --node <name> --command molt.reputation --params '{"peerId":"<peer>"}'
+```
 
-## MOLT Token
+Reputation factors: uptime, job completion rate, hardware attestation validity.
 
-MOLT is the native token for the decentralized GPU marketplace. Balances require on-chain integration for full tracking. The wallet uses Ed25519 keys for signing transactions.
+## Security
+
+- All compute is **hardware-attested** (TEE/TPM verification)
+- Payment held in **Solana escrow** until job completion
+- Attestation proves actual GPU model/VRAM matches listing
+
+## Workflow
+
+1. **Provider**: Identify idle GPUs → announce on MOLT network
+2. **Buyer**: Search for matching GPUs → place bid
+3. **Match**: Escrow funds → attestation check → job starts
+4. **Complete**: Job finishes → escrow releases → reputation updated

@@ -1,111 +1,67 @@
 ---
 name: autoscaler
-description: GPU-aware autoscaling policies for Clawbernetes node pools
-metadata:
-  openclaw:
-    requires:
-      bins: ["clawnode"]
+description: Scale GPU workloads up or down based on utilization, queue depth, or request latency.
+metadata: {"openclaw": {"always": true}}
 ---
 
 # Autoscaler
 
-You can create and manage autoscaling policies for GPU node pools on Clawbernetes nodes.
+## Scaling Decisions
 
-Requires the `autoscaler` feature on the node.
+Before scaling, gather:
+1. **GPU utilization** across nodes (`nvidia-smi`)
+2. **Request queue** depth / latency (application metrics)
+3. **Available capacity** (idle GPUs on other nodes)
+4. **Cost** implications
 
-## Commands
+## Check Current Load
 
-### Create an Autoscaler
+```bash
+# GPU utilization across a node
+exec host=node node=<name> command="nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total --format=csv,noheader"
 
-```
-node.invoke <node-id> autoscale.create {
-  "target": "gpu-pool",
-  "minReplicas": 2,
-  "maxReplicas": 20,
-  "policy": "target_utilization",
-  "targetUtilization": 70.0,
-  "tolerance": 10.0
-}
-```
+# Container resource usage
+exec host=node node=<name> command="docker stats --no-stream --format '{{.Name}}: CPU={{.CPUPerc}} MEM={{.MemUsage}}'"
 
-**Parameters:**
-- `target` (required): Name of the node pool to autoscale
-- `minReplicas` (optional, default 1): Minimum number of nodes
-- `maxReplicas` (optional, default 10): Maximum number of nodes
-- `policy` (optional, default "target_utilization"): Scaling policy type
-
-**Policy: `target_utilization`**
-- `targetUtilization` (optional, default 70.0): Target GPU utilization percentage
-- `tolerance` (optional, default 10.0): Tolerance band before scaling
-
-**Policy: `queue_depth`**
-- `targetQueueDepth` (optional, default 5): Target jobs per node
-- `upThreshold` (optional, default 10): Queue depth to trigger scale-up
-- `downThreshold` (optional, default 2): Queue depth to trigger scale-down
-
-### Check Autoscaler Status
-
-```
-node.invoke <node-id> autoscale.status { "target": "gpu-pool" }
+# Application-level metrics (if exposed)
+exec host=node node=<name> command="curl -s http://localhost:8000/metrics 2>/dev/null | grep -E 'request_queue|latency|throughput' || echo 'no app metrics'"
 ```
 
-Returns: current nodes, total GPUs, min/max settings, enabled status, pending actions.
+## Scale Up (add replicas)
 
-### Adjust Autoscaler Settings
+```bash
+# Find a node with available GPUs
+# 1. Check all nodes for idle GPUs (utilization < 10%)
+# 2. Pick the node with most free VRAM
+# 3. Deploy additional replica
 
-```
-node.invoke <node-id> autoscale.adjust {
-  "target": "gpu-pool",
-  "minReplicas": 3,
-  "maxReplicas": 50
-}
-```
-
-Updates min/max replicas and policy parameters without recreating the autoscaler.
-
-### Delete an Autoscaler
-
-```
-node.invoke <node-id> autoscale.delete { "target": "gpu-pool" }
+exec host=node node=<target-node> command="docker run -d --gpus all --name <service>-replica-2 -p <port>:<port> <image> <args>"
 ```
 
-## Scaling Policies
+## Scale Down
 
-| Policy | Scales Based On | Best For |
-|--------|----------------|----------|
-| `target_utilization` | GPU utilization % | Steady workloads, inference |
-| `queue_depth` | Pending job count | Batch processing, training queues |
-
-## Common Patterns
-
-### Inference Cluster (Utilization-Based)
-```json
-{
-  "target": "inference-pool",
-  "minReplicas": 2,
-  "maxReplicas": 20,
-  "policy": "target_utilization",
-  "targetUtilization": 70.0,
-  "tolerance": 10.0
-}
+```bash
+# Identify underutilized replicas
+# If GPU utilization < 5% for extended period, remove replica
+exec host=node node=<name> command="docker stop <service>-replica-2 && docker rm <service>-replica-2"
 ```
 
-### Training Queue (Queue-Based)
-```json
-{
-  "target": "training-pool",
-  "minReplicas": 1,
-  "maxReplicas": 50,
-  "policy": "queue_depth",
-  "targetQueueDepth": 3,
-  "upThreshold": 8,
-  "downThreshold": 1
-}
+## Scaling Thresholds (defaults)
+
+| Metric | Scale Up | Scale Down |
+|--------|----------|------------|
+| GPU util | > 85% sustained 5min | < 15% sustained 10min |
+| VRAM usage | > 90% | < 30% |
+| Request latency | > 2x baseline | < 0.5x baseline |
+| Queue depth | > 100 pending | 0 pending for 10min |
+
+## Monitoring via Cron
+
+Set up periodic checks:
 ```
-
-## Workflow
-
-1. `autoscale.create` to set up a scaling policy for a node pool
-2. `autoscale.status` to monitor current scale and pending actions
-3. `autoscale.adjust` to tune parameters as traffic patterns change
-4. `autoscale.delete` to remove autoscaling and manage pool size manually
+Use cron tool to schedule a job every 5 minutes that:
+1. Checks GPU utilization on all nodes
+2. If any node > 85% for 3 consecutive checks → scale up
+3. If all replicas < 15% → scale down one replica
+4. Report scaling actions to the user
+```

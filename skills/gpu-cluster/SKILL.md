@@ -1,87 +1,64 @@
 ---
 name: gpu-cluster
-description: Discover and manage GPU compute nodes in the Clawbernetes cluster
+description: GPU fleet inventory — list nodes, detect GPUs, map topology, and report cluster capacity.
+metadata: {"openclaw": {"always": true}}
 ---
 
-# GPU Cluster Management
+# GPU Cluster Inventory
 
-You can discover and manage GPU compute nodes in the Clawbernetes cluster.
+## List Connected Nodes
 
-## Available Nodes
-
-Use `node.list` to discover connected clawnode instances. Each node registers with the OpenClaw gateway and advertises its capabilities.
-
-## Commands
-
-### Discover Nodes
-
-To see what nodes are available:
-```
-node.list
+```bash
+# Get all connected nodes
+nodes status
+# Detailed info about a specific node
+nodes describe --node <name>
 ```
 
-### Query GPU Capabilities
+## GPU Inventory (per node)
 
-To check what GPUs a specific node has:
-```
-node.invoke <node-id> gpu.list
-```
+```bash
+# Quick GPU list
+exec host=node node=<name> command="nvidia-smi --query-gpu=index,name,uuid,memory.total,pci.bus_id --format=csv,noheader"
 
-Returns: GPU count, model names, VRAM per GPU, total VRAM, PCI bus IDs.
+# Full GPU details with topology
+exec host=node node=<name> command="nvidia-smi topo -m"
 
-### Check GPU Utilization
+# NVLink status
+exec host=node node=<name> command="nvidia-smi nvlink --status"
 
-To see real-time GPU metrics on a node:
-```
-node.invoke <node-id> gpu.metrics
-```
-
-Returns per-GPU: utilization %, memory used/total, temperature, power draw/limit.
-
-### Get Full Node Capabilities
-
-To see everything a node can do:
-```
-node.invoke <node-id> node.capabilities
+# AMD GPUs
+exec host=node node=<name> command="rocm-smi --showid --showproductname --showmeminfo vram"
 ```
 
-Returns: hostname, capabilities list, supported commands, container runtime, CPU count, total memory, GPU details, labels.
+## Fleet-Wide Inventory
 
-### Check Node Health
+For each connected node, collect:
+1. GPU count, model, and VRAM
+2. NVLink/PCIe topology
+3. CPU cores and system RAM
+4. Container runtime (docker/podman)
+5. Available disk space
 
-To see if a node is healthy and has resources available:
+```bash
+# System overview
+exec host=node node=<name> command="uname -a && nproc && free -h && df -h / | tail -1"
+
+# Docker status
+exec host=node node=<name> command="docker info --format '{{.ServerVersion}} containers={{.Containers}} images={{.Images}}' 2>/dev/null || echo 'docker not available'"
 ```
-node.invoke <node-id> node.health
-```
 
-Returns: status, load average, memory usage, disk usage, GPU count, uptime.
+## Report Format
 
-## Choosing the Best Node for a Workload
+Present inventory as a table:
 
-When a user requests a GPU workload:
+| Node | GPUs | Model | VRAM | NVLink | CPU | RAM | Status |
+|------|------|-------|------|--------|-----|-----|--------|
 
-1. List all connected nodes with `node.list`
-2. For each node, check `gpu.list` to see available GPUs
-3. Check `gpu.metrics` to see current utilization
-4. Check `node.health` to see overall load
-5. Choose the node with the best combination of:
-   - Enough free GPUs for the workload
-   - Lowest GPU utilization
-   - Lowest memory pressure
-   - Lowest CPU load
+## Scheduling Hints
 
-For non-GPU workloads (like nginx, redis), prefer the node with:
-- Lowest CPU load
-- Most available memory
-- No GPU contention (save GPUs for GPU workloads)
-
-## Example Workflow
-
-User: "I need to run a PyTorch job with 2 GPUs"
-
-1. `node.list` -> gpu-node-1, gpu-node-2
-2. `node.invoke gpu-node-1 gpu.list` -> 4x A100, 80GB each
-3. `node.invoke gpu-node-1 gpu.metrics` -> GPU 0: 95%, GPU 1: 90%, GPU 2: 5%, GPU 3: 3%
-4. `node.invoke gpu-node-2 gpu.list` -> 2x H100, 80GB each
-5. `node.invoke gpu-node-2 gpu.metrics` -> GPU 0: 0%, GPU 1: 0%
-6. Best choice: gpu-node-2 (both GPUs free, H100 > A100)
+When recommending placement:
+- **NVLink nodes** → multi-GPU training (tensor parallelism)
+- **PCIe-only nodes** → inference, single-GPU jobs
+- **High VRAM** → large models (70B+ need 80GB+ per GPU)
+- **Cool GPUs** (<70°C) → prefer for new workloads over hot ones

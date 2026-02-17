@@ -33,6 +33,7 @@ pub async fn handle_command(
         "gpu.metrics" => handle_gpu_metrics(state).await,
         "system.info" => handle_system_info(state).await,
         "system.run" => handle_system_run(state, request.params).await,
+        "system.which" => handle_system_which(request.params).await,
         "workload.run" => handle_workload_run(state, request.params).await,
         "workload.stop" => handle_workload_stop(state, request.params).await,
         "workload.logs" => handle_workload_logs(state, request.params).await,
@@ -207,6 +208,33 @@ async fn handle_system_run(_state: &SharedState, params: Value) -> Result<Value,
         "stderr": stderr,
         "success": output.status.success(),
     }))
+}
+
+/// Handle system.which — resolve binary paths (required by OpenClaw node protocol)
+async fn handle_system_which(params: Value) -> Result<Value, CommandError> {
+    #[derive(Deserialize)]
+    struct WhichParams {
+        #[serde(default)]
+        bins: Vec<String>,
+    }
+
+    let params: WhichParams = serde_json::from_value(params)?;
+    let mut results = serde_json::Map::new();
+
+    for bin in &params.bins {
+        let output = Command::new("which").arg(bin).output();
+        match output {
+            Ok(o) if o.status.success() => {
+                let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                results.insert(bin.clone(), json!(path));
+            }
+            _ => {
+                results.insert(bin.clone(), Value::Null);
+            }
+        }
+    }
+
+    Ok(json!({ "bins": results }))
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -1,97 +1,87 @@
 ---
 name: system-admin
-description: System information, node management, and cluster administration for Clawbernetes
+description: Node administration — labels, taints, drains, OS updates, service management.
+metadata: {"openclaw": {"always": true}}
 ---
 
 # System Administration
 
-You can run system commands, gather diagnostics, and monitor node health across the Clawbernetes cluster.
+## Node Information
 
-## Commands
+```bash
+# Full system info
+exec host=node node=<name> command="hostnamectl 2>/dev/null || (uname -a && cat /etc/os-release | head -5)"
 
-All commands are invoked on a specific node via `node.invoke <node-id> <command> <params>`.
+# Uptime and load
+exec host=node node=<name> command="uptime"
 
-### Get System Info
+# Disk usage
+exec host=node node=<name> command="df -h | grep -E '^/dev'"
 
-```
-node.invoke <node-id> system.info
-```
+# Memory
+exec host=node node=<name> command="free -h"
 
-Returns: hostname, OS, kernel version, CPU count, total/used/available memory, GPU count, GPU VRAM, capabilities, supported commands.
-
-### Run a Command
-
-```
-node.invoke <node-id> system.run {
-  "command": ["ls", "-la", "/data"],
-  "cwd": "/home/user",
-  "env": ["DEBUG=1"]
-}
+# Network interfaces
+exec host=node node=<name> command="ip -br addr 2>/dev/null || ifconfig | grep -E 'inet '"
 ```
 
-**Parameters:**
-- `command` (required): Command as array of strings (program + args)
-- `cwd` (optional): Working directory
-- `env` (optional): Environment variables as `KEY=VALUE` strings
+## Node Labels and Metadata
 
-**Returns:** exitCode, stdout, stderr, success.
-
-### Check Node Health
-
-```
-node.invoke <node-id> node.health
+Labels are stored in clawnode's local config:
+```bash
+nodes invoke --node <name> --command node.label --params '{"action":"set","key":"gpu-type","value":"h100"}'
+nodes invoke --node <name> --command node.label --params '{"action":"list"}'
 ```
 
-Returns: status, CPU count, load average (1/5/15 min), memory usage (total/used/available/percent), disk usage per mount, GPU count, system uptime.
+## Node Drain (graceful workload removal)
 
-### Get Node Capabilities
+```bash
+# 1. Stop accepting new workloads
+nodes invoke --node <name> --command node.taint --params '{"key":"drain","value":"true","effect":"NoSchedule"}'
 
+# 2. List running workloads
+exec host=node node=<name> command="docker ps --format '{{.Names}}'"
+
+# 3. Migrate each workload to another node (use workload-manager skill)
+
+# 4. Verify node is empty
+exec host=node node=<name> command="docker ps -q | wc -l"
 ```
-node.invoke <node-id> node.capabilities
+
+## OS Updates
+
+```bash
+# Check for updates (Ubuntu/Debian)
+exec host=node node=<name> command="apt list --upgradable 2>/dev/null | head -20"
+
+# Check for updates (RHEL/CentOS)
+exec host=node node=<name> command="yum check-update 2>/dev/null | tail -20"
+
+# NVIDIA driver version
+exec host=node node=<name> command="nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1"
 ```
 
-Returns: hostname, capabilities list, supported commands, container runtime, CPU/memory/GPU details, node labels.
+**⚠️ Never auto-apply OS or driver updates.** Always ask the user first — GPU driver updates can break running workloads.
 
-## Cluster-Wide Operations
+## Service Management
 
-To get a full picture of the cluster:
+```bash
+# Check clawnode service
+exec host=node node=<name> command="systemctl status clawnode 2>/dev/null || echo 'not a systemd service'"
 
-1. `node.list` to get all connected nodes
-2. For each node, run `node.health` to check status
-3. For each node, run `system.info` for detailed specs
-4. Aggregate the results for cluster-wide view
+# Docker service
+exec host=node node=<name> command="systemctl status docker"
 
-## Common Administrative Tasks
+# NVIDIA persistence daemon
+exec host=node node=<name> command="systemctl status nvidia-persistenced 2>/dev/null"
+```
 
-### Check disk space across cluster
-For each node: `system.run {"command": ["df", "-h"]}`
+## Security
 
-### Check running processes
-For each node: `system.run {"command": ["ps", "aux", "--sort=-%mem"]}`
+```bash
+# Check listening ports
+exec host=node node=<name> command="ss -tuln"
 
-### Check network connectivity
-For each node: `system.run {"command": ["ss", "-tlnp"]}`
-
-### Check Docker status
-For each node: `system.run {"command": ["docker", "info"]}`
-
-### Check GPU driver version
-For each node: `system.run {"command": ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"]}`
-
-### Update a package
-For each node: `system.run {"command": ["apt", "update"]}`
-Then: `system.run {"command": ["apt", "install", "-y", "package-name"]}`
-
-## Health Monitoring
-
-A node is considered healthy when:
-- Load average (1min) is below CPU count
-- Memory usage is below 90%
-- Disk usage is below 90% on all mounts
-- GPU temperatures are below 85C (check via `gpu.metrics`)
-
-Warning thresholds:
-- Load average > 0.7 * CPU count
-- Memory usage > 80%
-- Disk usage > 80%
-- GPU temperature > 75C
+# Check for failed logins
+exec host=node node=<name> command="journalctl -u sshd --since '24 hours ago' | grep -i 'failed' | wc -l"
+```

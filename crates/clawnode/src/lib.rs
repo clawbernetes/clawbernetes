@@ -100,6 +100,7 @@ impl NodeState {
             // Tier 0 — Core (always)
             "system.info".to_string(),
             "system.run".to_string(),
+            "system.which".to_string(),
             "gpu.list".to_string(),
             "gpu.metrics".to_string(),
             "workload.run".to_string(),

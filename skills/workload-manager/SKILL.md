@@ -1,231 +1,77 @@
 ---
 name: workload-manager
-description: Container lifecycle management for GPU workloads on Clawbernetes nodes
+description: Deploy, manage, and inspect containerized workloads on GPU nodes using Docker or Podman.
+metadata: {"openclaw": {"always": true}}
 ---
 
 # Workload Manager
 
-You can run, monitor, and manage container workloads across Clawbernetes nodes.
+## Deploy a Container
 
-## Commands
+```bash
+# Basic GPU workload
+exec host=node node=<name> command="docker run -d --gpus all --name <workload-name> -p <host-port>:<container-port> <image> <cmd>"
 
-All workload commands are invoked on a specific node via `node.invoke <node-id> <command> <params>`.
+# With specific GPUs
+exec host=node node=<name> command="docker run -d --gpus '\"device=0,1\"' --name <name> -v /data:/data <image>"
 
-### Run a Container
+# With resource limits
+exec host=node node=<name> command="docker run -d --gpus all --memory=64g --cpus=16 --shm-size=16g --name <name> <image>"
 
-```
-node.invoke <node-id> workload.run {
-  "image": "nginx:latest",
-  "name": "my-nginx",
-  "gpus": 0,
-  "command": ["nginx", "-g", "daemon off;"],
-  "env": ["PORT=8080", "DEBUG=true"],
-  "volumes": ["/host/data:/container/data"],
-  "detach": true,
-  "memory": "4g",
-  "cpu": 2.0,
-  "shmSize": "2g"
-}
+# vLLM inference example
+exec host=node node=<name> command="docker run -d --gpus all -p 8000:8000 --name vllm-llama --shm-size=16g vllm/vllm-openai --model meta-llama/Llama-3-70B-Instruct --tensor-parallel-size 4"
 ```
 
-**Parameters:**
-- `image` (required): Docker image to run
-- `name` (optional): Container name
-- `gpus` (optional): Number of GPUs to attach (0 = no GPU)
-- `command` (optional): Command to run in the container
-- `env` (optional): Environment variables as `KEY=VALUE` strings
-- `volumes` (optional): Volume mounts as `host:container` strings
-- `detach` (optional, default true): Run in background
-- `memory` (optional): Memory limit (e.g., "8g", "512m")
-- `cpu` (optional): CPU limit as fractional cores (e.g., 4.0)
-- `shmSize` (optional): Shared memory size (e.g., "2g", important for PyTorch)
+**Important flags for ML:**
+- `--gpus all` or `--gpus '"device=0,1"'` — GPU access
+- `--shm-size=16g` — shared memory for NCCL/distributed training
+- `-v /data:/data` — mount data volumes
+- `--ipc=host` — alternative to shm-size for multi-process
 
-**Returns:** `containerId`, `workloadId`, `image`, `success`
+## List Workloads
 
-All containers are labeled with `managed-by=clawbernetes` and a unique `workload-id` for tracking.
+```bash
+exec host=node node=<name> command="docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'"
 
-### Stop a Container
-
-```
-node.invoke <node-id> workload.stop {
-  "containerId": "abc123",
-  "force": false
-}
+# Include stopped
+exec host=node node=<name> command="docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.CreatedAt}}'"
 ```
 
-Or by name:
-```
-node.invoke <node-id> workload.stop {
-  "name": "my-nginx",
-  "force": true
-}
-```
+## Inspect
 
-### Get Container Logs
+```bash
+exec host=node node=<name> command="docker inspect <container> --format '{{.State.Status}} {{.HostConfig.DeviceRequests}}'"
 
-```
-node.invoke <node-id> workload.logs {
-  "containerId": "abc123",
-  "tail": 100
-}
+# Resource usage
+exec host=node node=<name> command="docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}'"
 ```
 
-### List All Managed Workloads
+## Logs
 
-```
-node.invoke <node-id> workload.list
-```
-
-Returns all containers with the `managed-by=clawbernetes` label: container ID, image, state, GPU assignments, creation time, workload ID.
-
-### Inspect a Container
-
-```
-node.invoke <node-id> workload.inspect {
-  "containerId": "abc123"
-}
+```bash
+exec host=node node=<name> command="docker logs --tail 100 <container>"
+exec host=node node=<name> command="docker logs --since 5m <container>"
 ```
 
-Returns detailed container info: state, image, GPU IDs, exit code, labels, creation time.
+## Stop / Remove
 
-### Get Container Resource Stats
-
-```
-node.invoke <node-id> workload.stats {
-  "containerId": "abc123"
-}
+```bash
+exec host=node node=<name> command="docker stop <container>"
+exec host=node node=<name> command="docker rm <container>"
+exec host=node node=<name> command="docker stop <container> && docker rm <container>"
 ```
 
-Returns live CPU %, memory usage, network I/O, block I/O.
+## Execute Inside Container
 
-### Execute a Command in a Container
-
-```
-node.invoke <node-id> container.exec {
-  "containerId": "abc123",
-  "command": ["python", "-c", "print('hello')"],
-  "workdir": "/app"
-}
+```bash
+exec host=node node=<name> command="docker exec <container> nvidia-smi"
+exec host=node node=<name> command="docker exec <container> python -c 'import torch; print(torch.cuda.device_count())'"
 ```
 
-Returns: exitCode, stdout, stderr, success.
+## Health Check Pattern
 
-## Common Workload Patterns
-
-### GPU Training Job
-```json
-{
-  "image": "pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime",
-  "gpus": 2,
-  "memory": "32g",
-  "shmSize": "8g",
-  "env": ["CUDA_VISIBLE_DEVICES=0,1"],
-  "volumes": ["/data/datasets:/data", "/data/checkpoints:/checkpoints"],
-  "command": ["python", "train.py", "--epochs", "100"]
-}
-```
-
-### Web Service
-```json
-{
-  "image": "nginx:latest",
-  "name": "web-frontend",
-  "gpus": 0,
-  "memory": "512m",
-  "cpu": 1.0
-}
-```
-
-### AI Inference Server
-```json
-{
-  "image": "vllm/vllm-openai:latest",
-  "gpus": 1,
-  "memory": "16g",
-  "shmSize": "4g",
-  "env": ["MODEL=meta-llama/Llama-2-7b-hf"],
-  "name": "llm-server"
-}
-```
-
-## Monitoring Workloads
-
-To check on a running workload:
-1. `workload.list` to see all managed containers on the node
-2. `workload.stats` for resource usage
-3. `workload.logs` for output
-4. `gpu.metrics` for GPU-specific utilization
-
-## Deployment Strategies
-
-For production workloads, use deployment commands instead of raw `workload.run`. Deployments track desired state, support rollouts, and enable rollback.
-
-### Create a Deployment
-
-```
-node.invoke <node-id> deploy.create {
-  "name": "api-server",
-  "image": "myapp:v2.0",
-  "replicas": 3,
-  "strategy": "canary:10",
-  "gpus": 1,
-  "memory": "8g"
-}
-```
-
-**Strategy options:** `immediate`, `canary:N` (N% canary), `blue-green`, `rolling:N` (batch size N)
-
-### Check Deployment Status
-
-```
-node.invoke <node-id> deploy.status { "deploymentId": "<id>" }
-```
-
-Returns: state, healthy/total replicas, health ratio, strategy, timestamps.
-
-### Promote or Rollback
-
-```
-node.invoke <node-id> deploy.promote { "deploymentId": "<id>" }
-node.invoke <node-id> deploy.rollback { "deploymentId": "<id>", "reason": "high error rate" }
-```
-
-### Deployment History
-
-```
-node.invoke <node-id> deploy.history
-```
-
-Lists all deployments with their state, image, replica counts, and timestamps.
-
-### Update a Deployment
-
-```
-node.invoke <node-id> deploy.update {
-  "deploymentId": "<id>",
-  "image": "myapp:v3.0",
-  "replicas": 5
-}
-```
-
-### Delete a Deployment
-
-```
-node.invoke <node-id> deploy.delete { "deploymentId": "<id>" }
-```
-
-## Deployment Workflow
-
-1. `deploy.create` with desired image, replicas, and strategy
-2. `deploy.status` to monitor rollout progress
-3. Check metrics and logs for the new version
-4. `deploy.promote` if healthy, `deploy.rollback` if not
-5. `deploy.history` to review all past deployments
-
-## Troubleshooting
-
-- If a container fails to start, check `workload.logs` for error output
-- Use `container.exec` to run diagnostic commands inside a running container
-- Use `workload.inspect` to check exit codes and state details
-- If a container is stuck, use `workload.stop` with `force: true`
-- If a deployment is unhealthy, check `deploy.status` then `deploy.rollback`
+After deploying, verify:
+1. Container is running: `docker ps | grep <name>`
+2. GPUs visible inside: `docker exec <name> nvidia-smi`
+3. Service responding: `curl -s http://localhost:<port>/health`
+4. No OOM or errors: `docker logs --tail 20 <name>`

@@ -1,154 +1,76 @@
 ---
 name: observability
-description: Metrics, events, and alerts for Clawbernetes cluster observability
+description: Aggregate logs, metrics, and health data across the GPU fleet for monitoring and diagnosis.
+metadata: {"openclaw": {"always": true}}
 ---
 
 # Observability
 
-You can query metrics, emit and query events, and manage alert rules on Clawbernetes nodes.
+## Fleet Health Snapshot
 
-## Metrics Commands
+Run across all connected nodes:
 
-Metrics are collected automatically every 30 seconds (CPU, memory, GPU utilization, temperature, power). You can also query custom metrics pushed by applications.
+```bash
+# Per-node GPU summary
+exec host=node node=<name> command="nvidia-smi --query-gpu=index,name,temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw --format=csv"
 
-### Query Metrics
+# System resources
+exec host=node node=<name> command="echo 'CPU:' && top -bn1 | head -3 && echo 'MEM:' && free -h | head -2 && echo 'DISK:' && df -h / | tail -1"
 
-```
-node.invoke <node-id> metrics.query {
-  "name": "cpu:usage_percent",
-  "rangeMinutes": 60,
-  "aggregation": "avg"
-}
-```
-
-**Parameters:**
-- `name` (required): Metric name
-- `rangeMinutes` (optional, default 60): Time window to query
-- `aggregation` (optional): `sum`, `avg`, `min`, `max`, `last`, `count`
-
-**Returns:** Array of `{timestamp, value, labels}` points. With aggregation, returns a single point.
-
-### List Available Metrics
-
-```
-node.invoke <node-id> metrics.list
+# Container status
+exec host=node node=<name> command="docker ps --format '{{.Names}}\t{{.Status}}' 2>/dev/null || echo 'no containers'"
 ```
 
-Returns all metric names with their point counts.
+## Aggregate Logs
 
-### Metrics Snapshot
+```bash
+# Recent container logs (last 5 min)
+exec host=node node=<name> command="docker logs --since 5m <container> 2>&1 | tail -50"
 
-```
-node.invoke <node-id> metrics.snapshot
-```
+# System logs (errors only)
+exec host=node node=<name> command="journalctl -p err --since '5 min ago' --no-pager 2>/dev/null | tail -20"
 
-Returns the latest value of every metric — a quick health overview.
-
-### Built-in Metrics
-
-| Metric | Description |
-|--------|-------------|
-| `cpu:usage_percent` | CPU usage (load / cores * 100) |
-| `cpu:load_1m` | 1-minute load average |
-| `cpu:load_5m` | 5-minute load average |
-| `cpu:load_15m` | 15-minute load average |
-| `memory:usage_percent` | Memory usage percentage |
-| `memory:used_mb` | Used memory in MB |
-| `memory:available_mb` | Available memory in MB |
-| `gpu:utilization_percent` | GPU compute utilization (labeled by gpu index) |
-| `gpu:memory_used_mb` | GPU memory used (labeled by gpu index) |
-| `gpu:temperature_c` | GPU temperature (labeled by gpu index) |
-| `gpu:power_draw_w` | GPU power draw in watts (labeled by gpu index) |
-
-## Event Commands
-
-Events are structured log entries with source, severity, and message.
-
-### Emit an Event
-
-```
-node.invoke <node-id> events.emit {
-  "source": "deploy-controller",
-  "severity": "info",
-  "message": "Deployment api-v2 promoted to full rollout"
-}
+# NVIDIA driver logs
+exec host=node node=<name> command="dmesg | grep -i 'nvidia\|gpu\|nvrm' | tail -20"
 ```
 
-**Severity levels:** `info`, `warning`, `error`
+## GPU Metrics Collection
 
-### Query Events
+```bash
+# Detailed time-series snapshot
+exec host=node node=<name> command="nvidia-smi dmon -s pucvmet -c 3"
 
-```
-node.invoke <node-id> events.query {
-  "severity": "error",
-  "source": "gpu-monitor",
-  "rangeMinutes": 30,
-  "limit": 50
-}
+# DCGM metrics (if available)
+exec host=node node=<name> command="dcgmi diag -r 1 2>/dev/null || echo 'DCGM not installed'"
 ```
 
-All parameters are optional filters. Returns events newest-first.
+## Network I/O
 
-## Alert Commands
-
-Alert rules evaluate metric thresholds and transition between states: `ok` → `firing` → `acknowledged`.
-
-### Create an Alert Rule
-
-```
-node.invoke <node-id> alerts.create {
-  "name": "high-gpu-temp",
-  "metric": "gpu:temperature_c",
-  "condition": "above",
-  "threshold": 85.0
-}
+```bash
+exec host=node node=<name> command="ss -tuln | grep -E ':(8000|8080|8443|3000)' || echo 'no listening services'"
+exec host=node node=<name> command="cat /proc/net/dev | awk 'NR>2{print $1, $2, $10}'"
 ```
 
-**Parameters:**
-- `name` (required): Unique alert name
-- `metric` (required): Metric name to evaluate
-- `condition` (required): `above` or `below`
-- `threshold` (required): Numeric threshold
+## Anomaly Detection
 
-### List Alerts
+When checking fleet health, flag:
+- **GPU temp > 85°C** — thermal warning
+- **GPU util at 100% + memory full** — potential OOM risk
+- **GPU util at 0% with running container** — process may be hung
+- **ECC errors > 0** — hardware degradation
+- **Container restarting** — crash loop
+- **Disk > 90% full** — capacity warning
 
-```
-node.invoke <node-id> alerts.list
-```
-
-Returns all alert rules with their current state (`ok`, `firing`, or `acknowledged`).
-
-### Acknowledge an Alert
+## Summary Report Format
 
 ```
-node.invoke <node-id> alerts.acknowledge { "name": "high-gpu-temp" }
+Fleet Status: <timestamp>
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+Nodes: X connected, Y total
+GPUs: N total, M active
+Alerts: [list any flagged issues]
+
+Per-Node:
+  node-01: 8×H100, 72°C avg, 85% util, 3 containers
+  node-02: 4×A100, 65°C avg, 20% util, 1 container
 ```
-
-Only works when the alert is in `firing` state.
-
-## Common Observability Patterns
-
-### Health Check Workflow
-1. `metrics.snapshot` for a quick overview
-2. If CPU or memory looks high, `metrics.query` with `rangeMinutes: 60` to see the trend
-3. Check `events.query` with `severity: error` for recent issues
-4. Check `alerts.list` for any firing alerts
-
-### GPU Monitoring
-```
-metrics.query { "name": "gpu:utilization_percent", "rangeMinutes": 30 }
-metrics.query { "name": "gpu:temperature_c", "rangeMinutes": 30 }
-metrics.query { "name": "gpu:memory_used_mb", "rangeMinutes": 30 }
-```
-
-### Capacity Planning
-Use `metrics.query` with `aggregation: "avg"` over longer windows (e.g., `rangeMinutes: 1440` for 24h) to understand utilization patterns and right-size resources.
-
-### Alert Thresholds
-
-| Metric | Warning | Critical |
-|--------|---------|----------|
-| `cpu:usage_percent` | above 70 | above 90 |
-| `memory:usage_percent` | above 80 | above 95 |
-| `gpu:temperature_c` | above 75 | above 85 |
-| `gpu:utilization_percent` | below 10 (idle waste) | above 98 (saturated) |

@@ -1,159 +1,74 @@
 ---
 name: gpu-diagnose
-description: GPU troubleshooting — performance issues, memory errors, thermal throttling, and hardware failures
-user-invocable: false
+description: Diagnose GPU health issues — thermal throttling, memory errors, utilization anomalies, driver problems.
+metadata: {"openclaw": {"always": true}}
 ---
 
-# GPU Diagnose
+# GPU Diagnostics
 
-Diagnose GPU issues including performance problems, memory errors, thermal throttling, and hardware failures.
+## Quick Health Check
 
-## When to Use
-
-- "Why is my training slow?"
-- "GPU not working" or "GPU errors"
-- Workload stuck in pending state
-- Performance degradation
-- CUDA/driver errors in logs
-
-## Diagnostic Workflow
-
-1. **Identify the scope** — specific workload, node, or cluster-wide?
-2. **Check GPU health** — temperature, utilization, memory
-3. **Review logs** — CUDA errors, driver issues, OOM
-4. **Check scheduling** — pending workloads, resource constraints
-5. **Recommend action** — fix or escalate
-
-## Tools Used
-
-- `node_list` — list nodes with GPU status
-- `node_get` — detailed node/GPU info
-- `workload_get` — workload status and errors
-- `workload_logs` — check for GPU errors
-- `metrics_query` — GPU metrics (utilization, temp, memory)
-- `logs_search` — search for error patterns
-- `alert_list` — check existing alerts
-
-## Common Issues & Diagnosis
-
-### 1. Thermal Throttling
-
-**Symptoms:** High GPU temp, reduced utilization despite load
-
-**Diagnosis:**
-```
-metrics_query(metric: "gpu_temperature", nodeId: "...")
-metrics_query(metric: "gpu_utilization", nodeId: "...")
+```bash
+# Temperature, utilization, memory, power for all GPUs
+exec host=node node=<name> command="nvidia-smi --query-gpu=index,temperature.gpu,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw,power.limit,clocks.current.sm,clocks.max.sm --format=csv"
 ```
 
-If temp > 80°C and utilization fluctuates → thermal throttling
+## Thermal Analysis
 
-**Action:** Improve cooling, reduce batch size, or migrate workload
+```bash
+# Check for thermal throttling
+exec host=node node=<name> command="nvidia-smi --query-gpu=index,temperature.gpu,temperature.gpu.tlimit,clocks_throttle_reasons.sw_thermal_slowdown --format=csv"
 
-### 2. Out of Memory (OOM)
-
-**Symptoms:** Workload crashes, "CUDA out of memory" in logs
-
-**Diagnosis:**
-```
-workload_logs(workloadId: "...", level: "error")
-metrics_query(metric: "gpu_memory_used", workloadId: "...")
+# Fan speed
+exec host=node node=<name> command="nvidia-smi --query-gpu=index,fan.speed --format=csv"
 ```
 
-Look for: "CUDA error: out of memory", memory usage near 100%
+**Thresholds:**
+- < 70°C: Normal
+- 70-80°C: Warm (acceptable under load)
+- 80-90°C: Hot (investigate cooling)
+- > 90°C: **Critical** — risk of throttling/shutdown
 
-**Action:** Reduce batch size, use gradient checkpointing, request more GPUs
+## Memory Errors
 
-### 3. CUDA/Driver Errors
+```bash
+# ECC errors (correctable and uncorrectable)
+exec host=node node=<name> command="nvidia-smi --query-gpu=index,ecc.errors.corrected.volatile.total,ecc.errors.uncorrected.volatile.total --format=csv"
 
-**Symptoms:** Workload fails immediately, driver errors
-
-**Diagnosis:**
-```
-workload_logs(workloadId: "...")
-logs_search(query: "CUDA error OR nvidia-smi OR driver", nodeId: "...")
-```
-
-Look for: driver version mismatch, CUDA initialization failed
-
-**Action:** Check driver version, restart node, or update drivers
-
-### 4. Scheduling Failure
-
-**Symptoms:** Workload stuck in "pending"
-
-**Diagnosis:**
-```
-workload_get(workloadId: "...")
-cluster_status()
-node_list(status: "ready")
+# Retired pages
+exec host=node node=<name> command="nvidia-smi --query-retired-pages=gpu_uuid,retired_pages.address --format=csv 2>/dev/null || echo 'No retired pages data'"
 ```
 
-Check: available GPUs vs requested, resource constraints
+**Action on ECC errors:**
+- Correctable: Monitor. Log increasing trends.
+- Uncorrectable: **Migrate workloads off this GPU immediately.**
 
-**Action:** Wait for resources, adjust requirements, or add capacity
+## Performance Analysis
 
-### 5. Network/Communication Errors
+```bash
+# Clock speeds vs max (detect throttling)
+exec host=node node=<name> command="nvidia-smi --query-gpu=index,clocks.current.sm,clocks.max.sm,clocks.current.memory,clocks.max.memory --format=csv"
 
-**Symptoms:** Multi-GPU training hangs, NCCL errors
+# Process list on GPUs
+exec host=node node=<name> command="nvidia-smi --query-compute-apps=pid,name,gpu_uuid,used_gpu_memory --format=csv"
 
-**Diagnosis:**
-```
-workload_logs(workloadId: "...", query: "NCCL")
-logs_search(query: "NCCL timeout OR connection refused")
-```
-
-Look for: NCCL timeouts, socket errors, IB/network issues
-
-**Action:** Check network config, reduce world size, restart training
-
-## Diagnostic Checklist
-
-```
-□ GPU temperature normal (<80°C)?
-□ GPU utilization matches expected?
-□ GPU memory usage reasonable?
-□ No CUDA/driver errors in logs?
-□ Workload not stuck in pending?
-□ No recent node failures?
-□ Network healthy for multi-GPU?
-□ No existing critical alerts?
+# PCIe bandwidth
+exec host=node node=<name> command="nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max --format=csv"
 ```
 
-## Example Session
+## Driver and CUDA
 
-**User:** "My training job is running slow"
+```bash
+exec host=node node=<name> command="nvidia-smi --query-gpu=driver_version,cuda_version --format=csv,noheader | head -1"
+exec host=node node=<name> command="nvcc --version 2>/dev/null || echo 'CUDA toolkit not installed'"
+```
 
-**Agent:**
+## Diagnosis Workflow
 
-1. Get workload info:
-   ```
-   workload_get(workloadId: "training-job-123")
-   ```
-
-2. Check GPU metrics:
-   ```
-   metrics_query(metric: "gpu_utilization", workloadId: "training-job-123", startTime: "-1h")
-   ```
-
-3. Found: utilization dropping from 95% to 60% periodically
-
-4. Check temperature:
-   ```
-   metrics_query(metric: "gpu_temperature", workloadId: "training-job-123", startTime: "-1h")
-   ```
-
-5. Found: temperature spikes to 85°C, correlates with utilization drops
-
-6. **Diagnosis:** Thermal throttling
-
-7. **Recommendation:** 
-   - Short term: Reduce batch size by 20%
-   - Long term: Improve node cooling or migrate to better-cooled node
-
-## Escalation
-
-If diagnosis is inconclusive:
-1. Create alert for ops team review
-2. Capture full diagnostic snapshot
-3. Consider node drain if hardware issue suspected
+1. Check temperatures → identify thermal issues
+2. Check utilization → stuck at 0% (process hung?) or 100% (expected under load?)
+3. Check memory → OOM risk? Leaked allocations?
+4. Check ECC → hardware degradation?
+5. Check clocks → throttling below max?
+6. Check PCIe → bandwidth bottleneck?
+7. Recommend action: migrate, cool, restart, replace
