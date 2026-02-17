@@ -9,15 +9,9 @@ repository = "https://github.com/clawbernetes/clawbernetes"
 [features]
 default = []
 docker = ["dep:claw-compute"]
-secrets = ["dep:claw-secrets"]
 metrics = ["dep:claw-metrics"]
-deploy = ["dep:claw-deploy"]
-network = ["dep:claw-network", "dep:claw-wireguard", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:bytes"]
-storage = ["dep:claw-storage"]
-auth = ["dep:claw-auth"]
-autoscaler = ["dep:claw-autoscaler"]
 molt = ["dep:molt-core", "dep:molt-p2p", "dep:molt-agent", "dep:molt-market", "dep:molt-attestation"]
-full = ["docker", "secrets", "metrics", "deploy", "network", "storage", "auth", "autoscaler", "molt"]
+full = ["docker", "metrics", "molt"]
 
 [[bin]]
 name = "clawnode"
@@ -27,14 +21,7 @@ path = "src/main.rs"
 # Internal
 claw-proto = { path = "../claw-proto" }
 claw-compute = { path = "../claw-compute", features = ["container-runtime"], optional = true }
-claw-secrets = { path = "../claw-secrets", optional = true }
 claw-metrics = { path = "../claw-metrics", optional = true }
-claw-deploy = { path = "../claw-deploy", optional = true }
-claw-network = { path = "../claw-network", optional = true }
-claw-wireguard = { path = "../claw-wireguard", optional = true }
-claw-storage = { path = "../claw-storage", optional = true }
-claw-auth = { path = "../claw-auth", optional = true }
-claw-autoscaler = { path = "../claw-autoscaler", optional = true }
 molt-core = { path = "../molt-core", optional = true }
 molt-p2p = { path = "../molt-p2p", optional = true }
 molt-agent = { path = "../molt-agent", optional = true }
