@@ -1,5 +1,5 @@
 {
-  "name": "@clawbernetes/openclaw-plugin",
+  "name": "@clawbernetes/clawbernetes",
   "version": "0.1.0",
   "description": "GPU cluster management for OpenClaw — fleet tools, skills, and monitoring",
   "type": "module",

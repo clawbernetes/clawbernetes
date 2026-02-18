@@ -10,7 +10,7 @@ import { invokeAll, listNodes, type InvokeOptions } from "../invoke.js";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerMultiInvoke(api: any, invokeTimeoutMs: number): void {
   const opts: InvokeOptions = {
-    gatewayUrl: api.config?.gatewayUrl ?? "http://127.0.0.1:18789",
+    gatewayUrl: api.pluginConfig?.gatewayUrl ?? "http://127.0.0.1:18789",
     timeoutMs: invokeTimeoutMs,
     logger: api.logger,
   };

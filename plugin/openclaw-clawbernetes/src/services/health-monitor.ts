@@ -46,7 +46,7 @@ export function getCachedFleetStatus(): CachedFleetStatus {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerHealthMonitor(api: any, healthIntervalMs: number, invokeTimeoutMs: number): void {
   const opts: InvokeOptions = {
-    gatewayUrl: api.config?.gatewayUrl ?? "http://127.0.0.1:18789",
+    gatewayUrl: api.pluginConfig?.gatewayUrl ?? "http://127.0.0.1:18789",
     timeoutMs: invokeTimeoutMs,
     logger: api.logger,
   };
@@ -149,7 +149,8 @@ export function registerHealthMonitor(api: any, healthIntervalMs: number, invoke
   // Register as a plugin service with start/stop lifecycle
   if (typeof api.registerService === "function") {
     api.registerService({
-      name: "clawbernetes-health-monitor",
+      id: "clawbernetes-health-monitor",
+      name: "Clawbernetes Health Monitor",
       start() {
         api.logger.info(`[clawbernetes] Health monitor starting (interval: ${healthIntervalMs}ms)`);
         // Run immediately, then on interval

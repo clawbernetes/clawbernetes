@@ -28,9 +28,9 @@ export default {
   description: "Fleet-level GPU cluster management — aggregate tools, monitoring, and 20 bundled skills",
 
   register(api: PluginApi) {
-    const config = api.config ?? {};
-    const invokeTimeoutMs: number = typeof config.invokeTimeoutMs === "number" ? config.invokeTimeoutMs : 30000;
-    const healthIntervalMs: number = typeof config.healthIntervalMs === "number" ? config.healthIntervalMs : 60000;
+    const pluginConfig = api.pluginConfig ?? {};
+    const invokeTimeoutMs: number = typeof pluginConfig.invokeTimeoutMs === "number" ? pluginConfig.invokeTimeoutMs : 30000;
+    const healthIntervalMs: number = typeof pluginConfig.healthIntervalMs === "number" ? pluginConfig.healthIntervalMs : 60000;
 
     // Fleet-level agent tools
     registerFleetStatus(api, invokeTimeoutMs);
@@ -50,6 +50,6 @@ export default {
       });
     }
 
-    api.logger.info("[clawbernetes] Plugin loaded — 5 fleet tools, health monitor, 20 skills");
+    api.logger.info("[clawbernetes] Plugin loaded — 5 fleet tools, health monitor");
   },
 };
