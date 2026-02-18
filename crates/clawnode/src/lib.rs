@@ -230,7 +230,7 @@ impl SharedState {
         let state = NodeState::new(config);
 
         // Build the full command list based on enabled features
-        let mut commands = state.commands.clone();
+        let commands = state.commands.clone();
 
         #[cfg(feature = "secrets")]
         {

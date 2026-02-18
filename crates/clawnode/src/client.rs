@@ -519,7 +519,7 @@ impl GatewayClient {
 
                 // Send heartbeat
                 _ = heartbeat_interval.tick() => {
-                    let mut payload = json!({
+                    let payload = json!({
                         "nodeId": node_id_clone,
                     });
 
@@ -681,6 +681,7 @@ impl GatewayClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn generate_node_id(&self) -> String {
         // Generate a stable node ID based on machine characteristics
         use std::collections::hash_map::DefaultHasher;

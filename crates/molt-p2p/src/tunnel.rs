@@ -310,6 +310,7 @@ impl IpAllocator {
         self.allocated.remove(job_id)
     }
 
+    #[allow(dead_code)]
     fn get(&self, job_id: &JobId) -> Option<Ipv4Addr> {
         self.allocated.get(job_id).copied()
     }

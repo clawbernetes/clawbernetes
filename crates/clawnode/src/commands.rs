@@ -9,7 +9,7 @@ use crate::SharedState;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Command request from gateway
 #[derive(Debug, Clone)]
@@ -171,6 +171,7 @@ struct SystemRunParams {
     cwd: Option<String>,
     env: Option<Vec<String>>,
     #[serde(rename = "timeoutMs")]
+    #[allow(dead_code)]
     timeout_ms: Option<u64>,
 }
 
@@ -588,7 +589,7 @@ async fn handle_workload_run_cli(
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if output.status.success() {
-        let mut result = json!({
+        let result = json!({
             "containerId": stdout,
             "workloadId": workload_id,
             "image": params.image,
@@ -730,6 +731,7 @@ struct WorkloadLogsParams {
     container_id: Option<String>,
     name: Option<String>,
     tail: Option<u32>,
+    #[allow(dead_code)]
     follow: Option<bool>,
 }
 
@@ -811,6 +813,7 @@ async fn handle_workload_logs_cli(
 
 #[derive(Debug, Deserialize)]
 struct WorkloadListParams {
+    #[allow(dead_code)]
     all: Option<bool>,
 }
 
@@ -1122,6 +1125,8 @@ async fn handle_container_exec_cli(
 // ─────────────────────────────────────────────────────────────
 
 /// Parse a human-readable memory string like "8g", "512m", "1024k" to bytes.
+
+#[allow(dead_code)]
 fn parse_memory_string(s: &str) -> Option<u64> {
     let s = s.trim().to_lowercase();
     if let Some(num) = s.strip_suffix('g') {

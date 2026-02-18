@@ -2,7 +2,7 @@
 //! Execution attestation — job completion proofs, checkpoint verification.
 
 use chrono::{DateTime, Duration, Utc};
-use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

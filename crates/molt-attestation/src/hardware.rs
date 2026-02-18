@@ -147,7 +147,7 @@ impl HardwareAttestation {
     ///
     /// Returns `AttestationError::SignatureVerification` if the signature is invalid.
     pub fn verify_signature(&self, public_key: &VerifyingKey) -> Result<(), AttestationError> {
-        use ed25519_dalek::Verifier;
+        
 
         let message =
             Self::create_signing_message(self.node_id, &self.gpus, self.timestamp, self.expires_at);

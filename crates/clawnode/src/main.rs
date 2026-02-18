@@ -68,17 +68,41 @@ enum Commands {
         #[arg(long, default_value = "wss://localhost:18789")]
         gateway: String,
     },
+
+    /// Execute an internal command (for use via system.run)
+    ///
+    /// Dispatches to the same handlers used by the WebSocket protocol,
+    /// allowing all node commands to work through system.run.
+    ///
+    /// Examples:
+    ///   clawnode exec gpu.list
+    ///   clawnode exec gpu.metrics
+    ///   clawnode exec system.info
+    ///   clawnode exec node.health
+    ///   clawnode exec node.capabilities
+    ///   clawnode exec workload.list
+    ///   clawnode exec workload.run --params '{"image":"nginx"}'
+    Exec {
+        /// Command name (e.g. gpu.list, gpu.metrics, system.info, workload.list)
+        command: String,
+
+        /// JSON parameters for the command (default: {})
+        #[arg(long, default_value = "{}")]
+        params: String,
+    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(EnvFilter::from_default_env().add_directive("clawnode=info".parse()?))
-        .init();
-    
     let cli = Cli::parse();
+
+    // For exec commands, suppress tracing to keep stdout as clean JSON
+    if !matches!(cli.command, Commands::Exec { .. }) {
+        tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(EnvFilter::from_default_env().add_directive("clawnode=info".parse()?))
+            .init();
+    }
     
     match cli.command {
         Commands::Run { config } => {
@@ -109,8 +133,66 @@ async fn main() -> anyhow::Result<()> {
         Commands::InitConfig { output, gateway } => {
             init_config(output, gateway)?;
         }
+
+        Commands::Exec { command, params } => {
+            exec_command(&command, &params).await?;
+        }
     }
     
+    Ok(())
+}
+
+async fn exec_command(command: &str, params_str: &str) -> anyhow::Result<()> {
+    use clawnode::commands::{handle_command, CommandRequest};
+
+    let params: serde_json::Value = serde_json::from_str(params_str)
+        .map_err(|e| anyhow::anyhow!("invalid JSON params: {e}"))?;
+
+    // Build a lightweight state for local execution
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let config = NodeConfig {
+        gateway: String::new(),
+        token: None,
+        hostname,
+        labels: HashMap::new(),
+        state_path: dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join(".clawnode"),
+        heartbeat_interval_secs: 30,
+        reconnect_delay_secs: 5,
+        container_runtime: "docker".to_string(),
+        network_enabled: false,
+        region: "us-west".to_string(),
+        wireguard_listen_port: 51820,
+        ingress_listen_port: 8443,
+        wireguard_endpoint: None,
+    };
+
+    let state = create_state(config);
+
+    let request = CommandRequest {
+        command: command.to_string(),
+        params,
+    };
+
+    match handle_command(&state, request).await {
+        Ok(result) => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Err(e) => {
+            let err = serde_json::json!({
+                "ok": false,
+                "error": e.to_string(),
+                "command": command,
+            });
+            println!("{}", serde_json::to_string_pretty(&err)?);
+            std::process::exit(1);
+        }
+    }
+
     Ok(())
 }
 

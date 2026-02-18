@@ -19,7 +19,7 @@
 use std::time::Duration;
 
 use claw_proto::cli::{
-    self, CliMessage, CliResponse, MoltPeerInfo, NodeInfo, NodeState, WorkloadInfo,
+    CliMessage, CliResponse, MoltPeerInfo, NodeInfo, NodeState, WorkloadInfo,
     CLI_PROTOCOL_VERSION,
 };
 use claw_proto::{NodeId, WorkloadId, WorkloadSpec, WorkloadState};

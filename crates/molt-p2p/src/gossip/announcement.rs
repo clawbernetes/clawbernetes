@@ -96,6 +96,7 @@ impl CapacityAnnouncement {
 
     /// Creates an announcement with a specific creation time (for testing).
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn with_created_at(mut self, created_at: DateTime<Utc>) -> Self {
         self.created_at = created_at;
         self

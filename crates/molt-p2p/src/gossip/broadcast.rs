@@ -107,6 +107,7 @@ struct SeenEntry {
     /// When this entry was added.
     added_at: Instant,
     /// The peer that first sent this message to us.
+    #[allow(dead_code)]
     from_peer: PeerId,
 }
 

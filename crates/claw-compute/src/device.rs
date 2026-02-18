@@ -95,25 +95,25 @@ impl DeviceInfo {
 #[derive(Debug)]
 pub enum ComputeDevice {
     /// CUDA device.
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "cubecl-cuda")]
     Cuda {
         /// Device info.
         info: DeviceInfo,
     },
     /// Metal device (via wgpu).
-    #[cfg(feature = "wgpu")]
+    #[cfg(feature = "cubecl-wgpu")]
     Metal {
         /// Device info.
         info: DeviceInfo,
     },
     /// Vulkan device (via wgpu).
-    #[cfg(feature = "wgpu")]
+    #[cfg(feature = "cubecl-wgpu")]
     Vulkan {
         /// Device info.
         info: DeviceInfo,
     },
     /// ROCm/HIP device.
-    #[cfg(feature = "hip")]
+    #[cfg(feature = "cubecl-cuda")]
     Rocm {
         /// Device info.
         info: DeviceInfo,
@@ -138,7 +138,7 @@ impl ComputeDevice {
         info!("auto-detecting compute device");
 
         // Try CUDA first (NVIDIA GPUs)
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "cubecl-cuda")]
         {
             if let Ok(device) = Self::cuda(0) {
                 info!(platform = "CUDA", name = %device.info().name, "selected device");
@@ -148,7 +148,7 @@ impl ComputeDevice {
         }
 
         // Try ROCm (AMD GPUs)
-        #[cfg(feature = "hip")]
+        #[cfg(feature = "cubecl-cuda")]
         {
             if let Ok(device) = Self::rocm(0) {
                 info!(platform = "ROCm", name = %device.info().name, "selected device");
@@ -158,7 +158,7 @@ impl ComputeDevice {
         }
 
         // Try Metal on macOS
-        #[cfg(all(feature = "wgpu", target_os = "macos"))]
+        #[cfg(all(feature = "cubecl-wgpu", target_os = "macos"))]
         {
             if let Ok(device) = Self::metal(0) {
                 info!(platform = "Metal", name = %device.info().name, "selected device");
@@ -168,7 +168,7 @@ impl ComputeDevice {
         }
 
         // Try Vulkan on non-macOS
-        #[cfg(all(feature = "wgpu", not(target_os = "macos")))]
+        #[cfg(all(feature = "cubecl-wgpu", not(target_os = "macos")))]
         {
             if let Ok(device) = Self::vulkan(0) {
                 info!(platform = "Vulkan", name = %device.info().name, "selected device");
@@ -190,7 +190,7 @@ impl ComputeDevice {
     }
 
     /// Create a CUDA device.
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "cubecl-cuda")]
     pub fn cuda(index: usize) -> Result<Self> {
         // In real implementation, query CUDA runtime
         // For now, create stub info
@@ -208,7 +208,7 @@ impl ComputeDevice {
     }
 
     /// Create a Metal device (macOS only).
-    #[cfg(feature = "wgpu")]
+    #[cfg(feature = "cubecl-wgpu")]
     pub fn metal(index: usize) -> Result<Self> {
         #[cfg(not(target_os = "macos"))]
         {
@@ -236,7 +236,7 @@ impl ComputeDevice {
     }
 
     /// Create a Vulkan device.
-    #[cfg(feature = "wgpu")]
+    #[cfg(feature = "cubecl-wgpu")]
     pub fn vulkan(index: usize) -> Result<Self> {
         let info = DeviceInfo {
             platform: Platform::Vulkan,
@@ -252,7 +252,7 @@ impl ComputeDevice {
     }
 
     /// Create a ROCm device.
-    #[cfg(feature = "hip")]
+    #[cfg(feature = "cubecl-cuda")]
     pub fn rocm(index: usize) -> Result<Self> {
         let info = DeviceInfo {
             platform: Platform::Rocm,
@@ -291,13 +291,13 @@ impl ComputeDevice {
     #[must_use]
     pub fn info(&self) -> &DeviceInfo {
         match self {
-            #[cfg(feature = "cuda")]
+            #[cfg(feature = "cubecl-cuda")]
             Self::Cuda { info } => info,
-            #[cfg(feature = "wgpu")]
+            #[cfg(feature = "cubecl-wgpu")]
             Self::Metal { info } => info,
-            #[cfg(feature = "wgpu")]
+            #[cfg(feature = "cubecl-wgpu")]
             Self::Vulkan { info } => info,
-            #[cfg(feature = "hip")]
+            #[cfg(feature = "cubecl-cuda")]
             Self::Rocm { info } => info,
             #[cfg(feature = "cpu")]
             Self::Cpu { info } => info,
@@ -321,7 +321,7 @@ impl ComputeDevice {
 pub fn discover_devices() -> Vec<DeviceInfo> {
     let mut devices = vec![];
 
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "cubecl-cuda")]
     {
         // In real implementation, enumerate CUDA devices
         if let Ok(device) = ComputeDevice::cuda(0) {
@@ -329,21 +329,21 @@ pub fn discover_devices() -> Vec<DeviceInfo> {
         }
     }
 
-    #[cfg(feature = "hip")]
+    #[cfg(feature = "cubecl-cuda")]
     {
         if let Ok(device) = ComputeDevice::rocm(0) {
             devices.push(device.info().clone());
         }
     }
 
-    #[cfg(all(feature = "wgpu", target_os = "macos"))]
+    #[cfg(all(feature = "cubecl-wgpu", target_os = "macos"))]
     {
         if let Ok(device) = ComputeDevice::metal(0) {
             devices.push(device.info().clone());
         }
     }
 
-    #[cfg(all(feature = "wgpu", not(target_os = "macos")))]
+    #[cfg(all(feature = "cubecl-wgpu", not(target_os = "macos")))]
     {
         if let Ok(device) = ComputeDevice::vulkan(0) {
             devices.push(device.info().clone());
@@ -593,7 +593,7 @@ mod tests {
     fn test_discover_devices_returns_vec() {
         let devices = discover_devices();
         // Just verify it returns a vector (may be empty on some systems)
-        assert!(devices.len() >= 0);
+        let _ = &devices; // ensure detection ran without panic
     }
 
     #[test]

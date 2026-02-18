@@ -34,6 +34,7 @@ fn make_connection(port: u16) -> PeerConnection {
 }
 
 /// Creates a connection pool with diversity disabled for tests that don't need it.
+#[allow(dead_code)]
 fn make_pool_no_diversity() -> ConnectionPool {
     let config = ConnectionPoolConfig::default().with_diversity(PeerDiversityConfig::disabled());
     ConnectionPool::new(config)

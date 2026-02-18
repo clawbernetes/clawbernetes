@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Information about a single GPU
 #[derive(Debug, Clone, Serialize, Deserialize)]

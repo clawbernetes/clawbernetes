@@ -2,7 +2,7 @@
 //!
 //! Provides Ed25519-based cryptographic operations for MOLT transactions.
 
-use ed25519_dalek::{Signature as DalekSignature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature as DalekSignature, Signer, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 
 use crate::MoltError;

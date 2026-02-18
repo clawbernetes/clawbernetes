@@ -290,6 +290,7 @@ pub fn generate_keypair() -> (PrivateKey, PublicKey) {
 
 /// Derives a public key from a private key.
 #[must_use]
+#[allow(dead_code)]
 pub fn public_key_from_private(private: &PrivateKey) -> PublicKey {
     private.public_key()
 }
