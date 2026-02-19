@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use claw_network::{MeshNode, NodeId, Region, WireGuardKey, WireGuardMesh};
+use crate::network_types::{MeshNode, NodeId, Region, WireGuardKey, WireGuardMesh};
 use ipnet::{IpNet, Ipv4Net};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -343,7 +343,7 @@ pub struct MeshInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use claw_network::MeshConfig;
+    use crate::network_types::MeshConfig;
 
     fn test_mesh() -> Arc<WireGuardMesh> {
         Arc::new(WireGuardMesh::new(MeshConfig::default()).expect("mesh"))

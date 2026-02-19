@@ -519,7 +519,7 @@ impl GatewayClient {
 
                 // Send heartbeat
                 _ = heartbeat_interval.tick() => {
-                    let payload = json!({
+                    let mut payload = json!({
                         "nodeId": node_id_clone,
                     });
 

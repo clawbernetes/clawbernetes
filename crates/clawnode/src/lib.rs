@@ -20,6 +20,7 @@ pub mod metrics_cmd;
 #[cfg(feature = "molt")]
 pub mod molt_cmd;
 pub mod namespace_cmd;
+pub mod network_types;
 #[cfg(feature = "network")]
 pub mod ingress_proxy;
 #[cfg(feature = "network")]
@@ -178,7 +179,7 @@ pub struct SharedState {
     pub cron_store: Arc<RwLock<persist::CronStore>>,
     // ─── Tier 5: Networking (network feature) ───
     #[cfg(feature = "network")]
-    pub wireguard_mesh: Arc<claw_network::WireGuardMesh>,
+    pub wireguard_mesh: Arc<network_types::WireGuardMesh>,
     #[cfg(feature = "network")]
     pub service_store: Arc<RwLock<persist::ServiceStore>>,
     #[cfg(feature = "network")]
@@ -332,7 +333,7 @@ impl SharedState {
             // Tier 5: Networking (network feature)
             #[cfg(feature = "network")]
             wireguard_mesh: Arc::new(
-                claw_network::WireGuardMesh::new(claw_network::MeshConfig::default())
+                network_types::WireGuardMesh::new(network_types::MeshConfig::default())
                     .expect("WireGuardMesh initialization"),
             ),
             #[cfg(feature = "network")]

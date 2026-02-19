@@ -324,9 +324,15 @@ async fn init_networking(
     // 1. Parse region
     let region = parse_region(&config.region);
 
-    // 2. Generate WireGuard keypair
-    let (_private_key, public_key) = claw_wireguard::generate_keypair();
-    let pubkey_b64 = public_key.to_base64();
+    // 2. Generate WireGuard keypair (random 32-byte Curve25519 key)
+    let pubkey_b64 = {
+        use base64::Engine;
+        use ring::rand::{SecureRandom, SystemRandom};
+        let rng = SystemRandom::new();
+        let mut key_bytes = [0u8; 32];
+        rng.fill(&mut key_bytes).expect("RNG fill");
+        base64::engine::general_purpose::STANDARD.encode(key_bytes)
+    };
 
     // 3. Parse endpoint
     let endpoint = config
