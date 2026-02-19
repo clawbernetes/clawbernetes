@@ -15,6 +15,9 @@
   <a href="https://www.rust-lang.org/">
     <img src="https://img.shields.io/badge/rust-1.85%2B%20(2024%20Edition)-orange.svg" alt="Rust">
   </a>
+  <a href="https://clawbernetes.com">
+    <img src="https://img.shields.io/badge/web-clawbernetes.com-green.svg" alt="Website">
+  </a>
 </p>
 
 ---
@@ -24,14 +27,18 @@
 Clawbernetes turns [OpenClaw](https://github.com/openclaw/openclaw) into an intelligent GPU infrastructure manager. Instead of YAML, dashboards, and `kubectl` — you have a conversation.
 
 ```
-You:   "Deploy Llama 70B inference, optimize for latency"
-Agent: "Found 8×H100 on gpu-node-01 with NVLink. Deploying container...
-        Model loaded in 47s. Endpoint: https://llama.cluster.local
-        Health monitoring active (5-min interval)."
+You:   "What GPUs do we have?"
+Agent: "1 node connected — morpheus (Ubuntu 24.04, 16 CPUs, 32GB RAM).
+        GPU: NVIDIA RTX 3050 Ti, 4GB VRAM. No workloads running."
+
+You:   "Deploy a vLLM server with Llama 3 8B, pick the best node."
+Agent: "Deploying on morpheus (only node with GPU, 4GB VRAM available).
+        Container started. Endpoint: http://morpheus:8000
+        Health monitoring active."
 
 You:   "Why is inference slow?"
-Agent: "GPU 3 thermal throttling at 89°C on node-01.
-        node-02 has 4×A100 at 62°C. Want me to migrate?"
+Agent: "GPU 0 at 87°C — thermal throttling. Fan speed 100%.
+        Ambient temp may be high. Want me to reduce batch size?"
 ```
 
 ## How It Works
@@ -40,9 +47,9 @@ Clawbernetes is **not** a Kubernetes replacement built from scratch. It's a thin
 
 - **OpenClaw Gateway** = the control plane (already built)
 - **OpenClaw Nodes** = headless agents on each GPU machine (already built)
-- **Clawbernetes Skills** = teach the agent GPU ops, deployment, scaling
-- **Clawbernetes Plugin** = custom tools for fleet inventory and workload state
-- **`clawnode` binary** = GPU detection, metrics collection, node identity
+- **`clawnode` binary** = GPU detection, metrics, container management, node identity
+- **Clawbernetes Skills** = teach the agent GPU ops, deployment, scaling, diagnostics
+- **Clawbernetes Plugin** = fleet-level tools for multi-node inventory and orchestration
 - **MOLT Network** = P2P GPU compute marketplace (buy/sell idle compute)
 
 ```
@@ -51,16 +58,17 @@ Clawbernetes is **not** a Kubernetes replacement built from scratch. It's a thin
 │                                                              │
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │  Clawbernetes Agent                                    │  │
-│  │  Skills: deploy, scale, diagnose, observe, molt        │  │
+│  │  Skills: deploy, scale, diagnose, observe, heal, molt  │  │
+│  │  Plugin: fleet status, GPU inventory, smart deploy     │  │
 │  │  Memory: cluster state, incidents, decisions           │  │
 │  └────────────────────────────────────────────────────────┘  │
 │                          │                                   │
-│             WebSocket (exec host=node)                       │
+│             WebSocket (node.invoke)                           │
 │                          │                                   │
 │    ┌─────────┬───────────┼───────────┬─────────┐            │
 │    ▼         ▼           ▼           ▼         ▼            │
 │  Node 1   Node 2      Node 3     Node 4    Node N          │
-│  8×H100   4×A100      M3 Ultra   CPU only  Spot GPU        │
+│  8×H100   4×A100      M3 Ultra   RTX 3050  Spot GPU        │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -73,7 +81,7 @@ npm install -g openclaw@latest
 openclaw onboard --install-daemon
 ```
 
-### 2. Build and install clawnode (on each GPU machine)
+### 2. Build clawnode (on each GPU machine)
 
 ```bash
 git clone https://github.com/clawbernetes/clawbernetes
@@ -81,12 +89,21 @@ cd clawbernetes
 cargo install --path crates/clawnode
 ```
 
-### 3. Connect nodes to the gateway
+### 3. Connect a node to the gateway
 
-On each GPU machine:
+Generate a config, then run:
 
 ```bash
-clawnode --gateway ws://gateway-host:18789 --name "gpu-node-01"
+# Generate config
+clawnode init-config \
+  --gateway ws://gateway-host:18789 \
+  --output ./clawnode-config.json
+
+# Edit config — set token, hostname, etc.
+vim clawnode-config.json
+
+# Run the node agent
+clawnode run --config ./clawnode-config.json
 ```
 
 Approve the node from the gateway:
@@ -96,30 +113,41 @@ openclaw nodes pending
 openclaw nodes approve <requestId>
 ```
 
-### 4. Install the Clawbernetes skills
+The node will complete the challenge-response handshake and show as `paired · connected`.
+
+### 4. Install skills and plugin
 
 ```bash
+# Skills (on the gateway machine)
 cp -r skills/* ~/.openclaw/workspace/skills/
+
+# Plugin (optional — adds fleet-level tools)
+openclaw plugins install --link ./plugin/openclaw-clawbernetes
+openclaw gateway restart
 ```
 
 ### 5. Talk to your infrastructure
 
 ```
-You: "What GPUs do I have?"
-You: "Deploy a vLLM server with Llama 3 70B"
-You: "Scale inference to handle 2x traffic"
-You: "What's the health of my cluster?"
+"What GPUs do we have?"
+"How's the cluster looking?"
+"What's running on morpheus?"
+"Deploy nginx on the node with the most free RAM."
+"GPU temps across the cluster."
+"Show me kernel versions on all nodes."
 ```
+
+No command syntax needed. The agent translates your intent into the right API calls.
 
 ## Crate Overview
 
-12 focused crates (~73K lines of Rust):
+12 crates, ~70K lines of Rust, 1,770 tests passing:
 
 ### Core
 
 | Crate | Description |
 |-------|-------------|
-| `clawnode` | GPU node agent — connects to OpenClaw gateway, reports capabilities |
+| `clawnode` | GPU node agent — connects to OpenClaw gateway, reports capabilities, handles commands |
 | `claw-cli` | Command-line interface |
 | `claw-compute` | Multi-platform GPU detection and compute (CUDA, Metal, ROCm, Vulkan via CubeCL) |
 | `claw-metrics` | Embedded time-series database for node metrics |
@@ -137,12 +165,39 @@ You: "What's the health of my cluster?"
 | `molt-market` | Order book and settlement |
 | `molt-attestation` | Hardware verification (TEE/TPM) |
 
+## Node Commands
+
+`clawnode` exposes these commands via the OpenClaw WebSocket protocol:
+
+| Command | Description |
+|---------|-------------|
+| `system.info` | OS, CPU, memory, hostname, kernel version |
+| `system.run` | Execute shell commands on the node |
+| `system.which` | Resolve binary paths |
+| `gpu.list` | List all GPUs with model, VRAM, UUID, PCI bus |
+| `gpu.metrics` | Real-time utilization, temperature, memory, power |
+| `workload.run` | Start a container (Docker/Podman) |
+| `workload.stop` | Stop a running container |
+| `workload.list` | List running containers |
+| `workload.logs` | Get container logs |
+| `workload.inspect` | Detailed container info |
+| `workload.stats` | Container resource usage |
+| `container.exec` | Execute command inside a running container |
+| `node.health` | Node health check |
+| `node.capabilities` | List node capabilities |
+| `config.*` | CRUD for node configuration |
+| `job.*` | Create, status, logs, delete jobs |
+| `cron.*` | Create, list, trigger, suspend, resume cron jobs |
+| `namespace.*` | Create, quota, usage, list namespaces |
+| `policy.*` | Create, validate, list policies |
+
 ## Skills
 
-Skills teach the agent how to manage infrastructure. Each is a `SKILL.md` that the agent reads and follows.
+14 skills teach the agent how to manage infrastructure. Each is a `SKILL.md` the agent reads and follows.
 
 | Skill | What It Does |
 |-------|-------------|
+| `clawbernetes` | Master skill — natural language query mapping, architecture overview |
 | `gpu-cluster` | Fleet inventory, GPU health, topology |
 | `gpu-diagnose` | Thermal, utilization, memory analysis |
 | `workload-manager` | Deploy, stop, inspect containers |
@@ -159,17 +214,74 @@ Skills teach the agent how to manage infrastructure. Each is a `SKILL.md` that t
 
 ## OpenClaw Plugin
 
-The `plugin/openclaw-clawbernetes/` directory contains a TypeScript OpenClaw plugin that adds:
+The `plugin/openclaw-clawbernetes/` directory contains a TypeScript OpenClaw plugin that adds fleet-level capabilities on top of the per-node commands:
 
-- Custom agent tools (fleet status, GPU inventory, workload management)
-- Background health monitoring service
-- Webhook handlers for external alerts
+**Tools:**
+| Tool | Description |
+|------|-------------|
+| `claw_fleet_status` | Aggregate cluster health, GPU count, memory, workloads |
+| `claw_gpu_inventory` | All GPUs across all nodes with specs |
+| `claw_deploy` | Auto-place workload on the best node based on available resources |
+| `claw_workloads` | Cross-node workload list |
+| `claw_multi_invoke` | Fan-out any command to multiple nodes in parallel |
+
+**Services:**
+- `clawbernetes-health-monitor` — background fleet health monitoring with state transition tracking
+
+**Gateway RPC:**
+- `clawbernetes.fleet-status` — cached fleet status for the Control UI dashboard
 
 Install:
 
 ```bash
-openclaw plugins install ./plugin/openclaw-clawbernetes
+openclaw plugins install --link ./plugin/openclaw-clawbernetes
 ```
+
+## Configuration
+
+```json
+{
+  "gateway": "ws://gateway.example.com:18789",
+  "token": "your-gateway-auth-token",
+  "hostname": "gpu-node-01",
+  "labels": {},
+  "state_path": "/var/lib/clawnode/state",
+  "heartbeat_interval_secs": 30,
+  "reconnect_delay_secs": 5,
+  "container_runtime": "docker",
+  "network_enabled": false,
+  "region": "us-west",
+  "wireguard_listen_port": 51820,
+  "ingress_listen_port": 8443
+}
+```
+
+Generate a starter config:
+
+```bash
+clawnode init-config --gateway ws://your-gateway:18789 --output config.json
+```
+
+## Gateway Setup
+
+To allow clawnode commands through the OpenClaw gateway, add them to the node command allowlist in `openclaw.json`:
+
+```json
+{
+  "gateway": {
+    "nodes": {
+      "allowCommands": [
+        "system.info", "gpu.list", "gpu.metrics",
+        "workload.run", "workload.stop", "workload.list",
+        "workload.logs", "workload.inspect", "workload.stats",
+        "container.exec", "node.health", "node.capabilities"
+      ]
+    }
+  }
+}
+```
+
+By default, only `system.run` and `system.which` are allowed for Linux nodes.
 
 ## MOLT Network
 
@@ -181,33 +293,20 @@ Buyer:    "I need 4×A100 for distributed training"
 MOLT:     Escrow → Attestation → Execute → Settle
 ```
 
-## Configuration
-
-```toml
-# clawnode.toml
-[node]
-name = "gpu-node-01"
-gateway = "ws://gateway.example.com:18789"
-
-[gpu]
-auto_detect = true
-
-[molt]
-enabled = false
-autonomy = "moderate"
-```
-
 ## Development
 
 ```bash
-# Build all
+# Build all crates
 cargo build --workspace
 
-# Test
+# Run all tests (1,770 tests)
 cargo test --workspace
 
 # Release build
 cargo build --workspace --release
+
+# Run clawnode locally
+cargo run -p clawnode -- run --config ./config.json
 ```
 
 ## License
