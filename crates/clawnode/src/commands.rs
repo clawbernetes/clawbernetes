@@ -9,7 +9,7 @@ use crate::SharedState;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Command request from gateway
 #[derive(Debug, Clone)]
@@ -617,7 +617,7 @@ async fn handle_workload_run_cli(
             state.workload_store.write().await.upsert(record);
         }
 
-        let mut result = json!({
+        let result = json!({
             "containerId": stdout,
             "workloadId": workload_id,
             "image": params.image,
