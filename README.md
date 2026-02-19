@@ -24,7 +24,7 @@
 
 > **Kubernetes was built for web apps. Clawbernetes is AI-native infrastructure management you talk to.**
 
-Clawbernetes turns [OpenClaw](https://github.com/openclaw/openclaw) into an an intelligent infrastructure manager. Instead of YAML, dashboards, and `kubectl` — you have a conversation.
+Clawbernetes turns [OpenClaw](https://github.com/openclaw/openclaw) into an intelligent infrastructure manager. Instead of YAML, dashboards, and `kubectl` — you have a conversation.
 
 ```
 You:   "What GPUs do we have?"
@@ -143,7 +143,7 @@ No command syntax needed. The agent translates your intent into the right API ca
 
 ## Crate Overview
 
-12 crates, ~70K lines of Rust, 1,770 tests passing:
+12 crates, ~70K lines of Rust, 1,813 tests passing:
 
 ### Core
 
@@ -169,29 +169,34 @@ No command syntax needed. The agent translates your intent into the right API ca
 
 ## Node Commands
 
-`clawnode` exposes these commands via the OpenClaw WebSocket protocol:
+`clawnode` exposes 80+ commands via the OpenClaw WebSocket protocol:
 
-| Command | Description |
-|---------|-------------|
-| `system.info` | OS, CPU, memory, hostname, kernel version |
-| `system.run` | Execute shell commands on the node |
-| `system.which` | Resolve binary paths |
-| `gpu.list` | List all GPUs with model, VRAM, UUID, PCI bus |
-| `gpu.metrics` | Real-time utilization, temperature, memory, power |
-| `workload.run` | Start a container (Docker/Podman) |
-| `workload.stop` | Stop a running container |
-| `workload.list` | List running containers |
-| `workload.logs` | Get container logs |
-| `workload.inspect` | Detailed container info |
-| `workload.stats` | Container resource usage |
-| `container.exec` | Execute command inside a running container |
-| `node.health` | Node health check |
-| `node.capabilities` | List node capabilities |
-| `config.*` | CRUD for node configuration |
-| `job.*` | Create, status, logs, delete jobs |
-| `cron.*` | Create, list, trigger, suspend, resume cron jobs |
-| `namespace.*` | Create, quota, usage, list namespaces |
-| `policy.*` | Create, validate, list policies |
+| Category | Commands | Description |
+|----------|----------|-------------|
+| `system.*` | info, run, which | OS/CPU/memory info, shell execution, binary resolution |
+| `gpu.*` | list, metrics | GPU inventory, real-time utilization/temp/memory/power |
+| `workload.*` | run, stop, list, logs, inspect, stats | Container lifecycle (Docker/Podman) with persistent state |
+| `container.*` | exec | Execute commands inside running containers |
+| `deploy.*` | create, status, update, rollback, history, promote, pause, delete | Deployment orchestration with revision history |
+| `secret.*` | create, get, delete, list, rotate | AES-256-GCM encrypted secrets management |
+| `volume.*` | create, delete, list, mount, unmount, snapshot | Storage volume lifecycle |
+| `backup.*` | create, restore, list | Volume backup and restore |
+| `auth.*` | create_key, list_keys, revoke_key | API key management with SHA-256 hashed secrets |
+| `audit.*` | query | Audit log queries |
+| `autoscale.*` | create, status, adjust, delete | Autoscaling policy CRUD with replica clamping |
+| `node.*` | health, capabilities, drain, label, taint | Node management and scheduling constraints |
+| `config.*` | create, get, update, delete, list | Node configuration CRUD |
+| `job.*` | create, status, logs, delete | Job management |
+| `cron.*` | create, list, trigger, suspend, resume | Cron job scheduling |
+| `namespace.*` | create, list, set_quota, usage | Namespace isolation and resource quotas |
+| `policy.*` | create, validate, list | Policy enforcement |
+| `network.*` | status, policy.create, policy.delete, policy.list | Network status and policy management |
+| `service.*` | create, get, list, delete, endpoints | Service discovery |
+| `ingress.*` | create, delete | Ingress routing |
+| `metrics.*` | query, list, snapshot | Time-series metrics (via claw-metrics) |
+| `alerts.*` | create, list, acknowledge | Alert management |
+| `events.*` | emit, query | Event bus |
+| `molt.*` | status, discover, bid, balance, reputation | MOLT marketplace operations |
 
 ## Skills
 
@@ -276,7 +281,11 @@ To allow clawnode commands through the OpenClaw gateway, add them to the node co
         "system.info", "gpu.list", "gpu.metrics",
         "workload.run", "workload.stop", "workload.list",
         "workload.logs", "workload.inspect", "workload.stats",
-        "container.exec", "node.health", "node.capabilities"
+        "container.exec", "node.health", "node.capabilities",
+        "deploy.*", "secret.*", "volume.*", "backup.*",
+        "auth.*", "autoscale.*", "config.*", "job.*",
+        "cron.*", "namespace.*", "policy.*", "network.*",
+        "service.*", "ingress.*", "metrics.*", "audit.*"
       ]
     }
   }
@@ -301,7 +310,7 @@ MOLT:     Escrow → Attestation → Execute → Settle
 # Build all crates
 cargo build --workspace
 
-# Run all tests (1,770 tests)
+# Run all tests (1,813 tests)
 cargo test --workspace
 
 # Release build
