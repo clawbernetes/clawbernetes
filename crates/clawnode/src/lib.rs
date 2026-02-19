@@ -7,7 +7,6 @@ pub mod client;
 pub mod commands;
 pub mod config;
 pub mod config_cmd;
-#[cfg(feature = "deploy")]
 pub mod deploy_cmd;
 #[cfg(feature = "docker")]
 pub mod docker;
@@ -36,7 +35,6 @@ pub mod workload_net;
 pub mod persist;
 pub mod policy_cmd;
 pub mod runtime;
-#[cfg(feature = "secrets")]
 pub mod secrets_cmd;
 pub mod state;
 #[cfg(feature = "storage")]
@@ -164,9 +162,12 @@ pub struct SharedState {
     /// Docker SDK runtime (when `docker` feature is enabled)
     #[cfg(feature = "docker")]
     pub docker_runtime: Option<docker::DockerContainerRuntime>,
-    /// Secret store (when `secrets` feature is enabled)
-    #[cfg(feature = "secrets")]
-    pub secret_store: Arc<claw_secrets::SecretStore>,
+    /// Workload store (persistent workload tracking)
+    pub workload_store: Arc<RwLock<persist::WorkloadStore>>,
+    /// Deploy store (deployment history & state)
+    pub deploy_store: Arc<RwLock<persist::DeployStore>>,
+    /// Secret store (encrypted at rest)
+    pub secret_store: Arc<RwLock<persist::SecretStore>>,
     /// Config store (always available)
     pub config_store: Arc<RwLock<persist::ConfigStore>>,
     /// Metric store (when `metrics` feature is enabled)
@@ -175,9 +176,6 @@ pub struct SharedState {
     /// Alert store (when `metrics` feature is enabled)
     #[cfg(feature = "metrics")]
     pub alert_store: Arc<RwLock<persist::AlertStore>>,
-    /// Deployment executor (when `deploy` feature is enabled)
-    #[cfg(feature = "deploy")]
-    pub deploy_executor: Arc<claw_deploy::DeploymentExecutor>,
     // ─── Tier 4: Jobs & Cron (always) ───
     pub job_store: Arc<RwLock<persist::JobStore>>,
     pub cron_store: Arc<RwLock<persist::CronStore>>,
@@ -230,18 +228,15 @@ impl SharedState {
         let state = NodeState::new(config);
 
         // Build the full command list based on enabled features
-        let commands = state.commands.clone();
+        let mut commands = state.commands.clone();
 
-        #[cfg(feature = "secrets")]
-        {
-            commands.extend([
-                "secret.create".to_string(),
-                "secret.get".to_string(),
-                "secret.delete".to_string(),
-                "secret.list".to_string(),
-                "secret.rotate".to_string(),
-            ]);
-        }
+        commands.extend([
+            "secret.create".to_string(),
+            "secret.get".to_string(),
+            "secret.delete".to_string(),
+            "secret.list".to_string(),
+            "secret.rotate".to_string(),
+        ]);
 
         #[cfg(feature = "metrics")]
         {
@@ -257,19 +252,16 @@ impl SharedState {
             ]);
         }
 
-        #[cfg(feature = "deploy")]
-        {
-            commands.extend([
-                "deploy.create".to_string(),
-                "deploy.status".to_string(),
-                "deploy.update".to_string(),
-                "deploy.rollback".to_string(),
-                "deploy.history".to_string(),
-                "deploy.promote".to_string(),
-                "deploy.pause".to_string(),
-                "deploy.delete".to_string(),
-            ]);
-        }
+        commands.extend([
+            "deploy.create".to_string(),
+            "deploy.status".to_string(),
+            "deploy.update".to_string(),
+            "deploy.rollback".to_string(),
+            "deploy.history".to_string(),
+            "deploy.promote".to_string(),
+            "deploy.pause".to_string(),
+            "deploy.delete".to_string(),
+        ]);
 
         #[cfg(feature = "network")]
         {
@@ -346,10 +338,9 @@ impl SharedState {
             node_token: None,
             #[cfg(feature = "docker")]
             docker_runtime: None,
-            #[cfg(feature = "secrets")]
-            secret_store: Arc::new(claw_secrets::SecretStore::new(
-                claw_secrets::SecretKey::generate(),
-            )),
+            workload_store: Arc::new(RwLock::new(persist::WorkloadStore::new(&state_path))),
+            deploy_store: Arc::new(RwLock::new(persist::DeployStore::new(&state_path))),
+            secret_store: Arc::new(RwLock::new(persist::SecretStore::new(&state_path))),
             config_store: Arc::new(RwLock::new(persist::ConfigStore::new(&state_path))),
             #[cfg(feature = "metrics")]
             metric_store: Arc::new(claw_metrics::MetricStore::new(
@@ -357,8 +348,6 @@ impl SharedState {
             )),
             #[cfg(feature = "metrics")]
             alert_store: Arc::new(RwLock::new(persist::AlertStore::new(&state_path))),
-            #[cfg(feature = "deploy")]
-            deploy_executor: Arc::new(claw_deploy::DeploymentExecutor::new()),
             // Tier 4: Jobs & Cron (always)
             job_store: Arc::new(RwLock::new(persist::JobStore::new(&state_path))),
             cron_store: Arc::new(RwLock::new(persist::CronStore::new(&state_path))),

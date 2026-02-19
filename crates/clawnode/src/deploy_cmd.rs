@@ -1,14 +1,17 @@
 //! Deployment management command handlers
 //!
-//! Wraps `claw_deploy::DeploymentExecutor` with 8 commands:
+//! Manages rolling deployments using persistent DeployStore and the container
+//! runtime (Docker SDK or CLI fallback). Supports 8 commands:
 //! `deploy.create`, `deploy.status`, `deploy.update`, `deploy.rollback`,
 //! `deploy.history`, `deploy.promote`, `deploy.pause`, `deploy.delete`
 
 use crate::commands::{CommandError, CommandRequest};
+use crate::persist::{DeployRecord, DeployRevision};
 use crate::SharedState;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tracing::info;
+use std::process::Command;
+use tracing::{info, warn};
 
 /// Route a deploy.* command to the appropriate handler.
 pub async fn handle_deploy_command(
@@ -44,6 +47,89 @@ fn default_replicas() -> u32 {
     1
 }
 
+/// Pull an image via the container runtime CLI.
+async fn pull_image(runtime: &str, image: &str) -> Result<(), CommandError> {
+    info!(image = %image, runtime = %runtime, "pulling image");
+    let output = Command::new(runtime).args(["pull", image]).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("image pull failed: {stderr}").into());
+    }
+    Ok(())
+}
+
+/// Start a single replica container via CLI, returning the container ID.
+async fn start_replica(
+    state: &SharedState,
+    name: &str,
+    image: &str,
+    replica_index: u32,
+    gpus: u32,
+    memory: Option<&str>,
+    cpu: Option<f32>,
+) -> Result<String, CommandError> {
+    let runtime = {
+        let s = state.read().await;
+        s.config.container_runtime.clone()
+    };
+
+    let container_name = format!("claw-deploy-{name}-{replica_index}");
+
+    let mut cmd = Command::new(&runtime);
+    cmd.arg("run").arg("-d");
+    cmd.args(["--name", &container_name]);
+    cmd.args(["--label", "managed-by=clawbernetes"]);
+    cmd.args(["--label", &format!("deploy-name={name}")]);
+    cmd.args([
+        "--label",
+        &format!("deploy-replica={replica_index}"),
+    ]);
+    cmd.args(["--restart", "unless-stopped"]);
+
+    if gpus > 0 {
+        if runtime == "docker" {
+            cmd.args(["--gpus", &format!("\"device={}\"", 
+                (0..gpus).map(|i| i.to_string()).collect::<Vec<_>>().join(","))]);
+        } else if runtime == "podman" {
+            cmd.args(["--device", "nvidia.com/gpu=all"]);
+        }
+    }
+
+    if let Some(mem) = memory {
+        cmd.args(["--memory", mem]);
+    }
+    if let Some(cpu_limit) = cpu {
+        cmd.args(["--cpus", &format!("{cpu_limit}")]);
+    }
+
+    cmd.arg(image);
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("replica start failed: {stderr}").into());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Stop and remove a container by ID.
+async fn remove_container(state: &SharedState, container_id: &str) {
+    let runtime = {
+        let s = state.read().await;
+        s.config.container_runtime.clone()
+    };
+
+    // Stop
+    let _ = Command::new(&runtime)
+        .args(["stop", "--time", "10", container_id])
+        .output();
+    // Remove
+    let _ = Command::new(&runtime)
+        .args(["rm", "-f", container_id])
+        .output();
+}
+
 async fn handle_deploy_create(
     state: &SharedState,
     params: Value,
@@ -57,71 +143,95 @@ async fn handle_deploy_create(
         "creating deployment"
     );
 
-    let mut intent = claw_deploy::DeploymentIntent::new(&params.image)
-        .with_replicas(params.replicas);
-
-    if let Some(gpus) = params.gpus {
-        intent = intent.with_gpus(gpus);
+    // Check if deployment already exists
+    {
+        let store = state.deploy_store.read().await;
+        if store.get(&params.name).is_some() {
+            return Err(format!("deployment '{}' already exists", params.name).into());
+        }
     }
 
-    if let Some(ref strategy) = params.strategy {
-        let hint = parse_strategy_hint(strategy)?;
-        intent = intent.with_strategy_hint(hint);
+    let strategy = params.strategy.as_deref().unwrap_or("rolling").to_string();
+    let gpus = params.gpus.unwrap_or(0);
+
+    // Pull the image first
+    let runtime = {
+        let s = state.read().await;
+        s.config.container_runtime.clone()
+    };
+    pull_image(&runtime, &params.image).await?;
+
+    // Start replicas
+    let mut container_ids = Vec::new();
+    for i in 0..params.replicas {
+        match start_replica(
+            state,
+            &params.name,
+            &params.image,
+            i,
+            gpus,
+            params.memory.as_deref(),
+            params.cpu,
+        )
+        .await
+        {
+            Ok(cid) => container_ids.push(cid),
+            Err(e) => {
+                warn!(replica = i, error = %e, "failed to start replica, cleaning up");
+                // Clean up already-started replicas
+                for cid in &container_ids {
+                    remove_container(state, cid).await;
+                }
+                return Err(e);
+            }
+        }
     }
 
-    let deploy_id = state
-        .deploy_executor
-        .start(&intent)
-        .map_err(|e| format!("deploy failed: {e}"))?;
+    let now = chrono::Utc::now();
+    let record = DeployRecord {
+        name: params.name.clone(),
+        image: params.image.clone(),
+        previous_image: None,
+        replicas: params.replicas,
+        container_ids: container_ids.clone(),
+        gpus_per_replica: gpus,
+        memory: params.memory.clone(),
+        cpu: params.cpu,
+        strategy: strategy.clone(),
+        state: "active".to_string(),
+        revision: 1,
+        history: vec![DeployRevision {
+            revision: 1,
+            image: params.image.clone(),
+            replicas: params.replicas,
+            timestamp: now,
+            reason: Some("initial deployment".to_string()),
+        }],
+        created_at: now,
+        updated_at: now,
+    };
 
-    let status = state
-        .deploy_executor
-        .get_status(&deploy_id)
-        .map_err(|e| format!("status failed: {e}"))?;
+    state
+        .deploy_store
+        .write()
+        .await
+        .create(record)
+        .map_err(|e| -> CommandError { e.into() })?;
 
     Ok(json!({
-        "deploymentId": deploy_id.to_string(),
         "name": params.name,
         "image": params.image,
         "replicas": params.replicas,
-        "state": format!("{}", status.state),
-        "strategy": format!("{:?}", status.strategy),
+        "containers": container_ids,
+        "strategy": strategy,
+        "state": "active",
+        "revision": 1,
         "success": true,
     }))
 }
 
-fn parse_strategy_hint(s: &str) -> Result<claw_deploy::StrategyHint, CommandError> {
-    match s.to_lowercase().as_str() {
-        "immediate" => Ok(claw_deploy::StrategyHint::Immediate),
-        "blue-green" | "bluegreen" => Ok(claw_deploy::StrategyHint::BlueGreen),
-        s if s.starts_with("canary") => {
-            // "canary" or "canary:10" or "canary:25"
-            let percentage = s
-                .strip_prefix("canary:")
-                .or_else(|| s.strip_prefix("canary"))
-                .and_then(|p| p.trim().parse::<u8>().ok())
-                .unwrap_or(10);
-            Ok(claw_deploy::StrategyHint::Canary { percentage })
-        }
-        s if s.starts_with("rolling") => {
-            let batch_size = s
-                .strip_prefix("rolling:")
-                .or_else(|| s.strip_prefix("rolling"))
-                .and_then(|p| p.trim().parse::<u32>().ok())
-                .unwrap_or(1);
-            Ok(claw_deploy::StrategyHint::Rolling { batch_size })
-        }
-        _ => Err(format!(
-            "unknown strategy: {s} (use immediate/canary/canary:N/blue-green/rolling/rolling:N)"
-        )
-        .into()),
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct DeployIdentifyParams {
-    #[serde(rename = "deploymentId")]
-    deployment_id: Option<String>,
     name: Option<String>,
 }
 
@@ -130,32 +240,31 @@ async fn handle_deploy_status(
     params: Value,
 ) -> Result<Value, CommandError> {
     let params: DeployIdentifyParams = serde_json::from_value(params)?;
+    let name = params.name.ok_or("name required")?;
 
-    let id = resolve_deploy_id(state, &params)?;
-    let status = state
-        .deploy_executor
-        .get_status(&id)
-        .map_err(|e| format!("status failed: {e}"))?;
+    let store = state.deploy_store.read().await;
+    let record = store.get(&name).ok_or_else(|| format!("deployment '{name}' not found"))?;
 
     Ok(json!({
-        "deploymentId": id.to_string(),
-        "state": format!("{}", status.state),
-        "image": status.image,
-        "healthyReplicas": status.healthy_replicas,
-        "totalReplicas": status.total_replicas,
-        "healthRatio": status.health_ratio(),
-        "strategy": format!("{:?}", status.strategy),
-        "message": status.message,
-        "created_at": status.created_at.to_rfc3339(),
-        "updated_at": status.updated_at.to_rfc3339(),
+        "name": record.name,
+        "image": record.image,
+        "previousImage": record.previous_image,
+        "replicas": record.replicas,
+        "containers": record.container_ids,
+        "gpusPerReplica": record.gpus_per_replica,
+        "memory": record.memory,
+        "cpu": record.cpu,
+        "strategy": record.strategy,
+        "state": record.state,
+        "revision": record.revision,
+        "createdAt": record.created_at.to_rfc3339(),
+        "updatedAt": record.updated_at.to_rfc3339(),
     }))
 }
 
 #[derive(Debug, Deserialize)]
 struct DeployUpdateParams {
-    #[serde(rename = "deploymentId")]
-    deployment_id: Option<String>,
-    name: Option<String>,
+    name: String,
     image: Option<String>,
     replicas: Option<u32>,
 }
@@ -166,111 +275,260 @@ async fn handle_deploy_update(
 ) -> Result<Value, CommandError> {
     let params: DeployUpdateParams = serde_json::from_value(params)?;
 
-    let identify = DeployIdentifyParams {
-        deployment_id: params.deployment_id.clone(),
-        name: params.name.clone(),
+    // Read current state
+    let (old_image, old_container_ids, old_replicas, gpus, memory, cpu) = {
+        let store = state.deploy_store.read().await;
+        let record = store
+            .get(&params.name)
+            .ok_or_else(|| format!("deployment '{}' not found", params.name))?;
+        if record.state == "paused" {
+            return Err("deployment is paused, resume before updating".into());
+        }
+        (
+            record.image.clone(),
+            record.container_ids.clone(),
+            record.replicas,
+            record.gpus_per_replica,
+            record.memory.clone(),
+            record.cpu,
+        )
     };
-    let id = resolve_deploy_id(state, &identify)?;
 
-    info!(deployment_id = %id, "updating deployment");
+    let new_image = params.image.unwrap_or_else(|| old_image.clone());
+    let new_replicas = params.replicas.unwrap_or(old_replicas);
 
-    // Get current status to base the new intent on
-    let current = state
-        .deploy_executor
-        .get_status(&id)
-        .map_err(|e| format!("status failed: {e}"))?;
+    info!(
+        name = %params.name,
+        old_image = %old_image,
+        new_image = %new_image,
+        new_replicas = new_replicas,
+        "updating deployment"
+    );
 
-    let image = params.image.unwrap_or(current.image.clone());
-    let replicas = params.replicas.unwrap_or(current.total_replicas);
+    // Pull new image if changed
+    if new_image != old_image {
+        let runtime = {
+            let s = state.read().await;
+            s.config.container_runtime.clone()
+        };
+        pull_image(&runtime, &new_image).await?;
+    }
 
-    // Create a new deployment (the executor doesn't have an update method,
-    // so we start a fresh deployment with the new params)
-    let intent = claw_deploy::DeploymentIntent::new(&image).with_replicas(replicas);
+    // Start new replicas
+    let mut new_container_ids = Vec::new();
+    for i in 0..new_replicas {
+        match start_replica(
+            state,
+            &params.name,
+            &new_image,
+            i,
+            gpus,
+            memory.as_deref(),
+            cpu,
+        )
+        .await
+        {
+            Ok(cid) => new_container_ids.push(cid),
+            Err(e) => {
+                warn!(replica = i, error = %e, "failed to start new replica");
+                // Clean up new replicas and keep old ones running
+                for cid in &new_container_ids {
+                    remove_container(state, cid).await;
+                }
+                return Err(format!("update failed at replica {i}: {e}").into());
+            }
+        }
+    }
 
-    let new_id = state
-        .deploy_executor
-        .start(&intent)
-        .map_err(|e| format!("update deploy failed: {e}"))?;
+    // Stop old replicas
+    for cid in &old_container_ids {
+        remove_container(state, cid).await;
+    }
+
+    // Update the deploy record
+    {
+        let mut store = state.deploy_store.write().await;
+        if let Some(record) = store.get_mut(&params.name) {
+            record.previous_image = Some(old_image.clone());
+            record.image = new_image.clone();
+            record.replicas = new_replicas;
+            record.container_ids = new_container_ids.clone();
+            record.revision += 1;
+            record.state = "active".to_string();
+            record.updated_at = chrono::Utc::now();
+            record.history.push(DeployRevision {
+                revision: record.revision,
+                image: new_image.clone(),
+                replicas: new_replicas,
+                timestamp: chrono::Utc::now(),
+                reason: Some("update".to_string()),
+            });
+        }
+        store.update(&params.name);
+    }
 
     Ok(json!({
-        "previousDeploymentId": id.to_string(),
-        "deploymentId": new_id.to_string(),
-        "image": image,
-        "replicas": replicas,
+        "name": params.name,
+        "image": new_image,
+        "previousImage": old_image,
+        "replicas": new_replicas,
+        "containers": new_container_ids,
         "success": true,
     }))
-}
-
-#[derive(Debug, Deserialize)]
-struct DeployRollbackParams {
-    #[serde(rename = "deploymentId")]
-    deployment_id: Option<String>,
-    name: Option<String>,
-    reason: Option<String>,
 }
 
 async fn handle_deploy_rollback(
     state: &SharedState,
     params: Value,
 ) -> Result<Value, CommandError> {
-    let params: DeployRollbackParams = serde_json::from_value(params)?;
+    #[derive(Debug, Deserialize)]
+    struct RollbackParams {
+        name: String,
+        reason: Option<String>,
+    }
 
-    let identify = DeployIdentifyParams {
-        deployment_id: params.deployment_id.clone(),
-        name: params.name.clone(),
+    let params: RollbackParams = serde_json::from_value(params)?;
+
+    // Read current state
+    let (previous_image, current_containers, replicas, gpus, memory, cpu) = {
+        let store = state.deploy_store.read().await;
+        let record = store
+            .get(&params.name)
+            .ok_or_else(|| format!("deployment '{}' not found", params.name))?;
+        let prev = record
+            .previous_image
+            .clone()
+            .ok_or("no previous image to rollback to")?;
+        (
+            prev,
+            record.container_ids.clone(),
+            record.replicas,
+            record.gpus_per_replica,
+            record.memory.clone(),
+            record.cpu,
+        )
     };
-    let id = resolve_deploy_id(state, &identify)?;
 
     let reason = params.reason.as_deref().unwrap_or("manual rollback");
-    info!(deployment_id = %id, reason = %reason, "rolling back deployment");
+    info!(name = %params.name, target_image = %previous_image, reason = %reason, "rolling back");
 
-    state
-        .deploy_executor
-        .rollback(&id, reason)
-        .map_err(|e| format!("rollback failed: {e}"))?;
+    // Start replicas with previous image
+    let mut new_container_ids = Vec::new();
+    for i in 0..replicas {
+        match start_replica(
+            state,
+            &params.name,
+            &previous_image,
+            i,
+            gpus,
+            memory.as_deref(),
+            cpu,
+        )
+        .await
+        {
+            Ok(cid) => new_container_ids.push(cid),
+            Err(e) => {
+                for cid in &new_container_ids {
+                    remove_container(state, cid).await;
+                }
+                return Err(format!("rollback failed at replica {i}: {e}").into());
+            }
+        }
+    }
 
-    let status = state
-        .deploy_executor
-        .get_status(&id)
-        .map_err(|e| format!("status failed: {e}"))?;
+    // Stop current containers
+    for cid in &current_containers {
+        remove_container(state, cid).await;
+    }
+
+    // Update record
+    {
+        let mut store = state.deploy_store.write().await;
+        if let Some(record) = store.get_mut(&params.name) {
+            let current_image = record.image.clone();
+            record.previous_image = Some(current_image);
+            record.image = previous_image.clone();
+            record.container_ids = new_container_ids.clone();
+            record.revision += 1;
+            record.state = "active".to_string();
+            record.updated_at = chrono::Utc::now();
+            record.history.push(DeployRevision {
+                revision: record.revision,
+                image: previous_image.clone(),
+                replicas,
+                timestamp: chrono::Utc::now(),
+                reason: Some(format!("rollback: {reason}")),
+            });
+        }
+        store.update(&params.name);
+    }
 
     Ok(json!({
-        "deploymentId": id.to_string(),
-        "state": format!("{}", status.state),
+        "name": params.name,
+        "image": previous_image,
+        "containers": new_container_ids,
         "rolledBack": true,
         "reason": reason,
+        "success": true,
     }))
 }
 
 async fn handle_deploy_history(
     state: &SharedState,
-    _params: Value,
+    params: Value,
 ) -> Result<Value, CommandError> {
-    // List all deployments (history = all deployments including terminal ones)
-    let all = state
-        .deploy_executor
-        .list()
-        .map_err(|e| format!("list failed: {e}"))?;
+    let params: DeployIdentifyParams = serde_json::from_value(params)?;
 
-    let deployments: Vec<Value> = all
-        .iter()
-        .map(|(id, status)| {
-            json!({
-                "deploymentId": id.to_string(),
-                "image": status.image,
-                "state": format!("{}", status.state),
-                "replicas": status.total_replicas,
-                "healthyReplicas": status.healthy_replicas,
-                "created_at": status.created_at.to_rfc3339(),
-                "updated_at": status.updated_at.to_rfc3339(),
+    if let Some(name) = params.name {
+        // History for a specific deployment
+        let store = state.deploy_store.read().await;
+        let record = store
+            .get(&name)
+            .ok_or_else(|| format!("deployment '{name}' not found"))?;
+
+        let revisions: Vec<Value> = record
+            .history
+            .iter()
+            .map(|r| {
+                json!({
+                    "revision": r.revision,
+                    "image": r.image,
+                    "replicas": r.replicas,
+                    "timestamp": r.timestamp.to_rfc3339(),
+                    "reason": r.reason,
+                })
             })
-        })
-        .collect();
+            .collect();
 
-    Ok(json!({
-        "count": deployments.len(),
-        "deployments": deployments,
-    }))
+        Ok(json!({
+            "name": name,
+            "currentRevision": record.revision,
+            "revisions": revisions,
+        }))
+    } else {
+        // List all deployments
+        let store = state.deploy_store.read().await;
+        let deploys: Vec<Value> = store
+            .list()
+            .iter()
+            .map(|d| {
+                json!({
+                    "name": d.name,
+                    "image": d.image,
+                    "state": d.state,
+                    "replicas": d.replicas,
+                    "revision": d.revision,
+                    "createdAt": d.created_at.to_rfc3339(),
+                    "updatedAt": d.updated_at.to_rfc3339(),
+                })
+            })
+            .collect();
+
+        Ok(json!({
+            "count": deploys.len(),
+            "deployments": deploys,
+        }))
+    }
 }
 
 async fn handle_deploy_promote(
@@ -278,43 +536,50 @@ async fn handle_deploy_promote(
     params: Value,
 ) -> Result<Value, CommandError> {
     let params: DeployIdentifyParams = serde_json::from_value(params)?;
-    let id = resolve_deploy_id(state, &params)?;
+    let name = params.name.ok_or("name required")?;
 
-    info!(deployment_id = %id, "promoting deployment");
+    info!(name = %name, "promoting deployment");
 
-    state
-        .deploy_executor
-        .promote(&id)
-        .map_err(|e| format!("promote failed: {e}"))?;
+    let mut store = state.deploy_store.write().await;
+    let record = store
+        .get_mut(&name)
+        .ok_or_else(|| format!("deployment '{name}' not found"))?;
 
-    let status = state
-        .deploy_executor
-        .get_status(&id)
-        .map_err(|e| format!("status failed: {e}"))?;
+    // Promote = clear previous_image (no rollback target) and mark active
+    record.previous_image = None;
+    record.state = "active".to_string();
+    record.updated_at = chrono::Utc::now();
+    store.update(&name);
 
     Ok(json!({
-        "deploymentId": id.to_string(),
-        "state": format!("{}", status.state),
+        "name": name,
         "promoted": true,
+        "state": "active",
     }))
 }
 
 async fn handle_deploy_pause(
-    _state: &SharedState,
+    state: &SharedState,
     params: Value,
 ) -> Result<Value, CommandError> {
     let params: DeployIdentifyParams = serde_json::from_value(params)?;
+    let name = params.name.ok_or("name required")?;
 
-    // The executor doesn't have a pause method yet — return a stub
-    let id_str = params
-        .deployment_id
-        .or(params.name)
-        .ok_or("deploymentId or name required")?;
+    info!(name = %name, "pausing deployment");
+
+    let mut store = state.deploy_store.write().await;
+    let record = store
+        .get_mut(&name)
+        .ok_or_else(|| format!("deployment '{name}' not found"))?;
+
+    record.state = "paused".to_string();
+    record.updated_at = chrono::Utc::now();
+    store.update(&name);
 
     Ok(json!({
-        "deploymentId": id_str,
+        "name": name,
         "paused": true,
-        "message": "deployment paused (rollout frozen)",
+        "message": "deployment paused (updates blocked until resumed)",
     }))
 }
 
@@ -323,43 +588,32 @@ async fn handle_deploy_delete(
     params: Value,
 ) -> Result<Value, CommandError> {
     let params: DeployIdentifyParams = serde_json::from_value(params)?;
-    let id = resolve_deploy_id(state, &params)?;
+    let name = params.name.ok_or("name required")?;
 
-    info!(deployment_id = %id, "deleting deployment");
+    info!(name = %name, "deleting deployment");
 
-    // Rollback to stop it, then mark as complete
-    let _ = state.deploy_executor.rollback(&id, "deployment deleted");
+    // Get container IDs before deleting
+    let container_ids = {
+        let store = state.deploy_store.read().await;
+        let record = store
+            .get(&name)
+            .ok_or_else(|| format!("deployment '{name}' not found"))?;
+        record.container_ids.clone()
+    };
+
+    // Stop all containers
+    for cid in &container_ids {
+        remove_container(state, cid).await;
+    }
+
+    // Remove from store
+    state.deploy_store.write().await.delete(&name);
 
     Ok(json!({
-        "deploymentId": id.to_string(),
+        "name": name,
         "deleted": true,
+        "containersRemoved": container_ids.len(),
     }))
-}
-
-/// Resolve a deployment ID from params (either direct ID or name-based lookup).
-fn resolve_deploy_id(
-    state: &SharedState,
-    params: &DeployIdentifyParams,
-) -> Result<claw_deploy::DeploymentId, CommandError> {
-    if let Some(ref id_str) = params.deployment_id {
-        return claw_deploy::DeploymentId::parse(id_str)
-            .map_err(|e| format!("invalid deployment ID: {e}").into());
-    }
-
-    if let Some(ref _name) = params.name {
-        // Name-based lookup: find the most recent deployment
-        // For now, list all and return the most recent non-terminal one
-        let all = state
-            .deploy_executor
-            .list()
-            .map_err(|e| format!("list failed: {e}"))?;
-
-        if let Some((id, _)) = all.last() {
-            return Ok(id.clone());
-        }
-    }
-
-    Err("deploymentId or name required".into())
 }
 
 #[cfg(test)]
@@ -376,107 +630,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_deploy_create() {
+    async fn test_deploy_status_not_found() {
         let state = test_state();
-
-        let result = handle_deploy_command(
-            &state,
-            CommandRequest {
-                command: "deploy.create".to_string(),
-                params: json!({
-                    "name": "my-app",
-                    "image": "myapp:v1.0",
-                    "replicas": 3,
-                }),
-            },
-        )
-        .await
-        .expect("create");
-
-        assert_eq!(result["success"], true);
-        assert_eq!(result["name"], "my-app");
-        assert_eq!(result["image"], "myapp:v1.0");
-        assert_eq!(result["replicas"], 3);
-        assert!(!result["deploymentId"].as_str().unwrap_or("").is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_deploy_create_with_strategy() {
-        let state = test_state();
-
-        let result = handle_deploy_command(
-            &state,
-            CommandRequest {
-                command: "deploy.create".to_string(),
-                params: json!({
-                    "name": "canary-app",
-                    "image": "app:v2.0",
-                    "replicas": 5,
-                    "strategy": "canary:20",
-                }),
-            },
-        )
-        .await
-        .expect("create");
-
-        assert_eq!(result["success"], true);
-    }
-
-    #[tokio::test]
-    async fn test_deploy_status() {
-        let state = test_state();
-
-        // Create deployment first
-        let create_result = handle_deploy_command(
-            &state,
-            CommandRequest {
-                command: "deploy.create".to_string(),
-                params: json!({
-                    "name": "status-test",
-                    "image": "app:v1",
-                    "replicas": 2,
-                }),
-            },
-        )
-        .await
-        .expect("create");
-
-        let deploy_id = create_result["deploymentId"].as_str().unwrap();
-
         let result = handle_deploy_command(
             &state,
             CommandRequest {
                 command: "deploy.status".to_string(),
-                params: json!({"deploymentId": deploy_id}),
+                params: json!({"name": "nonexistent"}),
             },
         )
-        .await
-        .expect("status");
-
-        assert_eq!(result["image"], "app:v1");
-        assert_eq!(result["totalReplicas"], 2);
+        .await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn test_deploy_history() {
+    async fn test_deploy_history_all_empty() {
         let state = test_state();
-
-        // Create two deployments
-        for i in 1..=2 {
-            handle_deploy_command(
-                &state,
-                CommandRequest {
-                    command: "deploy.create".to_string(),
-                    params: json!({
-                        "name": format!("app-v{i}"),
-                        "image": format!("app:v{i}"),
-                    }),
-                },
-            )
-            .await
-            .expect("create");
-        }
-
         let result = handle_deploy_command(
             &state,
             CommandRequest {
@@ -486,96 +655,133 @@ mod tests {
         )
         .await
         .expect("history");
-
-        assert_eq!(result["count"], 2);
+        assert_eq!(result["count"], 0);
     }
 
     #[tokio::test]
-    async fn test_deploy_rollback() {
+    async fn test_deploy_store_persistence() {
         let state = test_state();
 
-        let create_result = handle_deploy_command(
-            &state,
-            CommandRequest {
-                command: "deploy.create".to_string(),
-                params: json!({
-                    "name": "rollback-test",
-                    "image": "app:v2",
-                    "replicas": 3,
-                }),
-            },
-        )
-        .await
-        .expect("create");
+        // Directly insert a record into the store
+        let now = chrono::Utc::now();
+        let record = DeployRecord {
+            name: "test-app".to_string(),
+            image: "app:v1".to_string(),
+            previous_image: None,
+            replicas: 2,
+            container_ids: vec!["abc123".to_string()],
+            gpus_per_replica: 0,
+            memory: None,
+            cpu: None,
+            strategy: "rolling".to_string(),
+            state: "active".to_string(),
+            revision: 1,
+            history: vec![DeployRevision {
+                revision: 1,
+                image: "app:v1".to_string(),
+                replicas: 2,
+                timestamp: now,
+                reason: Some("test".to_string()),
+            }],
+            created_at: now,
+            updated_at: now,
+        };
 
-        let deploy_id = create_result["deploymentId"].as_str().unwrap();
+        state
+            .deploy_store
+            .write()
+            .await
+            .create(record)
+            .expect("create");
 
+        // Read it back
         let result = handle_deploy_command(
             &state,
             CommandRequest {
-                command: "deploy.rollback".to_string(),
-                params: json!({
-                    "deploymentId": deploy_id,
-                    "reason": "bad metrics"
-                }),
+                command: "deploy.status".to_string(),
+                params: json!({"name": "test-app"}),
             },
         )
         .await
-        .expect("rollback");
+        .expect("status");
 
-        assert_eq!(result["rolledBack"], true);
+        assert_eq!(result["name"], "test-app");
+        assert_eq!(result["image"], "app:v1");
+        assert_eq!(result["state"], "active");
+        assert_eq!(result["revision"], 1);
     }
 
     #[tokio::test]
-    async fn test_deploy_delete() {
+    async fn test_deploy_pause_and_promote() {
         let state = test_state();
 
-        let create_result = handle_deploy_command(
-            &state,
-            CommandRequest {
-                command: "deploy.create".to_string(),
-                params: json!({
-                    "name": "delete-test",
-                    "image": "app:v1",
-                }),
-            },
-        )
-        .await
-        .expect("create");
+        // Insert directly
+        let now = chrono::Utc::now();
+        let record = DeployRecord {
+            name: "pause-test".to_string(),
+            image: "app:v1".to_string(),
+            previous_image: Some("app:v0".to_string()),
+            replicas: 1,
+            container_ids: vec![],
+            gpus_per_replica: 0,
+            memory: None,
+            cpu: None,
+            strategy: "rolling".to_string(),
+            state: "active".to_string(),
+            revision: 2,
+            history: vec![],
+            created_at: now,
+            updated_at: now,
+        };
+        state.deploy_store.write().await.create(record).expect("create");
 
-        let deploy_id = create_result["deploymentId"].as_str().unwrap();
-
+        // Pause
         let result = handle_deploy_command(
             &state,
             CommandRequest {
-                command: "deploy.delete".to_string(),
-                params: json!({"deploymentId": deploy_id}),
+                command: "deploy.pause".to_string(),
+                params: json!({"name": "pause-test"}),
             },
         )
         .await
-        .expect("delete");
+        .expect("pause");
+        assert_eq!(result["paused"], true);
 
-        assert_eq!(result["deleted"], true);
-    }
+        // Verify paused state
+        let status = handle_deploy_command(
+            &state,
+            CommandRequest {
+                command: "deploy.status".to_string(),
+                params: json!({"name": "pause-test"}),
+            },
+        )
+        .await
+        .expect("status");
+        assert_eq!(status["state"], "paused");
 
-    #[test]
-    fn test_parse_strategy_hint() {
-        assert!(matches!(
-            parse_strategy_hint("immediate").unwrap(),
-            claw_deploy::StrategyHint::Immediate
-        ));
-        assert!(matches!(
-            parse_strategy_hint("blue-green").unwrap(),
-            claw_deploy::StrategyHint::BlueGreen
-        ));
-        assert!(matches!(
-            parse_strategy_hint("canary:25").unwrap(),
-            claw_deploy::StrategyHint::Canary { percentage: 25 }
-        ));
-        assert!(matches!(
-            parse_strategy_hint("rolling:3").unwrap(),
-            claw_deploy::StrategyHint::Rolling { batch_size: 3 }
-        ));
-        assert!(parse_strategy_hint("unknown").is_err());
+        // Promote
+        let result = handle_deploy_command(
+            &state,
+            CommandRequest {
+                command: "deploy.promote".to_string(),
+                params: json!({"name": "pause-test"}),
+            },
+        )
+        .await
+        .expect("promote");
+        assert_eq!(result["promoted"], true);
+
+        // Verify promoted: previous_image cleared
+        let status = handle_deploy_command(
+            &state,
+            CommandRequest {
+                command: "deploy.status".to_string(),
+                params: json!({"name": "pause-test"}),
+            },
+        )
+        .await
+        .expect("status");
+        assert_eq!(status["state"], "active");
+        assert_eq!(status["previousImage"], Value::Null);
     }
 }

@@ -802,6 +802,287 @@ impl BackupStore {
     }
 }
 
+// ─────────────────────────────────────────────────────────────
+// Workload Store
+// ─────────────────────────────────────────────────────────────
+
+/// A persistent workload record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkloadRecord {
+    /// Workload ID (UUID).
+    pub id: String,
+    /// Container image.
+    pub image: String,
+    /// Docker container ID (if running).
+    pub container_id: Option<String>,
+    /// Allocated GPU indices.
+    pub gpu_ids: Vec<u32>,
+    /// Current state: "running", "stopped", "failed", "exited".
+    pub state: String,
+    /// Container name (if assigned).
+    pub name: Option<String>,
+    /// Environment variables.
+    pub env: Vec<String>,
+    /// Creation timestamp.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Last state change timestamp.
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// Exit code (if exited).
+    pub exit_code: Option<i32>,
+}
+
+/// In-memory workload store backed by JSON snapshots.
+pub struct WorkloadStore {
+    workloads: HashMap<String, WorkloadRecord>,
+    store: JsonStore,
+}
+
+impl WorkloadStore {
+    pub fn new(state_path: &Path) -> Self {
+        let store = JsonStore::new(state_path, "workloads");
+        let workloads = store.load();
+        debug!(count = workloads.len(), "loaded workloads from disk");
+        Self { workloads, store }
+    }
+
+    pub fn upsert(&mut self, record: WorkloadRecord) {
+        self.workloads.insert(record.id.clone(), record);
+        self.snapshot();
+    }
+
+    pub fn get(&self, id: &str) -> Option<&WorkloadRecord> {
+        self.workloads.get(id)
+    }
+
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut WorkloadRecord> {
+        self.workloads.get_mut(id)
+    }
+
+    pub fn update_state(&mut self, id: &str, state: &str, exit_code: Option<i32>) {
+        if let Some(record) = self.workloads.get_mut(id) {
+            record.state = state.to_string();
+            record.exit_code = exit_code;
+            record.updated_at = chrono::Utc::now();
+            self.snapshot();
+        }
+    }
+
+    pub fn remove(&mut self, id: &str) -> Option<WorkloadRecord> {
+        let record = self.workloads.remove(id);
+        if record.is_some() {
+            self.snapshot();
+        }
+        record
+    }
+
+    pub fn list(&self) -> Vec<&WorkloadRecord> {
+        self.workloads.values().collect()
+    }
+
+    /// Get all workloads that were in "running" state (for reconciliation on startup).
+    pub fn running(&self) -> Vec<&WorkloadRecord> {
+        self.workloads
+            .values()
+            .filter(|w| w.state == "running")
+            .collect()
+    }
+
+    /// Find a workload by its Docker container ID.
+    pub fn find_by_container_id(&self, container_id: &str) -> Option<&WorkloadRecord> {
+        self.workloads
+            .values()
+            .find(|w| w.container_id.as_deref() == Some(container_id))
+    }
+
+    fn snapshot(&self) {
+        if let Err(e) = self.store.save(&self.workloads) {
+            warn!(error = %e, "failed to snapshot workload store");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Deploy Store
+// ─────────────────────────────────────────────────────────────
+
+/// A deployment record tracking rolling updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployRecord {
+    /// Deployment name.
+    pub name: String,
+    /// Current image.
+    pub image: String,
+    /// Previous image (for rollback).
+    pub previous_image: Option<String>,
+    /// Target replica count.
+    pub replicas: u32,
+    /// Active container IDs.
+    pub container_ids: Vec<String>,
+    /// GPU count per replica.
+    pub gpus_per_replica: u32,
+    /// Memory limit per replica.
+    pub memory: Option<String>,
+    /// CPU limit per replica.
+    pub cpu: Option<f32>,
+    /// Deploy strategy: "rolling", "blue-green", "immediate".
+    pub strategy: String,
+    /// Current state: "active", "updating", "paused", "failed", "deleted".
+    pub state: String,
+    /// Revision number (increments on each update).
+    pub revision: u32,
+    /// History of previous revisions.
+    pub history: Vec<DeployRevision>,
+    /// Creation timestamp.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Last update timestamp.
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// A historical deployment revision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployRevision {
+    pub revision: u32,
+    pub image: String,
+    pub replicas: u32,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub reason: Option<String>,
+}
+
+/// In-memory deploy store backed by JSON snapshots.
+pub struct DeployStore {
+    deploys: HashMap<String, DeployRecord>,
+    store: JsonStore,
+}
+
+impl DeployStore {
+    pub fn new(state_path: &Path) -> Self {
+        let store = JsonStore::new(state_path, "deploys");
+        let deploys = store.load();
+        debug!(count = deploys.len(), "loaded deploys from disk");
+        Self { deploys, store }
+    }
+
+    pub fn create(&mut self, record: DeployRecord) -> Result<(), String> {
+        if self.deploys.contains_key(&record.name) {
+            return Err(format!("deployment '{}' already exists", record.name));
+        }
+        let name = record.name.clone();
+        self.deploys.insert(name, record);
+        self.snapshot();
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Option<&DeployRecord> {
+        self.deploys.get(name)
+    }
+
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut DeployRecord> {
+        self.deploys.get_mut(name)
+    }
+
+    pub fn update(&mut self, name: &str) {
+        // Just snapshot after external mutation via get_mut
+        if self.deploys.contains_key(name) {
+            self.snapshot();
+        }
+    }
+
+    pub fn delete(&mut self, name: &str) -> Option<DeployRecord> {
+        let record = self.deploys.remove(name);
+        if record.is_some() {
+            self.snapshot();
+        }
+        record
+    }
+
+    pub fn list(&self) -> Vec<&DeployRecord> {
+        self.deploys.values().collect()
+    }
+
+    fn snapshot(&self) {
+        if let Err(e) = self.store.save(&self.deploys) {
+            warn!(error = %e, "failed to snapshot deploy store");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Secret Store (encrypted at rest)
+// ─────────────────────────────────────────────────────────────
+
+/// An encrypted secret entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretEntry {
+    /// Secret name.
+    pub name: String,
+    /// Encrypted data (base64-encoded ciphertext).
+    pub encrypted_data: String,
+    /// Nonce used for encryption (base64-encoded).
+    pub nonce: String,
+    /// Key version used for encryption.
+    pub key_version: u32,
+    /// Creation timestamp.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Last rotation timestamp.
+    pub rotated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// In-memory secret store backed by encrypted JSON snapshots.
+pub struct SecretStore {
+    secrets: HashMap<String, SecretEntry>,
+    store: JsonStore,
+}
+
+impl SecretStore {
+    pub fn new(state_path: &Path) -> Self {
+        let store = JsonStore::new(state_path, "secrets");
+        let secrets = store.load();
+        debug!(count = secrets.len(), "loaded secrets from disk");
+        Self { secrets, store }
+    }
+
+    pub fn create(&mut self, entry: SecretEntry) -> Result<(), String> {
+        if self.secrets.contains_key(&entry.name) {
+            return Err(format!("secret '{}' already exists", entry.name));
+        }
+        let name = entry.name.clone();
+        self.secrets.insert(name, entry);
+        self.snapshot();
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Option<&SecretEntry> {
+        self.secrets.get(name)
+    }
+
+    pub fn update(&mut self, name: &str, entry: SecretEntry) -> Result<(), String> {
+        if !self.secrets.contains_key(name) {
+            return Err(format!("secret '{name}' not found"));
+        }
+        self.secrets.insert(name.to_string(), entry);
+        self.snapshot();
+        Ok(())
+    }
+
+    pub fn delete(&mut self, name: &str) -> Option<SecretEntry> {
+        let entry = self.secrets.remove(name);
+        if entry.is_some() {
+            self.snapshot();
+        }
+        entry
+    }
+
+    pub fn list(&self) -> Vec<&SecretEntry> {
+        self.secrets.values().collect()
+    }
+
+    fn snapshot(&self) {
+        if let Err(e) = self.store.save(&self.secrets) {
+            warn!(error = %e, "failed to snapshot secret store");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

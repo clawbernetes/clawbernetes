@@ -47,8 +47,7 @@ pub async fn handle_command(
         "config.create" | "config.get" | "config.update" | "config.delete" | "config.list" => {
             crate::config_cmd::handle_config_command(state, request).await
         }
-        // Secret commands (requires `secrets` feature)
-        #[cfg(feature = "secrets")]
+        // Secret commands (always available — uses SecretStore with AES-256-GCM)
         "secret.create" | "secret.get" | "secret.delete" | "secret.list" | "secret.rotate" => {
             crate::secrets_cmd::handle_secret_command(state, request).await
         }
@@ -59,8 +58,7 @@ pub async fn handle_command(
         | "alerts.create" | "alerts.list" | "alerts.acknowledge" => {
             crate::metrics_cmd::handle_metrics_command(state, request).await
         }
-        // Deploy commands (requires `deploy` feature)
-        #[cfg(feature = "deploy")]
+        // Deploy commands (always available — uses DeployStore + container runtime)
         "deploy.create" | "deploy.status" | "deploy.update" | "deploy.rollback"
         | "deploy.history" | "deploy.promote" | "deploy.pause" | "deploy.delete" => {
             crate::deploy_cmd::handle_deploy_command(state, request).await
@@ -451,7 +449,24 @@ async fn handle_workload_run_sdk(
         }
     }
 
-    let mut result = json!({
+    // Persist workload record
+    {
+        let record = crate::persist::WorkloadRecord {
+            id: workload_id.clone(),
+            image: params.image.clone(),
+            container_id: Some(container.id.clone()),
+            gpu_ids: params.gpus.map(|g| (0..g).collect()).unwrap_or_default(),
+            state: "running".to_string(),
+            name: params.name.clone(),
+            env: params.env.clone().unwrap_or_default(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            exit_code: None,
+        };
+        state.workload_store.write().await.upsert(record);
+    }
+
+    let result = json!({
         "containerId": container.id,
         "workloadId": workload_id,
         "image": params.image,
@@ -589,6 +604,23 @@ async fn handle_workload_run_cli(
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if output.status.success() {
+        // Persist workload record
+        {
+            let record = crate::persist::WorkloadRecord {
+                id: workload_id.clone(),
+                image: params.image.clone(),
+                container_id: Some(stdout.clone()),
+                gpu_ids: params.gpus.map(|g| (0..g).collect()).unwrap_or_default(),
+                state: "running".to_string(),
+                name: params.name.clone(),
+                env: params.env.clone().unwrap_or_default(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                exit_code: None,
+            };
+            state.workload_store.write().await.upsert(record);
+        }
+
         let result = json!({
             "containerId": stdout,
             "workloadId": workload_id,
@@ -657,6 +689,16 @@ async fn handle_workload_stop(state: &SharedState, params: Value) -> Result<Valu
             }
         }
 
+        // Update workload store
+        {
+            let store = state.workload_store.read().await;
+            if let Some(record) = store.find_by_container_id(target) {
+                let wid = record.id.clone();
+                drop(store);
+                state.workload_store.write().await.update_state(&wid, "stopped", Some(0));
+            }
+        }
+
         return Ok(json!({
             "stopped": target,
             "success": true,
@@ -711,6 +753,16 @@ async fn handle_workload_stop_cli(
                 if let Some(ip) = wn.release_by_container(target) {
                     info!(container = %target, ip = %ip, "released workload IP");
                 }
+            }
+        }
+
+        // Update workload store
+        {
+            let store = state.workload_store.read().await;
+            if let Some(record) = store.find_by_container_id(target) {
+                let wid = record.id.clone();
+                drop(store);
+                state.workload_store.write().await.update_state(&wid, "stopped", Some(0));
             }
         }
 
