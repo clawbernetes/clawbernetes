@@ -75,16 +75,13 @@ pub async fn handle_command(
         | "network.policy.create" | "network.policy.delete" | "network.policy.list" => {
             crate::network_cmd::handle_network_command(state, request).await
         }
-        // Tier 6 — Storage (requires `storage` feature)
-        #[cfg(feature = "storage")]
+        // Tier 6 — Storage (always available)
         "volume.create" | "volume.mount" | "volume.unmount" | "volume.snapshot"
         | "volume.list" | "volume.delete" | "backup.create" | "backup.restore" | "backup.list" => {
             crate::storage_cmd::handle_storage_command(state, request).await
         }
-        // Tier 7 — Auth & RBAC (requires `auth` feature)
-        #[cfg(feature = "auth")]
-        "auth.create_key" | "auth.revoke_key" | "auth.list_keys"
-        | "rbac.create_role" | "rbac.bind" | "rbac.check" | "audit.query" => {
+        // Tier 7 — Auth & RBAC (always available)
+        "auth.create_key" | "auth.revoke_key" | "auth.list_keys" | "audit.query" => {
             crate::auth_cmd::handle_auth_command(state, request).await
         }
         // Tier 8 — Namespaces (always available)
@@ -92,8 +89,7 @@ pub async fn handle_command(
         | "node.label" | "node.taint" | "node.drain" => {
             crate::namespace_cmd::handle_namespace_command(state, request).await
         }
-        // Tier 9 — Autoscaling (requires `autoscaler` feature)
-        #[cfg(feature = "autoscaler")]
+        // Tier 9 — Autoscaling (always available)
         "autoscale.create" | "autoscale.status" | "autoscale.adjust" | "autoscale.delete" => {
             crate::autoscale_cmd::handle_autoscale_command(state, request).await
         }

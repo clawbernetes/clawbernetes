@@ -1,15 +1,15 @@
-//! Autoscaling command handlers
+//! Autoscaling policy command handlers
 //!
-//! Provides 4 commands (requires `autoscaler` feature):
-//! `autoscale.create`, `autoscale.status`, `autoscale.adjust`, `autoscale.delete`
+//! Manages autoscaling policies using AutoscaleStore.
+//! Policies define min/max replicas and scaling triggers for deployments.
 
 use crate::commands::{CommandError, CommandRequest};
+use crate::persist::AutoscaleRecord;
 use crate::SharedState;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::info;
 
-/// Route an autoscale.* command.
 pub async fn handle_autoscale_command(
     state: &SharedState,
     request: CommandRequest,
@@ -25,36 +25,22 @@ pub async fn handle_autoscale_command(
 
 #[derive(Debug, Deserialize)]
 struct AutoscaleCreateParams {
+    name: String,
     target: String,
     #[serde(rename = "minReplicas", default = "default_min")]
     min_replicas: u32,
     #[serde(rename = "maxReplicas", default = "default_max")]
     max_replicas: u32,
-    #[serde(default = "default_policy")]
-    policy: String,
-    // Policy-specific params
-    #[serde(rename = "targetUtilization")]
-    target_utilization: Option<f64>,
-    tolerance: Option<f64>,
-    #[serde(rename = "targetQueueDepth")]
-    target_queue_depth: Option<u32>,
-    #[serde(rename = "upThreshold")]
-    up_threshold: Option<u32>,
-    #[serde(rename = "downThreshold")]
-    down_threshold: Option<u32>,
+    /// "target_utilization", "queue_depth", "schedule"
+    #[serde(rename = "policyType", default = "default_policy_type")]
+    policy_type: String,
+    metric: Option<String>,
+    threshold: Option<f64>,
 }
 
-fn default_min() -> u32 {
-    1
-}
-
-fn default_max() -> u32 {
-    10
-}
-
-fn default_policy() -> String {
-    "target_utilization".to_string()
-}
+fn default_min() -> u32 { 1 }
+fn default_max() -> u32 { 10 }
+fn default_policy_type() -> String { "target_utilization".to_string() }
 
 async fn handle_autoscale_create(
     state: &SharedState,
@@ -63,102 +49,90 @@ async fn handle_autoscale_create(
     let params: AutoscaleCreateParams = serde_json::from_value(params)?;
 
     info!(
+        name = %params.name,
         target = %params.target,
         min = params.min_replicas,
         max = params.max_replicas,
-        policy = %params.policy,
-        "creating autoscaler"
+        "creating autoscale policy"
     );
 
-    let policy_type = match params.policy.as_str() {
-        "target_utilization" => {
-            let target = params.target_utilization.unwrap_or(70.0);
-            let tolerance = params.tolerance.unwrap_or(10.0);
-            claw_autoscaler::ScalingPolicyType::TargetUtilization {
-                target_percent: target,
-                tolerance_percent: tolerance,
-            }
-        }
-        "queue_depth" => claw_autoscaler::ScalingPolicyType::QueueDepth {
-            target_jobs_per_node: params.target_queue_depth.unwrap_or(5),
-            scale_up_threshold: params.up_threshold.unwrap_or(10),
-            scale_down_threshold: params.down_threshold.unwrap_or(2),
-        },
-        other => {
-            return Err(format!(
-                "unknown policy: {other} (use target_utilization/queue_depth)"
-            )
-            .into())
-        }
+    if params.min_replicas > params.max_replicas {
+        return Err("minReplicas cannot exceed maxReplicas".into());
+    }
+
+    let now = chrono::Utc::now();
+    let record = AutoscaleRecord {
+        name: params.name.clone(),
+        target: params.target.clone(),
+        min_replicas: params.min_replicas,
+        max_replicas: params.max_replicas,
+        current_replicas: params.min_replicas,
+        policy_type: params.policy_type.clone(),
+        metric: params.metric.clone(),
+        threshold: params.threshold,
+        state: "active".to_string(),
+        created_at: now,
+        updated_at: now,
     };
 
-    let policy_name = format!("{}-policy", params.target);
-    let policy = claw_autoscaler::ScalingPolicy::builder(&policy_name, &policy_name)
-        .min_nodes(params.min_replicas)
-        .max_nodes(params.max_replicas)
-        .policy_type(policy_type)
-        .build()
-        .map_err(|e| format!("invalid policy: {e}"))?;
-
-    let pool =
-        claw_autoscaler::NodePool::new(&params.target, &params.target, policy)
-            .map_err(|e| format!("invalid pool: {e}"))?;
-
     state
-        .autoscaler_manager
-        .register_pool(pool)
-        .map_err(|e| format!("register failed: {e}"))?;
+        .autoscale_store
+        .write()
+        .await
+        .create(record)
+        .map_err(|e| -> CommandError { e.into() })?;
 
     Ok(json!({
+        "name": params.name,
         "target": params.target,
         "minReplicas": params.min_replicas,
         "maxReplicas": params.max_replicas,
-        "policy": params.policy,
+        "policyType": params.policy_type,
+        "state": "active",
         "success": true,
     }))
 }
 
 #[derive(Debug, Deserialize)]
-struct AutoscaleIdentifyParams {
-    target: String,
+struct AutoscaleNameParams {
+    name: String,
 }
 
 async fn handle_autoscale_status(
     state: &SharedState,
     params: Value,
 ) -> Result<Value, CommandError> {
-    let params: AutoscaleIdentifyParams = serde_json::from_value(params)?;
+    let params: AutoscaleNameParams = serde_json::from_value(params)?;
 
-    let pool_id = claw_autoscaler::PoolId::new(&params.target);
-    let pool = state
-        .autoscaler_manager
-        .get_pool(&pool_id)
-        .ok_or_else(|| format!("autoscaler '{}' not found", params.target))?;
-
-    let status = state.autoscaler_manager.status();
+    let store = state.autoscale_store.read().await;
+    let record = store
+        .get(&params.name)
+        .ok_or_else(|| format!("autoscale policy '{}' not found", params.name))?;
 
     Ok(json!({
-        "target": params.target,
-        "currentNodes": pool.node_count(),
-        "totalGpus": pool.total_gpu_count(),
-        "minNodes": pool.policy.min_nodes,
-        "maxNodes": pool.policy.max_nodes,
-        "enabled": status.enabled,
-        "pendingActions": status.pending_actions,
+        "name": record.name,
+        "target": record.target,
+        "minReplicas": record.min_replicas,
+        "maxReplicas": record.max_replicas,
+        "currentReplicas": record.current_replicas,
+        "policyType": record.policy_type,
+        "metric": record.metric,
+        "threshold": record.threshold,
+        "state": record.state,
+        "createdAt": record.created_at.to_rfc3339(),
+        "updatedAt": record.updated_at.to_rfc3339(),
     }))
 }
 
 #[derive(Debug, Deserialize)]
 struct AutoscaleAdjustParams {
-    target: String,
+    name: String,
+    replicas: Option<u32>,
     #[serde(rename = "minReplicas")]
     min_replicas: Option<u32>,
     #[serde(rename = "maxReplicas")]
     max_replicas: Option<u32>,
-    policy: Option<String>,
-    #[serde(rename = "targetUtilization")]
-    target_utilization: Option<f64>,
-    tolerance: Option<f64>,
+    enabled: Option<bool>,
 }
 
 async fn handle_autoscale_adjust(
@@ -167,39 +141,31 @@ async fn handle_autoscale_adjust(
 ) -> Result<Value, CommandError> {
     let params: AutoscaleAdjustParams = serde_json::from_value(params)?;
 
-    info!(target = %params.target, "adjusting autoscaler");
+    info!(name = %params.name, "adjusting autoscale policy");
 
-    let pool_id = claw_autoscaler::PoolId::new(&params.target);
+    let mut store = state.autoscale_store.write().await;
+    let record = store
+        .get_mut(&params.name)
+        .ok_or_else(|| format!("autoscale policy '{}' not found", params.name))?;
 
-    // Get current pool to merge params
-    let current = state
-        .autoscaler_manager
-        .get_pool(&pool_id)
-        .ok_or_else(|| format!("autoscaler '{}' not found", params.target))?;
-
-    let min = params.min_replicas.unwrap_or(current.policy.min_nodes);
-    let max = params.max_replicas.unwrap_or(current.policy.max_nodes);
-
-    let target = params.target_utilization.unwrap_or(70.0);
-    let tolerance = params.tolerance.unwrap_or(10.0);
-
-    let policy_name = format!("{}-policy", params.target);
-    let new_policy = claw_autoscaler::ScalingPolicy::builder(&policy_name, &policy_name)
-        .min_nodes(min)
-        .max_nodes(max)
-        .target_utilization(target, tolerance)
-        .build()
-        .map_err(|e| format!("invalid policy: {e}"))?;
-
-    state
-        .autoscaler_manager
-        .set_policy(&pool_id, new_policy)
-        .map_err(|e| format!("set policy failed: {e}"))?;
+    if let Some(min) = params.min_replicas {
+        record.min_replicas = min;
+    }
+    if let Some(max) = params.max_replicas {
+        record.max_replicas = max;
+    }
+    if let Some(replicas) = params.replicas {
+        record.current_replicas = replicas.clamp(record.min_replicas, record.max_replicas);
+    }
+    if let Some(enabled) = params.enabled {
+        record.state = if enabled { "active" } else { "disabled" }.to_string();
+    }
+    record.updated_at = chrono::Utc::now();
+    store.update(&params.name);
 
     Ok(json!({
-        "target": params.target,
-        "minReplicas": min,
-        "maxReplicas": max,
+        "name": params.name,
+        "adjusted": true,
         "success": true,
     }))
 }
@@ -208,19 +174,17 @@ async fn handle_autoscale_delete(
     state: &SharedState,
     params: Value,
 ) -> Result<Value, CommandError> {
-    let params: AutoscaleIdentifyParams = serde_json::from_value(params)?;
+    let params: AutoscaleNameParams = serde_json::from_value(params)?;
 
-    info!(target = %params.target, "deleting autoscaler");
+    info!(name = %params.name, "deleting autoscale policy");
 
-    let pool_id = claw_autoscaler::PoolId::new(&params.target);
-
-    state
-        .autoscaler_manager
-        .unregister_pool(&pool_id)
-        .map_err(|e| format!("unregister failed: {e}"))?;
+    let deleted = state.autoscale_store.write().await.delete(&params.name);
+    if deleted.is_none() {
+        return Err(format!("autoscale policy '{}' not found", params.name).into());
+    }
 
     Ok(json!({
-        "target": params.target,
+        "name": params.name,
         "deleted": true,
     }))
 }
@@ -239,38 +203,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_autoscale_create_and_status() {
+    async fn test_autoscale_create() {
         let state = test_state();
-
         let result = handle_autoscale_command(
             &state,
             CommandRequest {
                 command: "autoscale.create".to_string(),
                 params: json!({
-                    "target": "gpu-pool",
-                    "minReplicas": 2,
-                    "maxReplicas": 20,
-                    "policy": "target_utilization",
-                    "targetUtilization": 70.0,
-                    "tolerance": 10.0,
+                    "name": "gpu-scaler",
+                    "target": "my-app",
+                    "minReplicas": 1,
+                    "maxReplicas": 8,
+                    "policyType": "target_utilization",
+                    "metric": "gpu_utilization",
+                    "threshold": 80.0
                 }),
             },
         )
         .await
         .expect("create");
+
         assert_eq!(result["success"], true);
+        assert_eq!(result["name"], "gpu-scaler");
+    }
+
+    #[tokio::test]
+    async fn test_autoscale_status() {
+        let state = test_state();
+
+        handle_autoscale_command(
+            &state,
+            CommandRequest {
+                command: "autoscale.create".to_string(),
+                params: json!({"name": "test", "target": "app", "minReplicas": 2, "maxReplicas": 5}),
+            },
+        )
+        .await
+        .expect("create");
 
         let result = handle_autoscale_command(
             &state,
             CommandRequest {
                 command: "autoscale.status".to_string(),
-                params: json!({"target": "gpu-pool"}),
+                params: json!({"name": "test"}),
             },
         )
         .await
         .expect("status");
-        assert_eq!(result["minNodes"], 2);
-        assert_eq!(result["maxNodes"], 20);
+
+        assert_eq!(result["minReplicas"], 2);
+        assert_eq!(result["maxReplicas"], 5);
+        assert_eq!(result["currentReplicas"], 2);
+        assert_eq!(result["state"], "active");
     }
 
     #[tokio::test]
@@ -281,11 +265,7 @@ mod tests {
             &state,
             CommandRequest {
                 command: "autoscale.create".to_string(),
-                params: json!({
-                    "target": "adjust-pool",
-                    "minReplicas": 1,
-                    "maxReplicas": 10,
-                }),
+                params: json!({"name": "adj", "target": "app", "minReplicas": 1, "maxReplicas": 10}),
             },
         )
         .await
@@ -295,17 +275,65 @@ mod tests {
             &state,
             CommandRequest {
                 command: "autoscale.adjust".to_string(),
-                params: json!({
-                    "target": "adjust-pool",
-                    "minReplicas": 3,
-                    "maxReplicas": 15,
-                }),
+                params: json!({"name": "adj", "replicas": 5, "maxReplicas": 20}),
             },
         )
         .await
         .expect("adjust");
-        assert_eq!(result["minReplicas"], 3);
-        assert_eq!(result["maxReplicas"], 15);
+
+        assert_eq!(result["adjusted"], true);
+
+        // Verify
+        let status = handle_autoscale_command(
+            &state,
+            CommandRequest {
+                command: "autoscale.status".to_string(),
+                params: json!({"name": "adj"}),
+            },
+        )
+        .await
+        .expect("status");
+
+        assert_eq!(status["currentReplicas"], 5);
+        assert_eq!(status["maxReplicas"], 20);
+    }
+
+    #[tokio::test]
+    async fn test_autoscale_adjust_clamp() {
+        let state = test_state();
+
+        handle_autoscale_command(
+            &state,
+            CommandRequest {
+                command: "autoscale.create".to_string(),
+                params: json!({"name": "clamp", "target": "app", "minReplicas": 2, "maxReplicas": 5}),
+            },
+        )
+        .await
+        .expect("create");
+
+        // Try to set replicas beyond max
+        handle_autoscale_command(
+            &state,
+            CommandRequest {
+                command: "autoscale.adjust".to_string(),
+                params: json!({"name": "clamp", "replicas": 100}),
+            },
+        )
+        .await
+        .expect("adjust");
+
+        let status = handle_autoscale_command(
+            &state,
+            CommandRequest {
+                command: "autoscale.status".to_string(),
+                params: json!({"name": "clamp"}),
+            },
+        )
+        .await
+        .expect("status");
+
+        assert_eq!(status["currentReplicas"], 5); // Clamped to max
     }
 
     #[tokio::test]
@@ -316,11 +344,7 @@ mod tests {
             &state,
             CommandRequest {
                 command: "autoscale.create".to_string(),
-                params: json!({
-                    "target": "del-pool",
-                    "minReplicas": 1,
-                    "maxReplicas": 5,
-                }),
+                params: json!({"name": "del-me", "target": "app"}),
             },
         )
         .await
@@ -330,11 +354,37 @@ mod tests {
             &state,
             CommandRequest {
                 command: "autoscale.delete".to_string(),
-                params: json!({"target": "del-pool"}),
+                params: json!({"name": "del-me"}),
             },
         )
         .await
         .expect("delete");
+
         assert_eq!(result["deleted"], true);
+
+        // Verify gone
+        let result = handle_autoscale_command(
+            &state,
+            CommandRequest {
+                command: "autoscale.status".to_string(),
+                params: json!({"name": "del-me"}),
+            },
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_autoscale_min_exceeds_max() {
+        let state = test_state();
+        let result = handle_autoscale_command(
+            &state,
+            CommandRequest {
+                command: "autoscale.create".to_string(),
+                params: json!({"name": "bad", "target": "app", "minReplicas": 10, "maxReplicas": 5}),
+            },
+        )
+        .await;
+        assert!(result.is_err());
     }
 }

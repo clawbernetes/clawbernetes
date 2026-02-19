@@ -1,18 +1,16 @@
-//! Storage and volume command handlers
+//! Volume and backup management command handlers
 //!
-//! Provides 9 commands (requires `storage` feature):
-//! `volume.create`, `volume.mount`, `volume.unmount`, `volume.snapshot`,
-//! `volume.list`, `volume.delete`,
-//! `backup.create`, `backup.restore`, `backup.list`
+//! Manages persistent volumes and backups using VolumeStore and BackupStore.
+//! Volumes can be mounted to containers via Docker bind mounts.
 
 use crate::commands::{CommandError, CommandRequest};
-use crate::persist::BackupEntry;
+use crate::persist::{BackupEntry, VolumeRecord};
 use crate::SharedState;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::process::Command;
 use tracing::info;
 
-/// Route a volume.* or backup.* command.
 pub async fn handle_storage_command(
     state: &SharedState,
     request: CommandRequest,
@@ -22,11 +20,11 @@ pub async fn handle_storage_command(
         "volume.mount" => handle_volume_mount(state, request.params).await,
         "volume.unmount" => handle_volume_unmount(state, request.params).await,
         "volume.snapshot" => handle_volume_snapshot(state, request.params).await,
-        "volume.list" => handle_volume_list(state).await,
+        "volume.list" => handle_volume_list(state, request.params).await,
         "volume.delete" => handle_volume_delete(state, request.params).await,
         "backup.create" => handle_backup_create(state, request.params).await,
         "backup.restore" => handle_backup_restore(state, request.params).await,
-        "backup.list" => handle_backup_list(state).await,
+        "backup.list" => handle_backup_list(state, request.params).await,
         _ => Err(format!("unknown storage command: {}", request.command).into()),
     }
 }
@@ -36,292 +34,345 @@ struct VolumeCreateParams {
     name: String,
     #[serde(rename = "type", default = "default_emptydir")]
     volume_type: String,
-    #[serde(rename = "sizeGb", default = "default_size")]
-    size_gb: u64,
-    #[serde(rename = "accessMode", default = "default_rwo")]
-    access_mode: String,
-    #[serde(rename = "storageClass")]
-    storage_class: Option<String>,
-    // NFS-specific
-    server: Option<String>,
-    path: Option<String>,
-    // S3-specific
-    bucket: Option<String>,
+    #[serde(rename = "hostPath")]
+    host_path: Option<String>,
+    size: Option<String>,
 }
 
 fn default_emptydir() -> String {
     "emptydir".to_string()
 }
 
-fn default_size() -> u64 {
-    10
-}
-
-fn default_rwo() -> String {
-    "ReadWriteOnce".to_string()
-}
-
 async fn handle_volume_create(state: &SharedState, params: Value) -> Result<Value, CommandError> {
     let params: VolumeCreateParams = serde_json::from_value(params)?;
 
-    info!(name = %params.name, volume_type = %params.volume_type, size_gb = params.size_gb, "creating volume");
+    info!(name = %params.name, volume_type = %params.volume_type, "creating volume");
 
-    let vol_id = claw_storage::VolumeId::new(&params.name)
-        .map_err(|e| format!("invalid volume name: {e}"))?;
-
-    let volume_type = match params.volume_type.as_str() {
-        "emptydir" => claw_storage::VolumeType::empty_dir(),
-        "hostpath" => {
-            let path = params.path.as_deref().unwrap_or("/data");
-            claw_storage::VolumeType::HostPath(claw_storage::HostPathConfig::new(path))
-        }
-        "nfs" => {
-            let server = params
-                .server
-                .as_deref()
-                .ok_or("NFS volume requires 'server' field")?;
-            let path = params.path.as_deref().ok_or("NFS volume requires 'path' field")?;
-            claw_storage::VolumeType::Nfs(claw_storage::NfsConfig::new(server, path))
-        }
-        "s3" => {
-            let bucket = params
-                .bucket
-                .as_deref()
-                .ok_or("S3 volume requires 'bucket' field")?;
-            claw_storage::VolumeType::S3(claw_storage::S3Config::new(bucket))
-        }
-        other => return Err(format!("unknown volume type: {other} (use emptydir/hostpath/nfs/s3)").into()),
+    // For hostpath, ensure the directory exists
+    let host_path = if params.volume_type == "hostpath" {
+        let path = params
+            .host_path
+            .ok_or("hostPath required for hostpath volume type")?;
+        std::fs::create_dir_all(&path)
+            .map_err(|e| format!("failed to create host path {path}: {e}"))?;
+        Some(path)
+    } else if params.volume_type == "emptydir" {
+        // Create a temp dir under the state path
+        let s = state.read().await;
+        let vol_path = s.config.state_path.join("volumes").join(&params.name);
+        std::fs::create_dir_all(&vol_path)
+            .map_err(|e| format!("failed to create volume dir: {e}"))?;
+        Some(vol_path.to_string_lossy().to_string())
+    } else {
+        params.host_path
     };
 
-    let access_mode = match params.access_mode.as_str() {
-        "ReadWriteOnce" => claw_storage::AccessMode::ReadWriteOnce,
-        "ReadOnlyMany" => claw_storage::AccessMode::ReadOnlyMany,
-        "ReadWriteMany" => claw_storage::AccessMode::ReadWriteMany,
-        other => return Err(format!("unknown access mode: {other}").into()),
+    let record = VolumeRecord {
+        name: params.name.clone(),
+        volume_type: params.volume_type.clone(),
+        host_path,
+        size: params.size.clone(),
+        state: "available".to_string(),
+        bound_to: None,
+        mount_path: None,
+        created_at: chrono::Utc::now(),
     };
-
-    let size_bytes = params.size_gb * 1024 * 1024 * 1024;
-    let mut volume = claw_storage::Volume::new(vol_id, volume_type, size_bytes)
-        .with_access_mode(access_mode);
-
-    if let Some(ref sc) = params.storage_class {
-        volume = volume.with_storage_class(sc);
-    }
 
     state
-        .volume_manager
-        .provision_available(volume)
-        .map_err(|e| format!("provision failed: {e}"))?;
+        .volume_store
+        .write()
+        .await
+        .create(record)
+        .map_err(|e| -> CommandError { e.into() })?;
 
     Ok(json!({
         "name": params.name,
         "type": params.volume_type,
-        "sizeGb": params.size_gb,
-        "accessMode": params.access_mode,
+        "state": "available",
         "success": true,
     }))
 }
 
 #[derive(Debug, Deserialize)]
 struct VolumeMountParams {
-    #[serde(rename = "volumeId")]
-    volume_id: String,
-    #[serde(rename = "workloadId")]
-    workload_id: String,
+    name: String,
+    #[serde(rename = "containerId")]
+    container_id: String,
     #[serde(rename = "mountPath")]
     mount_path: String,
-    #[serde(rename = "readOnly", default)]
-    read_only: bool,
 }
 
 async fn handle_volume_mount(state: &SharedState, params: Value) -> Result<Value, CommandError> {
     let params: VolumeMountParams = serde_json::from_value(params)?;
 
-    info!(
-        volume = %params.volume_id,
-        workload = %params.workload_id,
-        path = %params.mount_path,
-        "mounting volume"
-    );
+    info!(volume = %params.name, container = %params.container_id, "mounting volume");
 
-    let vol_id = claw_storage::VolumeId::new(&params.volume_id)
-        .map_err(|e| format!("invalid volume ID: {e}"))?;
+    let mut store = state.volume_store.write().await;
+    let record = store
+        .get_mut(&params.name)
+        .ok_or_else(|| format!("volume '{}' not found", params.name))?;
 
-    state
-        .volume_manager
-        .attach(&vol_id, &params.workload_id)
-        .map_err(|e| format!("attach failed: {e}"))?;
+    if record.state == "bound" {
+        return Err(format!(
+            "volume '{}' already bound to {}",
+            params.name,
+            record.bound_to.as_deref().unwrap_or("unknown")
+        )
+        .into());
+    }
+
+    record.state = "bound".to_string();
+    record.bound_to = Some(params.container_id.clone());
+    record.mount_path = Some(params.mount_path.clone());
+    store.update(&params.name);
 
     Ok(json!({
-        "volumeId": params.volume_id,
-        "workloadId": params.workload_id,
+        "name": params.name,
+        "state": "bound",
+        "container": params.container_id,
         "mountPath": params.mount_path,
         "success": true,
     }))
 }
 
 #[derive(Debug, Deserialize)]
-struct VolumeIdentifyParams {
-    #[serde(rename = "volumeId")]
-    volume_id: String,
+struct VolumeNameParams {
+    name: String,
 }
 
 async fn handle_volume_unmount(state: &SharedState, params: Value) -> Result<Value, CommandError> {
-    let params: VolumeIdentifyParams = serde_json::from_value(params)?;
+    let params: VolumeNameParams = serde_json::from_value(params)?;
 
-    info!(volume = %params.volume_id, "unmounting volume");
+    info!(volume = %params.name, "unmounting volume");
 
-    let vol_id = claw_storage::VolumeId::new(&params.volume_id)
-        .map_err(|e| format!("invalid volume ID: {e}"))?;
+    let mut store = state.volume_store.write().await;
+    let record = store
+        .get_mut(&params.name)
+        .ok_or_else(|| format!("volume '{}' not found", params.name))?;
 
-    state
-        .volume_manager
-        .detach(&vol_id)
-        .map_err(|e| format!("detach failed: {e}"))?;
-
-    Ok(json!({
-        "volumeId": params.volume_id,
-        "unmounted": true,
-    }))
-}
-
-async fn handle_volume_snapshot(
-    state: &SharedState,
-    params: Value,
-) -> Result<Value, CommandError> {
-    let params: VolumeIdentifyParams = serde_json::from_value(params)?;
-
-    let vol_id = claw_storage::VolumeId::new(&params.volume_id)
-        .map_err(|e| format!("invalid volume ID: {e}"))?;
-
-    let _volume = state
-        .volume_manager
-        .get_volume(&vol_id)
-        .ok_or_else(|| format!("volume '{}' not found", params.volume_id))?;
-
-    let snapshot_id = uuid::Uuid::new_v4().to_string();
+    record.state = "available".to_string();
+    record.bound_to = None;
+    record.mount_path = None;
+    store.update(&params.name);
 
     Ok(json!({
-        "volumeId": params.volume_id,
-        "snapshotId": snapshot_id,
-        "created_at": chrono::Utc::now().to_rfc3339(),
+        "name": params.name,
+        "state": "available",
         "success": true,
     }))
 }
 
-async fn handle_volume_list(state: &SharedState) -> Result<Value, CommandError> {
-    let stats = state.volume_manager.stats();
+async fn handle_volume_snapshot(state: &SharedState, params: Value) -> Result<Value, CommandError> {
+    let params: VolumeNameParams = serde_json::from_value(params)?;
+
+    let store = state.volume_store.read().await;
+    let record = store
+        .get(&params.name)
+        .ok_or_else(|| format!("volume '{}' not found", params.name))?;
+
+    let host_path = record
+        .host_path
+        .clone()
+        .ok_or("volume has no host path to snapshot")?;
+    drop(store);
+
+    let snapshot_name = format!("{}-snap-{}", params.name, chrono::Utc::now().timestamp());
+    let s = state.read().await;
+    let snap_path = s.config.state_path.join("snapshots").join(&snapshot_name);
+    drop(s);
+
+    info!(volume = %params.name, snapshot = %snapshot_name, "creating snapshot");
+
+    std::fs::create_dir_all(&snap_path).map_err(|e| format!("mkdir failed: {e}"))?;
+
+    // Use cp -a for a filesystem snapshot
+    let output = Command::new("cp")
+        .args(["-a", &host_path, snap_path.to_str().unwrap_or(".")])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("snapshot failed: {stderr}").into());
+    }
 
     Ok(json!({
-        "totalVolumes": stats.total_volumes,
-        "availableVolumes": stats.available_volumes,
-        "boundVolumes": stats.bound_volumes,
-        "attachedVolumes": stats.attached_volumes,
-        "totalCapacity": stats.total_capacity,
-    }))
-}
-
-async fn handle_volume_delete(state: &SharedState, params: Value) -> Result<Value, CommandError> {
-    let params: VolumeIdentifyParams = serde_json::from_value(params)?;
-
-    info!(volume = %params.volume_id, "deleting volume");
-
-    let vol_id = claw_storage::VolumeId::new(&params.volume_id)
-        .map_err(|e| format!("invalid volume ID: {e}"))?;
-
-    state
-        .volume_manager
-        .delete(&vol_id)
-        .map_err(|e| format!("delete failed: {e}"))?;
-
-    Ok(json!({
-        "volumeId": params.volume_id,
-        "deleted": true,
-    }))
-}
-
-// ─────────────────────────────────────────────────────────────
-// Backup Commands
-// ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-struct BackupCreateParams {
-    scope: String,
-    destination: String,
-}
-
-async fn handle_backup_create(state: &SharedState, params: Value) -> Result<Value, CommandError> {
-    let params: BackupCreateParams = serde_json::from_value(params)?;
-
-    info!(scope = %params.scope, destination = %params.destination, "creating backup");
-
-    let entry = BackupEntry {
-        id: uuid::Uuid::new_v4().to_string(),
-        scope: params.scope.clone(),
-        destination: params.destination.clone(),
-        state: "completed".to_string(),
-        created_at: chrono::Utc::now(),
-    };
-
-    let id = entry.id.clone();
-    let mut store = state.backup_store.write().await;
-    store
-        .create(entry)
-        .map_err(|e| -> CommandError { e.into() })?;
-
-    Ok(json!({
-        "backupId": id,
-        "scope": params.scope,
-        "destination": params.destination,
-        "state": "completed",
+        "name": params.name,
+        "snapshot": snapshot_name,
+        "path": snap_path.to_string_lossy(),
         "success": true,
     }))
 }
 
-#[derive(Debug, Deserialize)]
-struct BackupRestoreParams {
-    #[serde(rename = "backupId")]
-    backup_id: String,
-}
-
-async fn handle_backup_restore(state: &SharedState, params: Value) -> Result<Value, CommandError> {
-    let params: BackupRestoreParams = serde_json::from_value(params)?;
-
-    info!(backup_id = %params.backup_id, "restoring backup");
-
-    let mut store = state.backup_store.write().await;
-    let backup = store
-        .get_mut(&params.backup_id)
-        .ok_or_else(|| format!("backup '{}' not found", params.backup_id))?;
-
-    backup.state = "restored".to_string();
-    store.update();
-
-    Ok(json!({
-        "backupId": params.backup_id,
-        "restored": true,
-    }))
-}
-
-async fn handle_backup_list(state: &SharedState) -> Result<Value, CommandError> {
-    let store = state.backup_store.read().await;
-    let entries: Vec<Value> = store
+async fn handle_volume_list(state: &SharedState, _params: Value) -> Result<Value, CommandError> {
+    let store = state.volume_store.read().await;
+    let volumes: Vec<Value> = store
         .list()
         .iter()
-        .map(|b| {
+        .map(|v| {
             json!({
-                "backupId": b.id,
-                "scope": b.scope,
-                "destination": b.destination,
-                "state": b.state,
-                "created_at": b.created_at.to_rfc3339(),
+                "name": v.name,
+                "type": v.volume_type,
+                "state": v.state,
+                "hostPath": v.host_path,
+                "size": v.size,
+                "boundTo": v.bound_to,
+                "mountPath": v.mount_path,
+                "createdAt": v.created_at.to_rfc3339(),
             })
         })
         .collect();
 
     Ok(json!({
-        "count": entries.len(),
-        "backups": entries,
+        "count": volumes.len(),
+        "volumes": volumes,
+    }))
+}
+
+async fn handle_volume_delete(state: &SharedState, params: Value) -> Result<Value, CommandError> {
+    let params: VolumeNameParams = serde_json::from_value(params)?;
+
+    // Check not bound
+    {
+        let store = state.volume_store.read().await;
+        if let Some(record) = store.get(&params.name) {
+            if record.state == "bound" {
+                return Err(format!("volume '{}' is currently bound, unmount first", params.name).into());
+            }
+        }
+    }
+
+    let deleted = state.volume_store.write().await.delete(&params.name);
+    if deleted.is_none() {
+        return Err(format!("volume '{}' not found", params.name).into());
+    }
+
+    Ok(json!({
+        "name": params.name,
+        "deleted": true,
+    }))
+}
+
+// ─── Backup commands ───
+
+#[derive(Debug, Deserialize)]
+struct BackupCreateParams {
+    scope: String,
+    destination: Option<String>,
+}
+
+async fn handle_backup_create(state: &SharedState, params: Value) -> Result<Value, CommandError> {
+    let params: BackupCreateParams = serde_json::from_value(params)?;
+
+    let id = format!("backup-{}", chrono::Utc::now().timestamp());
+    let dest = params.destination.unwrap_or_else(|| {
+        let s_path = std::path::PathBuf::from("/tmp/clawbernetes-backups");
+        s_path.join(&id).to_string_lossy().to_string()
+    });
+
+    info!(id = %id, scope = %params.scope, dest = %dest, "creating backup");
+
+    std::fs::create_dir_all(&dest).map_err(|e| format!("mkdir failed: {e}"))?;
+
+    // Backup the state directory
+    let state_path = {
+        let s = state.read().await;
+        s.config.state_path.clone()
+    };
+
+    let output = Command::new("cp")
+        .args(["-a", state_path.to_str().unwrap_or("."), &dest])
+        .output()?;
+
+    let backup_state = if output.status.success() {
+        "completed"
+    } else {
+        "failed"
+    };
+
+    let entry = BackupEntry {
+        id: id.clone(),
+        scope: params.scope.clone(),
+        destination: dest.clone(),
+        state: backup_state.to_string(),
+        created_at: chrono::Utc::now(),
+    };
+
+    state
+        .backup_store
+        .write()
+        .await
+        .create(entry)
+        .map_err(|e| -> CommandError { e.into() })?;
+
+    Ok(json!({
+        "id": id,
+        "scope": params.scope,
+        "destination": dest,
+        "state": backup_state,
+        "success": backup_state == "completed",
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct BackupIdParams {
+    id: String,
+}
+
+async fn handle_backup_restore(state: &SharedState, params: Value) -> Result<Value, CommandError> {
+    let params: BackupIdParams = serde_json::from_value(params)?;
+
+    let store = state.backup_store.read().await;
+    let entry = store
+        .get(&params.id)
+        .ok_or_else(|| format!("backup '{}' not found", params.id))?;
+
+    if entry.state != "completed" {
+        return Err(format!("backup '{}' is in state '{}', cannot restore", params.id, entry.state).into());
+    }
+
+    info!(id = %params.id, source = %entry.destination, "restoring backup");
+
+    // Copy backup back to state path
+    let state_path = {
+        let s = state.read().await;
+        s.config.state_path.clone()
+    };
+
+    let output = Command::new("cp")
+        .args(["-a", &format!("{}/.", entry.destination), state_path.to_str().unwrap_or(".")])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("restore failed: {stderr}").into());
+    }
+
+    Ok(json!({
+        "id": params.id,
+        "restored": true,
+        "source": entry.destination,
+    }))
+}
+
+async fn handle_backup_list(state: &SharedState, _params: Value) -> Result<Value, CommandError> {
+    let store = state.backup_store.read().await;
+    let backups: Vec<Value> = store
+        .list()
+        .iter()
+        .map(|b| {
+            json!({
+                "id": b.id,
+                "scope": b.scope,
+                "destination": b.destination,
+                "state": b.state,
+                "createdAt": b.created_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "count": backups.len(),
+        "backups": backups,
     }))
 }
 
@@ -339,24 +390,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_volume_create_and_list() {
+    async fn test_volume_create_emptydir() {
         let state = test_state();
-
         let result = handle_storage_command(
             &state,
             CommandRequest {
                 command: "volume.create".to_string(),
-                params: json!({
-                    "name": "data-vol",
-                    "type": "emptydir",
-                    "sizeGb": 50,
-                }),
+                params: json!({"name": "data-vol", "type": "emptydir"}),
             },
         )
         .await
         .expect("create");
         assert_eq!(result["success"], true);
-        assert_eq!(result["sizeGb"], 50);
+        assert_eq!(result["state"], "available");
+    }
+
+    #[tokio::test]
+    async fn test_volume_list() {
+        let state = test_state();
+        handle_storage_command(
+            &state,
+            CommandRequest {
+                command: "volume.create".to_string(),
+                params: json!({"name": "vol-1"}),
+            },
+        )
+        .await
+        .expect("create");
 
         let result = handle_storage_command(
             &state,
@@ -367,80 +427,95 @@ mod tests {
         )
         .await
         .expect("list");
-        assert_eq!(result["totalVolumes"], 1);
+        assert_eq!(result["count"], 1);
     }
 
     #[tokio::test]
-    async fn test_volume_delete() {
+    async fn test_volume_mount_unmount() {
         let state = test_state();
-
         handle_storage_command(
             &state,
             CommandRequest {
                 command: "volume.create".to_string(),
-                params: json!({"name": "del-vol", "sizeGb": 10}),
+                params: json!({"name": "mount-test"}),
             },
         )
         .await
         .expect("create");
+
+        // Mount
+        let result = handle_storage_command(
+            &state,
+            CommandRequest {
+                command: "volume.mount".to_string(),
+                params: json!({"name": "mount-test", "containerId": "abc123", "mountPath": "/data"}),
+            },
+        )
+        .await
+        .expect("mount");
+        assert_eq!(result["state"], "bound");
+
+        // Can't mount again
+        let result = handle_storage_command(
+            &state,
+            CommandRequest {
+                command: "volume.mount".to_string(),
+                params: json!({"name": "mount-test", "containerId": "def456", "mountPath": "/data"}),
+            },
+        )
+        .await;
+        assert!(result.is_err());
+
+        // Unmount
+        let result = handle_storage_command(
+            &state,
+            CommandRequest {
+                command: "volume.unmount".to_string(),
+                params: json!({"name": "mount-test"}),
+            },
+        )
+        .await
+        .expect("unmount");
+        assert_eq!(result["state"], "available");
+    }
+
+    #[tokio::test]
+    async fn test_volume_delete_bound_fails() {
+        let state = test_state();
+        handle_storage_command(
+            &state,
+            CommandRequest {
+                command: "volume.create".to_string(),
+                params: json!({"name": "del-test"}),
+            },
+        )
+        .await
+        .expect("create");
+
+        handle_storage_command(
+            &state,
+            CommandRequest {
+                command: "volume.mount".to_string(),
+                params: json!({"name": "del-test", "containerId": "c1", "mountPath": "/d"}),
+            },
+        )
+        .await
+        .expect("mount");
 
         let result = handle_storage_command(
             &state,
             CommandRequest {
                 command: "volume.delete".to_string(),
-                params: json!({"volumeId": "del-vol"}),
+                params: json!({"name": "del-test"}),
             },
         )
-        .await
-        .expect("delete");
-        assert_eq!(result["deleted"], true);
+        .await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn test_volume_snapshot() {
+    async fn test_backup_list_empty() {
         let state = test_state();
-
-        handle_storage_command(
-            &state,
-            CommandRequest {
-                command: "volume.create".to_string(),
-                params: json!({"name": "snap-vol", "sizeGb": 10}),
-            },
-        )
-        .await
-        .expect("create");
-
-        let result = handle_storage_command(
-            &state,
-            CommandRequest {
-                command: "volume.snapshot".to_string(),
-                params: json!({"volumeId": "snap-vol"}),
-            },
-        )
-        .await
-        .expect("snapshot");
-        assert_eq!(result["success"], true);
-        assert!(!result["snapshotId"].as_str().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_backup_create_and_list() {
-        let state = test_state();
-
-        let result = handle_storage_command(
-            &state,
-            CommandRequest {
-                command: "backup.create".to_string(),
-                params: json!({
-                    "scope": "full",
-                    "destination": "s3://backups/daily",
-                }),
-            },
-        )
-        .await
-        .expect("create");
-        assert_eq!(result["success"], true);
-
         let result = handle_storage_command(
             &state,
             CommandRequest {
@@ -450,49 +525,6 @@ mod tests {
         )
         .await
         .expect("list");
-        assert_eq!(result["count"], 1);
-    }
-
-    #[tokio::test]
-    async fn test_backup_restore() {
-        let state = test_state();
-
-        let create_result = handle_storage_command(
-            &state,
-            CommandRequest {
-                command: "backup.create".to_string(),
-                params: json!({"scope": "volumes", "destination": "/backups"}),
-            },
-        )
-        .await
-        .expect("create");
-
-        let backup_id = create_result["backupId"].as_str().unwrap();
-
-        let result = handle_storage_command(
-            &state,
-            CommandRequest {
-                command: "backup.restore".to_string(),
-                params: json!({"backupId": backup_id}),
-            },
-        )
-        .await
-        .expect("restore");
-        assert_eq!(result["restored"], true);
-    }
-
-    #[tokio::test]
-    async fn test_volume_invalid_type() {
-        let state = test_state();
-
-        let result = handle_storage_command(
-            &state,
-            CommandRequest {
-                command: "volume.create".to_string(),
-                params: json!({"name": "bad", "type": "unknown", "sizeGb": 10}),
-            },
-        )
-        .await;
-        assert!(result.is_err());
+        assert_eq!(result["count"], 0);
     }
 }

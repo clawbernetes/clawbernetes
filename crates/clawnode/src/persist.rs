@@ -1083,6 +1083,311 @@ impl SecretStore {
     }
 }
 
+// ─────────────────────────────────────────────────────────────
+// Volume Store
+// ─────────────────────────────────────────────────────────────
+
+/// A persistent volume record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeRecord {
+    pub name: String,
+    /// "emptydir", "hostpath", "nfs", "pvc"
+    pub volume_type: String,
+    /// Host path (for hostpath type).
+    pub host_path: Option<String>,
+    /// Size limit (e.g., "10Gi").
+    pub size: Option<String>,
+    /// State: "available", "bound", "released".
+    pub state: String,
+    /// Container ID this volume is mounted to (if bound).
+    pub bound_to: Option<String>,
+    /// Mount path inside the container.
+    pub mount_path: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub struct VolumeStore {
+    volumes: HashMap<String, VolumeRecord>,
+    store: JsonStore,
+}
+
+impl VolumeStore {
+    pub fn new(state_path: &Path) -> Self {
+        let store = JsonStore::new(state_path, "volumes");
+        let volumes = store.load();
+        debug!(count = volumes.len(), "loaded volumes from disk");
+        Self { volumes, store }
+    }
+
+    pub fn create(&mut self, record: VolumeRecord) -> Result<(), String> {
+        if self.volumes.contains_key(&record.name) {
+            return Err(format!("volume '{}' already exists", record.name));
+        }
+        let name = record.name.clone();
+        self.volumes.insert(name, record);
+        self.snapshot();
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Option<&VolumeRecord> {
+        self.volumes.get(name)
+    }
+
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut VolumeRecord> {
+        self.volumes.get_mut(name)
+    }
+
+    pub fn update(&mut self, name: &str) {
+        if self.volumes.contains_key(name) {
+            self.snapshot();
+        }
+    }
+
+    pub fn delete(&mut self, name: &str) -> Option<VolumeRecord> {
+        let r = self.volumes.remove(name);
+        if r.is_some() {
+            self.snapshot();
+        }
+        r
+    }
+
+    pub fn list(&self) -> Vec<&VolumeRecord> {
+        self.volumes.values().collect()
+    }
+
+    fn snapshot(&self) {
+        if let Err(e) = self.store.save(&self.volumes) {
+            warn!(error = %e, "failed to snapshot volume store");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// API Key Store
+// ─────────────────────────────────────────────────────────────
+
+/// An API key record for RBAC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKeyRecord {
+    /// Key ID (public identifier).
+    pub key_id: String,
+    /// Key name / description.
+    pub name: String,
+    /// Hashed secret (SHA-256 hex).
+    pub secret_hash: String,
+    /// Scopes granted to this key.
+    pub scopes: Vec<String>,
+    /// Role: "admin", "operator", "viewer".
+    pub role: String,
+    /// Whether the key is active.
+    pub active: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_used: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub struct ApiKeyStore {
+    keys: HashMap<String, ApiKeyRecord>,
+    store: JsonStore,
+}
+
+impl ApiKeyStore {
+    pub fn new(state_path: &Path) -> Self {
+        let store = JsonStore::new(state_path, "apikeys");
+        let keys = store.load();
+        debug!(count = keys.len(), "loaded API keys from disk");
+        Self { keys, store }
+    }
+
+    pub fn create(&mut self, record: ApiKeyRecord) -> Result<(), String> {
+        if self.keys.contains_key(&record.key_id) {
+            return Err(format!("key '{}' already exists", record.key_id));
+        }
+        let id = record.key_id.clone();
+        self.keys.insert(id, record);
+        self.snapshot();
+        Ok(())
+    }
+
+    pub fn get(&self, key_id: &str) -> Option<&ApiKeyRecord> {
+        self.keys.get(key_id)
+    }
+
+    pub fn get_mut(&mut self, key_id: &str) -> Option<&mut ApiKeyRecord> {
+        self.keys.get_mut(key_id)
+    }
+
+    pub fn find_by_hash(&self, secret_hash: &str) -> Option<&ApiKeyRecord> {
+        self.keys.values().find(|k| k.secret_hash == secret_hash && k.active)
+    }
+
+    pub fn revoke(&mut self, key_id: &str) -> Result<(), String> {
+        let key = self.keys.get_mut(key_id).ok_or_else(|| format!("key '{key_id}' not found"))?;
+        key.active = false;
+        self.snapshot();
+        Ok(())
+    }
+
+    pub fn delete(&mut self, key_id: &str) -> Option<ApiKeyRecord> {
+        let r = self.keys.remove(key_id);
+        if r.is_some() {
+            self.snapshot();
+        }
+        r
+    }
+
+    pub fn list(&self) -> Vec<&ApiKeyRecord> {
+        self.keys.values().collect()
+    }
+
+    pub fn update(&mut self, key_id: &str) {
+        if self.keys.contains_key(key_id) {
+            self.snapshot();
+        }
+    }
+
+    fn snapshot(&self) {
+        if let Err(e) = self.store.save(&self.keys) {
+            warn!(error = %e, "failed to snapshot API key store");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Autoscale Store
+// ─────────────────────────────────────────────────────────────
+
+/// An autoscaling policy record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoscaleRecord {
+    pub name: String,
+    /// Target deployment or workload name.
+    pub target: String,
+    /// Min replicas.
+    pub min_replicas: u32,
+    /// Max replicas.
+    pub max_replicas: u32,
+    /// Current replicas.
+    pub current_replicas: u32,
+    /// Policy type: "target_utilization", "queue_depth", "schedule".
+    pub policy_type: String,
+    /// Target metric (e.g., "gpu_utilization", "cpu_percent").
+    pub metric: Option<String>,
+    /// Target threshold value.
+    pub threshold: Option<f64>,
+    /// State: "active", "disabled".
+    pub state: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub struct AutoscaleStore {
+    policies: HashMap<String, AutoscaleRecord>,
+    store: JsonStore,
+}
+
+impl AutoscaleStore {
+    pub fn new(state_path: &Path) -> Self {
+        let store = JsonStore::new(state_path, "autoscale");
+        let policies = store.load();
+        debug!(count = policies.len(), "loaded autoscale policies from disk");
+        Self { policies, store }
+    }
+
+    pub fn create(&mut self, record: AutoscaleRecord) -> Result<(), String> {
+        if self.policies.contains_key(&record.name) {
+            return Err(format!("policy '{}' already exists", record.name));
+        }
+        let name = record.name.clone();
+        self.policies.insert(name, record);
+        self.snapshot();
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Option<&AutoscaleRecord> {
+        self.policies.get(name)
+    }
+
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut AutoscaleRecord> {
+        self.policies.get_mut(name)
+    }
+
+    pub fn update(&mut self, name: &str) {
+        if self.policies.contains_key(name) {
+            self.snapshot();
+        }
+    }
+
+    pub fn delete(&mut self, name: &str) -> Option<AutoscaleRecord> {
+        let r = self.policies.remove(name);
+        if r.is_some() {
+            self.snapshot();
+        }
+        r
+    }
+
+    pub fn list(&self) -> Vec<&AutoscaleRecord> {
+        self.policies.values().collect()
+    }
+
+    fn snapshot(&self) {
+        if let Err(e) = self.store.save(&self.policies) {
+            warn!(error = %e, "failed to snapshot autoscale store");
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Audit Log Store
+// ─────────────────────────────────────────────────────────────
+
+/// An audit log entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLogEntry {
+    pub id: String,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub actor: String,
+    pub action: String,
+    pub resource: String,
+    pub resource_id: Option<String>,
+    pub result: String,
+    pub details: Option<String>,
+}
+
+pub struct AuditLogStore {
+    entries: HashMap<String, AuditLogEntry>,
+    store: JsonStore,
+}
+
+impl AuditLogStore {
+    pub fn new(state_path: &Path) -> Self {
+        let store = JsonStore::new(state_path, "audit_log");
+        let entries = store.load();
+        debug!(count = entries.len(), "loaded audit log from disk");
+        Self { entries, store }
+    }
+
+    pub fn append(&mut self, entry: AuditLogEntry) {
+        self.entries.insert(entry.id.clone(), entry);
+        self.snapshot();
+    }
+
+    pub fn query(&self, actor: Option<&str>, action: Option<&str>, limit: usize) -> Vec<&AuditLogEntry> {
+        let mut results: Vec<_> = self.entries.values()
+            .filter(|e| actor.map_or(true, |a| e.actor == a))
+            .filter(|e| action.map_or(true, |a| e.action == a))
+            .collect();
+        results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        results.truncate(limit);
+        results
+    }
+
+    fn snapshot(&self) {
+        if let Err(e) = self.store.save(&self.entries) {
+            warn!(error = %e, "failed to snapshot audit log");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

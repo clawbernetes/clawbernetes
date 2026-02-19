@@ -208,6 +208,9 @@ async fn run_agent(config_path: PathBuf) -> anyhow::Result<()> {
     
     let state = create_state(config.clone());
 
+    // Reconcile persisted workloads with actual container state
+    clawnode::reconcile_workloads(&state).await;
+
     // Initialize networking if enabled and compiled in
     #[cfg(feature = "network")]
     if config.network_enabled {

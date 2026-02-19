@@ -37,11 +37,8 @@ pub mod policy_cmd;
 pub mod runtime;
 pub mod secrets_cmd;
 pub mod state;
-#[cfg(feature = "storage")]
 pub mod storage_cmd;
-#[cfg(feature = "auth")]
 pub mod auth_cmd;
-#[cfg(feature = "autoscaler")]
 pub mod autoscale_cmd;
 
 use std::sync::Arc;
@@ -194,23 +191,16 @@ pub struct SharedState {
     pub policy_engine: Arc<RwLock<Option<netpolicy::PolicyEngine>>>,
     #[cfg(feature = "network")]
     pub ingress_routes: ingress_proxy::RouteTable,
-    // ─── Tier 6: Storage (storage feature) ───
-    #[cfg(feature = "storage")]
-    pub volume_manager: Arc<claw_storage::VolumeManager>,
-    #[cfg(feature = "storage")]
+    // ─── Tier 6: Storage ───
+    pub volume_store: Arc<RwLock<persist::VolumeStore>>,
     pub backup_store: Arc<RwLock<persist::BackupStore>>,
-    // ─── Tier 7: Auth & RBAC (auth feature) ───
-    #[cfg(feature = "auth")]
-    pub api_key_store: Arc<RwLock<claw_auth::ApiKeyStore>>,
-    #[cfg(feature = "auth")]
-    pub rbac_policy: Arc<RwLock<claw_auth::RbacPolicy>>,
-    #[cfg(feature = "auth")]
-    pub audit_store: Arc<RwLock<persist::AuditStore>>,
+    // ─── Tier 7: Auth & RBAC ───
+    pub api_key_store: Arc<RwLock<persist::ApiKeyStore>>,
+    pub audit_log_store: Arc<RwLock<persist::AuditLogStore>>,
     // ─── Tier 8: Namespaces (always) ───
     pub namespace_store: Arc<RwLock<persist::NamespaceStore>>,
-    // ─── Tier 9: Autoscaling (autoscaler feature) ───
-    #[cfg(feature = "autoscaler")]
-    pub autoscaler_manager: Arc<claw_autoscaler::AutoscalerManager<claw_autoscaler::InMemoryMetricsProvider>>,
+    // ─── Tier 9: Autoscaling ───
+    pub autoscale_store: Arc<RwLock<persist::AutoscaleStore>>,
     // ─── Tier 10: MOLT (molt feature) ───
     #[cfg(feature = "molt")]
     pub molt_peer_table: Arc<RwLock<molt_p2p::PeerTable>>,
@@ -280,43 +270,31 @@ impl SharedState {
             ]);
         }
 
-        #[cfg(feature = "storage")]
-        {
-            commands.extend([
-                "volume.create".to_string(),
-                "volume.mount".to_string(),
-                "volume.unmount".to_string(),
-                "volume.snapshot".to_string(),
-                "volume.list".to_string(),
-                "volume.delete".to_string(),
-                "backup.create".to_string(),
-                "backup.restore".to_string(),
-                "backup.list".to_string(),
-            ]);
-        }
+        commands.extend([
+            "volume.create".to_string(),
+            "volume.mount".to_string(),
+            "volume.unmount".to_string(),
+            "volume.snapshot".to_string(),
+            "volume.list".to_string(),
+            "volume.delete".to_string(),
+            "backup.create".to_string(),
+            "backup.restore".to_string(),
+            "backup.list".to_string(),
+        ]);
 
-        #[cfg(feature = "auth")]
-        {
-            commands.extend([
-                "auth.create_key".to_string(),
-                "auth.revoke_key".to_string(),
-                "auth.list_keys".to_string(),
-                "rbac.create_role".to_string(),
-                "rbac.bind".to_string(),
-                "rbac.check".to_string(),
-                "audit.query".to_string(),
-            ]);
-        }
+        commands.extend([
+            "auth.create_key".to_string(),
+            "auth.revoke_key".to_string(),
+            "auth.list_keys".to_string(),
+            "audit.query".to_string(),
+        ]);
 
-        #[cfg(feature = "autoscaler")]
-        {
-            commands.extend([
-                "autoscale.create".to_string(),
-                "autoscale.status".to_string(),
-                "autoscale.adjust".to_string(),
-                "autoscale.delete".to_string(),
-            ]);
-        }
+        commands.extend([
+            "autoscale.create".to_string(),
+            "autoscale.status".to_string(),
+            "autoscale.adjust".to_string(),
+            "autoscale.delete".to_string(),
+        ]);
 
         #[cfg(feature = "molt")]
         {
@@ -369,25 +347,16 @@ impl SharedState {
             policy_engine: Arc::new(RwLock::new(None)),
             #[cfg(feature = "network")]
             ingress_routes: Arc::new(RwLock::new(Vec::new())),
-            // Tier 6: Storage (storage feature)
-            #[cfg(feature = "storage")]
-            volume_manager: Arc::new(claw_storage::VolumeManager::new()),
-            #[cfg(feature = "storage")]
+            // Tier 6: Storage
+            volume_store: Arc::new(RwLock::new(persist::VolumeStore::new(&state_path))),
             backup_store: Arc::new(RwLock::new(persist::BackupStore::new(&state_path))),
-            // Tier 7: Auth & RBAC (auth feature)
-            #[cfg(feature = "auth")]
-            api_key_store: Arc::new(RwLock::new(claw_auth::ApiKeyStore::new())),
-            #[cfg(feature = "auth")]
-            rbac_policy: Arc::new(RwLock::new(claw_auth::RbacPolicy::with_default_roles())),
-            #[cfg(feature = "auth")]
-            audit_store: Arc::new(RwLock::new(persist::AuditStore::new(&state_path))),
+            // Tier 7: Auth & RBAC
+            api_key_store: Arc::new(RwLock::new(persist::ApiKeyStore::new(&state_path))),
+            audit_log_store: Arc::new(RwLock::new(persist::AuditLogStore::new(&state_path))),
             // Tier 8: Namespaces (always)
             namespace_store: Arc::new(RwLock::new(persist::NamespaceStore::new(&state_path))),
-            // Tier 9: Autoscaling (autoscaler feature)
-            #[cfg(feature = "autoscaler")]
-            autoscaler_manager: Arc::new(claw_autoscaler::AutoscalerManager::new(
-                claw_autoscaler::InMemoryMetricsProvider::new(),
-            )),
+            // Tier 9: Autoscaling
+            autoscale_store: Arc::new(RwLock::new(persist::AutoscaleStore::new(&state_path))),
             // Tier 10: MOLT (molt feature)
             #[cfg(feature = "molt")]
             molt_peer_table: Arc::new(RwLock::new(molt_p2p::PeerTable::new())),
@@ -428,4 +397,82 @@ impl SharedState {
 /// Create shared state from config
 pub fn create_state(config: NodeConfig) -> SharedState {
     SharedState::new(config)
+}
+
+/// Reconcile persisted workload state with actual container runtime on startup.
+///
+/// Checks workloads marked as "running" in the store and verifies they still
+/// exist in Docker/podman. Marks any missing containers as "exited".
+pub async fn reconcile_workloads(state: &SharedState) {
+    let runtime = {
+        let s = state.read().await;
+        s.config.container_runtime.clone()
+    };
+
+    let running = {
+        let store = state.workload_store.read().await;
+        store
+            .running()
+            .iter()
+            .map(|w| (w.id.clone(), w.container_id.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    if running.is_empty() {
+        return;
+    }
+
+    tracing::info!(count = running.len(), "reconciling persisted workloads");
+
+    for (workload_id, container_id) in running {
+        let Some(cid) = container_id else {
+            // No container ID — mark as failed
+            state
+                .workload_store
+                .write()
+                .await
+                .update_state(&workload_id, "failed", None);
+            continue;
+        };
+
+        // Check if container still exists
+        let output = std::process::Command::new(&runtime)
+            .args(["inspect", "--format", "{{.State.Status}}", &cid])
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                let status = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                match status.as_str() {
+                    "running" => {
+                        tracing::debug!(workload_id = %workload_id, container = %cid, "still running");
+                    }
+                    "exited" | "dead" => {
+                        tracing::info!(workload_id = %workload_id, container = %cid, status = %status, "container exited");
+                        state
+                            .workload_store
+                            .write()
+                            .await
+                            .update_state(&workload_id, "exited", None);
+                    }
+                    other => {
+                        tracing::info!(workload_id = %workload_id, container = %cid, status = %other, "unexpected state");
+                        state
+                            .workload_store
+                            .write()
+                            .await
+                            .update_state(&workload_id, &other, None);
+                    }
+                }
+            }
+            _ => {
+                tracing::info!(workload_id = %workload_id, container = %cid, "container not found, marking exited");
+                state
+                    .workload_store
+                    .write()
+                    .await
+                    .update_state(&workload_id, "exited", None);
+            }
+        }
+    }
 }
