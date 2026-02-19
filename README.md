@@ -5,7 +5,7 @@
 <h1 align="center">Clawbernetes</h1>
 
 <p align="center">
-  <strong>Conversational GPU Infrastructure — Powered by OpenClaw</strong>
+  <strong>Conversational Infrastructure Management — Powered by OpenClaw</strong>
 </p>
 
 <p align="center">
@@ -22,9 +22,9 @@
 
 ---
 
-> **Kubernetes was built for web apps. Clawbernetes is AI-native infrastructure you talk to.**
+> **Kubernetes was built for web apps. Clawbernetes is AI-native infrastructure management you talk to.**
 
-Clawbernetes turns [OpenClaw](https://github.com/openclaw/openclaw) into an intelligent GPU infrastructure manager. Instead of YAML, dashboards, and `kubectl` — you have a conversation.
+Clawbernetes turns [OpenClaw](https://github.com/openclaw/openclaw) into an an intelligent infrastructure manager. Instead of YAML, dashboards, and `kubectl` — you have a conversation.
 
 ```
 You:   "What GPUs do we have?"
@@ -46,9 +46,9 @@ Agent: "GPU 0 at 87°C — thermal throttling. Fan speed 100%.
 Clawbernetes is **not** a Kubernetes replacement built from scratch. It's a thin, focused layer:
 
 - **OpenClaw Gateway** = the control plane (already built)
-- **OpenClaw Nodes** = headless agents on each GPU machine (already built)
+- **OpenClaw Nodes** = headless agents on each machine (already built)
 - **`clawnode` binary** = GPU detection, metrics, container management, node identity
-- **Clawbernetes Skills** = teach the agent GPU ops, deployment, scaling, diagnostics
+- **Clawbernetes Skills** = teach the agent infrastructure ops, deployment, scaling, diagnostics
 - **Clawbernetes Plugin** = fleet-level tools for multi-node inventory and orchestration
 - **MOLT Network** = P2P GPU compute marketplace (buy/sell idle compute)
 
@@ -81,7 +81,7 @@ npm install -g openclaw@latest
 openclaw onboard --install-daemon
 ```
 
-### 2. Build clawnode (on each GPU machine)
+### 2. Build clawnode (on each node machine)
 
 ```bash
 git clone https://github.com/clawbernetes/clawbernetes
@@ -147,7 +147,7 @@ No command syntax needed. The agent translates your intent into the right API ca
 
 | Crate | Description |
 |-------|-------------|
-| `clawnode` | GPU node agent — connects to OpenClaw gateway, reports capabilities, handles commands |
+| `clawnode` | Node agent — connects to OpenClaw gateway, reports capabilities, handles commands |
 | `claw-cli` | Command-line interface |
 | `claw-compute` | Multi-platform GPU detection and compute (CUDA, Metal, ROCm, Vulkan via CubeCL) |
 | `claw-metrics` | Embedded time-series database for node metrics |
@@ -214,7 +214,7 @@ No command syntax needed. The agent translates your intent into the right API ca
 
 ## OpenClaw Plugin
 
-The `plugin/openclaw-clawbernetes/` directory contains a TypeScript OpenClaw plugin that adds fleet-level capabilities on top of the per-node commands:
+The `plugin/openclaw-clawbernetes/` directory contains a TypeScript OpenClaw plugin that adds fleet-level orchestration on top of the per-node commands:
 
 **Tools:**
 | Tool | Description |
