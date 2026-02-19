@@ -43,14 +43,16 @@ Agent: "GPU 0 at 87°C — thermal throttling. Fan speed 100%.
 
 ## How It Works
 
-Clawbernetes is **not** a Kubernetes replacement built from scratch. It's a thin, focused layer:
+Clawbernetes is a **full conversational replacement for Kubernetes** — same capabilities, none of the YAML.
 
-- **OpenClaw Gateway** = the control plane (already built)
-- **OpenClaw Nodes** = headless agents on each machine (already built)
-- **`clawnode` binary** = GPU detection, metrics, container management, node identity
+Container orchestration, scheduling, health monitoring, autoscaling, config management, namespaces, resource quotas, jobs, cron, node management, policy enforcement, secrets, storage, and network policies — all driven by conversation instead of manifests.
+
+- **OpenClaw Gateway** = the control plane
+- **OpenClaw Nodes** = agents on each machine
+- **`clawnode` binary** = system detection, metrics, container management, node identity
 - **Clawbernetes Skills** = teach the agent infrastructure ops, deployment, scaling, diagnostics
-- **Clawbernetes Plugin** = fleet-level tools for multi-node inventory and orchestration
-- **MOLT Network** = P2P GPU compute marketplace (buy/sell idle compute)
+- **Clawbernetes Plugin** = fleet-level orchestration, multi-node inventory, smart placement
+- **MOLT Network** = P2P compute marketplace (buy/sell idle resources)
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
