@@ -12,12 +12,7 @@ docker = ["dep:claw-compute"]
 metrics = ["dep:claw-metrics"]
 molt = ["dep:molt-core", "dep:molt-p2p", "dep:molt-agent", "dep:molt-market", "dep:molt-attestation"]
 network = ["dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:bytes"]
-deploy = []
-secrets = []
-storage = []
-auth = []
-autoscaler = []
-full = ["docker", "metrics", "molt", "network", "deploy", "secrets", "storage", "auth", "autoscaler"]
+full = ["docker", "metrics", "molt", "network"]
 
 [[bin]]
 name = "clawnode"
