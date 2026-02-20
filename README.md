@@ -47,6 +47,66 @@ Clawbernetes is a **full conversational replacement for Kubernetes** — same ca
 
 Container orchestration, scheduling, health monitoring, autoscaling, config management, namespaces, resource quotas, jobs, cron, node management, policy enforcement, secrets, storage, and network policies — all driven by conversation instead of manifests.
 
+### Just Tell It What You Need
+
+**🚀 Deployments**
+```
+You:   "Deploy a vLLM server with Llama 3 70B on the node with the most VRAM"
+Agent: Selects the best node, pulls the image, starts the container with GPU
+       passthrough, and sets up health monitoring — all in one turn.
+```
+
+**🔍 Diagnostics**
+```
+You:   "Why is inference slow on morpheus?"
+Agent: Checks GPU temps, VRAM usage, CPU load, and container stats.
+       "GPU 0 at 89°C — thermal throttling. Want me to reduce batch size?"
+```
+
+**📊 Fleet Overview**
+```
+You:   "What GPUs do we have across the cluster?"
+Agent: Queries every connected node and returns a full inventory — GPU models,
+       VRAM, utilization, temps, and running workloads per node.
+```
+
+**🔐 Secrets Management**
+```
+You:   "Store the HuggingFace token as a secret and rotate it monthly"
+Agent: Encrypts with AES-256-GCM, stores on the node, and sets up a cron
+       rotation schedule. No Vault needed.
+```
+
+**⚖️ Autoscaling**
+```
+You:   "Scale the inference server between 2 and 8 replicas based on queue depth"
+Agent: Creates an autoscale policy, monitors the metric, and adjusts replicas
+       automatically. Reports scaling events to you in chat.
+```
+
+**🛡️ Incident Response**
+```
+You:   "Node gpu-03 just went offline. What happened?"
+Agent: Checks last heartbeat, reviews logs, identifies the failure.
+       "OOM killed at 14:32 — workload exceeded 79GB VRAM. Restarted with limits."
+```
+
+**🌐 Networking**
+```
+You:   "Set up a network policy so only the API gateway can talk to the database"
+Agent: Creates ingress/egress rules isolating the database service. WireGuard
+       mesh keeps traffic encrypted between nodes.
+```
+
+**💰 MOLT Marketplace**
+```
+You:   "I need 4 A100s for 6 hours. Find the cheapest spot on MOLT."
+Agent: Scans the P2P marketplace, verifies hardware attestation, escrows MOLT
+       tokens, and provisions the GPUs. Pay only for what you use.
+```
+
+### Architecture
+
 - **OpenClaw Gateway** = the control plane
 - **OpenClaw Nodes** = agents on each machine
 - **`clawnode` binary** = system detection, metrics, container management, node identity
