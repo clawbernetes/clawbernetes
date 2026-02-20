@@ -3,6 +3,8 @@
 //! This agent runs on GPU servers and connects back to the OpenClaw gateway,
 //! registering as a node with GPU capabilities.
 
+#![forbid(unsafe_code)]
+
 pub mod client;
 pub mod commands;
 pub mod config;

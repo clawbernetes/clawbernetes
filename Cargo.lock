@@ -534,6 +534,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
+name = "claw-auth"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "claw-persist",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "claw-autoscaler"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "claw-persist",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "claw-cli"
 version = "0.1.0"
 dependencies = [
@@ -575,6 +599,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "claw-config"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "claw-persist",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "claw-deploy"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "claw-persist",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "claw-identity"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "hex",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "claw-ingress"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "claw-persist",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "claw-metrics"
 version = "0.1.0"
 dependencies = [
@@ -593,6 +668,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "claw-network"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ipnet",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "claw-persist"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "claw-proto"
 version = "0.1.0"
 dependencies = [
@@ -606,6 +701,42 @@ dependencies = [
  "test-case",
  "thiserror 2.0.18",
  "uuid",
+]
+
+[[package]]
+name = "claw-scheduler"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "claw-persist",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "claw-secrets"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "claw-persist",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "claw-storage"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "claw-persist",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -632,9 +763,20 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "claw-auth",
+ "claw-autoscaler",
  "claw-compute",
+ "claw-config",
+ "claw-deploy",
+ "claw-identity",
+ "claw-ingress",
  "claw-metrics",
+ "claw-network",
+ "claw-persist",
  "claw-proto",
+ "claw-scheduler",
+ "claw-secrets",
+ "claw-storage",
  "dirs",
  "ed25519-dalek",
  "futures-util",

@@ -21,6 +21,17 @@ path = "src/main.rs"
 [dependencies]
 # Internal
 claw-proto = { path = "../claw-proto" }
+claw-persist = { path = "../claw-persist" }
+claw-config = { path = "../claw-config" }
+claw-deploy = { path = "../claw-deploy" }
+claw-secrets = { path = "../claw-secrets" }
+claw-storage = { path = "../claw-storage" }
+claw-auth = { path = "../claw-auth" }
+claw-autoscaler = { path = "../claw-autoscaler" }
+claw-network = { path = "../claw-network" }
+claw-scheduler = { path = "../claw-scheduler" }
+claw-ingress = { path = "../claw-ingress" }
+claw-identity = { path = "../claw-identity" }
 claw-compute = { path = "../claw-compute", features = ["container-runtime"], optional = true }
 claw-metrics = { path = "../claw-metrics", optional = true }
 molt-core = { path = "../molt-core", optional = true }

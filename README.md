@@ -143,7 +143,7 @@ No command syntax needed. The agent translates your intent into the right API ca
 
 ## Crate Overview
 
-12 crates, ~70K lines of Rust, 1,813 tests passing:
+23 crates, ~74K lines of Rust, 1,866 tests passing:
 
 ### Core
 
@@ -155,6 +155,22 @@ No command syntax needed. The agent translates your intent into the right API ca
 | `claw-metrics` | Embedded time-series database for node metrics |
 | `claw-proto` | Protobuf message definitions |
 | `claw-wireguard` | WireGuard key types for P2P identity |
+
+### Infrastructure
+
+| Crate | Description |
+|-------|-------------|
+| `claw-persist` | JSON file-backed persistence (generic `JsonStore`) |
+| `claw-config` | Key-value configuration store |
+| `claw-deploy` | Deployment orchestration with workload tracking and revision history |
+| `claw-secrets` | AES-256-GCM encrypted secrets management |
+| `claw-storage` | Volume lifecycle and backup/restore |
+| `claw-auth` | API key management (SHA-256 hashed) and audit logging |
+| `claw-autoscaler` | Autoscaling policy CRUD with replica clamping |
+| `claw-network` | WireGuard mesh networking, IP allocation, and topology |
+| `claw-scheduler` | Job/cron scheduling, namespaces, policies, alerts, audit |
+| `claw-ingress` | Service discovery, ingress routing, and network policies |
+| `claw-identity` | Ed25519 device identity, signing, and challenge-response auth |
 
 ### MOLT Marketplace
 
@@ -310,7 +326,7 @@ MOLT:     Escrow → Attestation → Execute → Settle
 # Build all crates
 cargo build --workspace
 
-# Run all tests (1,813 tests)
+# Run all tests (1,866 tests)
 cargo test --workspace
 
 # Release build
