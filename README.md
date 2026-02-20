@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="Clawbernetes" width="200"/>
+  <img src="docs/assets/clawbernetes.jpg" alt="Clawbernetes" width="600"/>
 </p>
 
 <h1 align="center">Clawbernetes</h1>
